@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - AI Assistant</title>
+    <link rel="stylesheet" href="styles.css">
+    <style>
+        .login-container {
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+        }
+
+        .login-box {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            padding: 40px;
+            width: 100%;
+            max-width: 400px;
+            animation: fadeInUp 0.5s ease;
+        }
+
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .login-box h1 {
+            text-align: center;
+            margin-bottom: 30px;
+            color: #333;
+            font-size: 28px;
+        }
+
+        .login-tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 30px;
+            border-bottom: 2px solid #e0e0e0;
+        }
+
+        .login-tab {
+            flex: 1;
+            padding: 12px;
+            text-align: center;
+            cursor: pointer;
+            border: none;
+            background: none;
+            font-size: 16px;
+            color: #666;
+            transition: all 0.3s;
+            border-bottom: 3px solid transparent;
+        }
+
+        .login-tab.active {
+            color: #667eea;
+            border-bottom-color: #667eea;
+            font-weight: 600;
+        }
+
+        .login-form {
+            display: none;
+        }
+
+        .login-form.active {
+            display: block;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 500;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 16px;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+
+        .form-group input:focus {
+            border-color: #667eea;
+        }
+
+        .profile-picture-section {
+            margin-bottom: 20px;
+        }
+
+        .profile-picture-preview {
+            width: 100px;
+            height: 100px;
+            border-radius: 50%;
+            margin: 0 auto 15px;
+            border: 3px solid #667eea;
+            object-fit: cover;
+            display: block;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+
+        .profile-picture-preview:hover {
+            transform: scale(1.05);
+        }
+
+        .profile-picture-input {
+            display: none;
+        }
+
+        .profile-picture-label {
+            display: block;
+            text-align: center;
+            color: #667eea;
+            cursor: pointer;
+            font-weight: 500;
+            margin-top: 10px;
+        }
+
+        .avatar-options {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .avatar-option {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            border: 3px solid #e0e0e0;
+            cursor: grab;
+            transition: all 0.2s;
+            object-fit: cover;
+            user-select: none;
+            -webkit-user-drag: element;
+        }
+
+        .avatar-option:hover {
+            border-color: #667eea;
+            transform: scale(1.1);
+        }
+
+        .avatar-option.selected {
+            border-color: #667eea;
+            border-width: 4px;
+        }
+
+        .avatar-option.dragging {
+            opacity: 0.5;
+            cursor: grabbing;
+        }
+
+        .profile-picture-preview.drag-over {
+            border-color: #10b981;
+            border-width: 4px;
+            transform: scale(1.1);
+        }
+
+        .btn-login {
+            width: 100%;
+            padding: 14px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            margin-top: 10px;
+        }
+
+        .btn-login:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-login:active {
+            transform: translateY(0);
+        }
+
+        .error-message {
+            background: #fee;
+            color: #c33;
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: none;
+        }
+
+        .error-message.show {
+            display: block;
+        }
+
+        .success-message {
+            background: #efe;
+            color: #3c3;
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: none;
+        }
+
+        .success-message.show {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-box">
+            <h1>AI Assistant</h1>
+            
+            <div class="login-tabs">
+                <button class="login-tab active" data-tab="login">Login</button>
+                <button class="login-tab" data-tab="register">Register</button>
+            </div>
+
+            <div id="errorMessage" class="error-message"></div>
+            <div id="successMessage" class="success-message"></div>
+
+            <!-- Login Form -->
+            <form id="loginForm" class="login-form active">
+                <div class="form-group">
+                    <label for="loginEmail">Email</label>
+                    <input type="email" id="loginEmail" required placeholder="your@email.com">
+                </div>
+                <div class="form-group">
+                    <label for="loginPassword">Password</label>
+                    <input type="password" id="loginPassword" required placeholder="Enter your password">
+                </div>
+                <button type="submit" class="btn-login">Login</button>
+            </form>
+
+            <!-- Register Form -->
+            <form id="registerForm" class="login-form">
+                <div class="form-group">
+                    <label for="registerName">Name</label>
+                    <input type="text" id="registerName" required placeholder="Your name">
+                </div>
+                <div class="form-group">
+                    <label for="registerEmail">Email</label>
+                    <input type="email" id="registerEmail" required placeholder="your@email.com">
+                </div>
+                <div class="form-group">
+                    <label for="registerPassword">Password</label>
+                    <input type="password" id="registerPassword" required placeholder="Create a password" minlength="6">
+                </div>
+                
+                <div class="profile-picture-section">
+                    <label>Profile Picture</label>
+                    <img id="profilePreview" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'%3E%3Ccircle cx='50' cy='50' r='50' fill='%23667eea'/%3E%3Ctext x='50' y='65' font-size='40' fill='white' text-anchor='middle'%3E%F0%9F%98%81%3C/text%3E%3C/svg%3E" 
+                         alt="Profile" class="profile-picture-preview">
+                    <!-- Upload or take a photo (on mobile this opens the camera) -->
+                    <input type="file" id="profilePicture" class="profile-picture-input" accept="image/*" capture="user">
+                    <label for="profilePicture" class="profile-picture-label">Upload or Take Photo</label>
+                    
+                    <!-- Emoji-style avatar choices -->
+                    <div class="avatar-options">
+                        <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60'%3E%3Ccircle cx='30' cy='30' r='30' fill='%23667eea'/%3E%3Ctext x='30' y='40' font-size='25' fill='white' text-anchor='middle'%3E%F0%9F%98%81%3C/text%3E%3C/svg%3E" 
+                             class="avatar-option" data-avatar="smile">
+                        <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60'%3E%3Ccircle cx='30' cy='30' r='30' fill='%2310b981'/%3E%3Ctext x='30' y='40' font-size='25' fill='white' text-anchor='middle'%3E%F0%9F%98%8E%3C/text%3E%3C/svg%3E" 
+                             class="avatar-option" data-avatar="cool">
+                        <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60'%3E%3Ccircle cx='30' cy='30' r='30' fill='%238b5cf6'/%3E%3Ctext x='30' y='40' font-size='25' fill='white' text-anchor='middle'%3E%F0%9F%98%83%3C/text%3E%3C/svg%3E" 
+                             class="avatar-option" data-avatar="laugh">
+                        <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60'%3E%3Ccircle cx='30' cy='30' r='30' fill='%23f59e0b'/%3E%3Ctext x='30' y='40' font-size='25' fill='white' text-anchor='middle'%3E%F0%9F%98%89%3C/text%3E%3C/svg%3E" 
+                             class="avatar-option" data-avatar="wink">
+                    </div>
+                </div>
+
+                <button type="submit" class="btn-login">Register</button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        window.SUPABASE_URL = 'https://vexmydzwlongsqnzamdk.supabase.co';
+        window.SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZleG15ZHp3bG9uZ3NxbnphbWRrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU5ODQzNTEsImV4cCI6MjA4MTU2MDM1MX0.2sswoFrrYryzpDircWi2HtRFiE5x5Pp-N_oUYunPO1o';
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script>
+        let selectedAvatar = null;
+        let profilePictureFile = null;
+
+        // Tab switching
+        document.querySelectorAll('.login-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                const tabName = tab.dataset.tab;
+                
+                document.querySelectorAll('.login-tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.login-form').forEach(f => f.classList.remove('active'));
+                
+                tab.classList.add('active');
+                document.getElementById(`${tabName}Form`).classList.add('active');
+                clearMessages();
+            });
+        });
+
+        // Profile picture upload
+        document.getElementById('profilePicture').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                profilePictureFile = file;
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    document.getElementById('profilePreview').src = event.target.result;
+                    document.querySelectorAll('.avatar-option').forEach(opt => opt.classList.remove('selected'));
+                };
+                reader.readAsDataURL(file);
+            }
+        });
+
+        // Avatar selection (click)
+        document.querySelectorAll('.avatar-option').forEach(option => {
+            option.addEventListener('click', () => {
+                selectAvatar(option);
+            });
+        });
+
+        // Drag and drop for avatars
+        const profilePreview = document.getElementById('profilePreview');
+        let draggedAvatar = null;
+
+        document.querySelectorAll('.avatar-option').forEach(option => {
+            option.setAttribute('draggable', 'true');
+            
+            option.addEventListener('dragstart', (e) => {
+                draggedAvatar = option;
+                option.classList.add('dragging');
+                e.dataTransfer.effectAllowed = 'copy';
+                e.dataTransfer.setData('text/plain', option.dataset.avatar);
+            });
+
+            option.addEventListener('dragend', () => {
+                option.classList.remove('dragging');
+                draggedAvatar = null;
+            });
+        });
+
+        profilePreview.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'copy';
+            profilePreview.classList.add('drag-over');
+        });
+
+        profilePreview.addEventListener('dragleave', () => {
+            profilePreview.classList.remove('drag-over');
+        });
+
+        profilePreview.addEventListener('drop', (e) => {
+            e.preventDefault();
+            profilePreview.classList.remove('drag-over');
+            
+            if (draggedAvatar) {
+                selectAvatar(draggedAvatar);
+                // Update preview to show the emoji
+                const emojiMap = {
+                    'smile': '😀',
+                    'cool': '😎',
+                    'laugh': '😃',
+                    'wink': '😉'
+                };
+                const emoji = emojiMap[draggedAvatar.dataset.avatar] || '😀';
+                profilePreview.src = `data:image/svg+xml,${encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'><circle cx='50' cy='50' r='50' fill='#667eea'/><text x='50' y='65' font-size='40' fill='white' text-anchor='middle'>${emoji}</text></svg>`)}`;
+            }
+        });
+
+        function selectAvatar(option) {
+            document.querySelectorAll('.avatar-option').forEach(opt => opt.classList.remove('selected'));
+            option.classList.add('selected');
+            selectedAvatar = option.dataset.avatar;
+            profilePictureFile = null;
+            document.getElementById('profilePicture').value = '';
+            
+            // Update preview
+            const emojiMap = {
+                'smile': '😀',
+                'cool': '😎',
+                'laugh': '😃',
+                'wink': '😉'
+            };
+            const emoji = emojiMap[selectedAvatar] || '😀';
+            profilePreview.src = `data:image/svg+xml,${encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'><circle cx='50' cy='50' r='50' fill='#667eea'/><text x='50' y='65' font-size='40' fill='white' text-anchor='middle'>${emoji}</text></svg>`)}`;
+        }
+
+        function showError(message) {
+            const errorDiv = document.getElementById('errorMessage');
+            errorDiv.textContent = message;
+            errorDiv.classList.add('show');
+            setTimeout(() => errorDiv.classList.remove('show'), 5000);
+        }
+
+        function showSuccess(message) {
+            const successDiv = document.getElementById('successMessage');
+            successDiv.textContent = message;
+            successDiv.classList.add('show');
+            setTimeout(() => successDiv.classList.remove('show'), 3000);
+        }
+
+        function clearMessages() {
+            document.getElementById('errorMessage').classList.remove('show');
+            document.getElementById('successMessage').classList.remove('show');
+        }
+
+        const supabaseClient = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+
+        // Login form (Supabase)
+        document.getElementById('loginForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            clearMessages();
+
+            const email = document.getElementById('loginEmail').value;
+            const password = document.getElementById('loginPassword').value;
+
+            try {
+                const { data, error } = await supabaseClient.auth.signInWithPassword({
+                    email,
+                    password
+                });
+
+                if (error) {
+                    console.error('Login error:', error);
+                    if (error.message && (error.message.toLowerCase().includes('email not confirmed') || error.message.toLowerCase().includes('invalid login'))) {
+                        showError('Login failed. Please check: 1) Email confirmation is disabled in Supabase (Settings → Authentication → Email → Confirm email OFF), 2) Your email/password is correct, 3) You registered successfully.');
+                    } else {
+                        showError(error.message || 'Login failed. Check your email and password.');
+                    }
+                    return;
+                }
+
+                if (!data || !data.user) {
+                    showError('Login failed: No user data returned.');
+                    return;
+                }
+
+                localStorage.setItem('supabaseUser', JSON.stringify(data.user));
+                showSuccess('Login successful! Redirecting...');
+                setTimeout(() => {
+                    window.location.href = 'index.html';
+                }, 800);
+            } catch (err) {
+                console.error('Login exception:', err);
+                showError('Login error: ' + (err.message || 'Please try again.'));
+            }
+        });
+
+        // Register form (Supabase)
+        document.getElementById('registerForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            clearMessages();
+
+            const name = document.getElementById('registerName').value;
+            const email = document.getElementById('registerEmail').value;
+            const password = document.getElementById('registerPassword').value;
+
+            try {
+                const { data, error } = await supabaseClient.auth.signUp({
+                    email,
+                    password,
+                    options: {
+                        data: {
+                            name,
+                            avatar: selectedAvatar || null
+                        },
+                        emailRedirectTo: window.location.origin + '/index.html'
+                    }
+                });
+
+                if (error) {
+                    console.error('Registration error:', error);
+                    showError(error.message || 'Registration failed');
+                    return;
+                }
+
+                if (!data || !data.user) {
+                    showError('Registration failed: No user data returned.');
+                    return;
+                }
+
+                // If email confirmation is disabled, user is immediately logged in
+                if (data.user && data.session) {
+                    localStorage.setItem('supabaseUser', JSON.stringify(data.user));
+                    showSuccess('Registration successful! Redirecting...');
+                    setTimeout(() => {
+                        window.location.href = 'index.html';
+                    }, 800);
+                } else {
+                    showSuccess('Registration successful! Please check your email to confirm your account, then login.');
+                }
+            } catch (err) {
+                console.error('Registration exception:', err);
+                showError('Registration error: ' + (err.message || 'Please try again.'));
+            }
+        });
+
+        // Check if already logged in via Supabase
+        (async () => {
+            const { data } = await supabaseClient.auth.getSession();
+            if (data.session) {
+                window.location.href = 'index.html';
+            }
+        })();
+    </script>
+</body>
+</html>
+

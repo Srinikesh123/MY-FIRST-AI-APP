@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Assistant</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="header-left">
+                <h1>AI Assistant</h1>
+                <button id="newChatBtn" class="icon-btn" title="New Chat">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="12" y1="5" x2="12" y2="19"></line>
+                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                    </svg>
+                </button>
+            </div>
+            <div class="controls">
+                <label class="toggle-switch">
+                    <input type="checkbox" id="simpleLanguage">
+                    <span class="slider"></span>
+                    <span class="label-text">Simple Language</span>
+                </label>
+                <button id="settingsBtn" class="icon-btn" title="Settings">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"></circle>
+                        <path d="M12 1v6m0 6v6m9-9h-6m-6 0H3m15.364 6.364l-4.243-4.243m-4.242 0l-4.243 4.243m8.485 0l-4.243-4.243m-4.242 0l-4.243 4.243"></path>
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        
+        <!-- Chat View -->
+        <div id="chatView" class="view active">
+            <div class="chat-container" id="chatContainer">
+                <div class="welcome-message">
+                    <p>Hello! I'm your AI assistant. I'm here to help with clear, honest answers.</p>
+                    <p>Ask me anything, and I'll do my best to help you.</p>
+                </div>
+            </div>
+            
+            <div class="input-container">
+                <input 
+                    type="text" 
+                    id="userInput" 
+                    placeholder="Type your message here..." 
+                    autocomplete="off"
+                >
+                <button id="voiceInputBtn" aria-label="Voice input (dictation)">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 1a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+                        <path d="M5 10a7 7 0 0 0 14 0"></path>
+                        <line x1="12" y1="17" x2="12" y2="23"></line>
+                        <line x1="8" y1="23" x2="16" y2="23"></line>
+                    </svg>
+                </button>
+                <button id="sendButton" aria-label="Send message">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="22" y1="2" x2="11" y2="13"></line>
+                        <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                    </svg>
+                </button>
+            </div>
+        </div>
+
+        <!-- Settings View -->
+        <div id="settingsView" class="view">
+            <div class="settings-container">
+                <h2>Settings</h2>
+                
+                <!-- Appearance -->
+                <div class="settings-section">
+                    <h3>🎨 Appearance</h3>
+                    
+                    <div class="setting-item">
+                        <label>Theme</label>
+                        <div class="radio-group">
+                            <label class="radio-option">
+                                <input type="radio" name="theme" value="light" id="themeLight">
+                                <span>Light</span>
+                            </label>
+                            <label class="radio-option">
+                                <input type="radio" name="theme" value="dark" id="themeDark">
+                                <span>Dark</span>
+                            </label>
+                            <label class="radio-option">
+                                <input type="radio" name="theme" value="normal" id="themeNormal">
+                                <span>Normal</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="setting-item">
+                        <label>Accent Color</label>
+                        <div class="radio-group">
+                            <label class="radio-option color-option" data-color="blue">
+                                <input type="radio" name="accentColor" value="blue" id="accentBlue">
+                                <span>Blue</span>
+                            </label>
+                            <label class="radio-option color-option" data-color="green">
+                                <input type="radio" name="accentColor" value="green" id="accentGreen">
+                                <span>Green</span>
+                            </label>
+                            <label class="radio-option color-option" data-color="purple">
+                                <input type="radio" name="accentColor" value="purple" id="accentPurple">
+                                <span>Purple</span>
+                            </label>
+                            <label class="radio-option color-option" data-color="orange">
+                                <input type="radio" name="accentColor" value="orange" id="accentOrange">
+                                <span>Orange</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="setting-item">
+                        <label>Font Size</label>
+                        <div class="radio-group">
+                            <label class="radio-option">
+                                <input type="radio" name="fontSize" value="small" id="fontSmall">
+                                <span>Small</span>
+                            </label>
+                            <label class="radio-option">
+                                <input type="radio" name="fontSize" value="medium" id="fontMedium">
+                                <span>Medium</span>
+                            </label>
+                            <label class="radio-option">
+                                <input type="radio" name="fontSize" value="large" id="fontLarge">
+                                <span>Large</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="setting-item">
+                        <label>Font Style</label>
+                        <select id="fontStyle" class="setting-input">
+                            <option value="system">System (default)</option>
+                            <option value="rounded">Rounded</option>
+                            <option value="mono">Mono</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Chat UI Settings -->
+                <div class="settings-section">
+                    <h3>💬 Chat UI Settings</h3>
+                    
+                    <div class="setting-item">
+                        <label>Message Bubble Style</label>
+                        <div class="radio-group">
+                            <label class="radio-option">
+                                <input type="radio" name="bubbleStyle" value="rounded" id="bubbleRounded">
+                                <span>Rounded</span>
+                            </label>
+                            <label class="radio-option">
+                                <input type="radio" name="bubbleStyle" value="sharp" id="bubbleSharp">
+                                <span>Sharp</span>
+                            </label>
+                            <label class="radio-option">
+                                <input type="radio" name="bubbleStyle" value="flat" id="bubbleFlat">
+                                <span>Flat</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="setting-item">
+                        <label>Message Alignment</label>
+                        <div class="radio-group">
+                            <label class="radio-option">
+                                <input type="radio" name="messageAlignment" value="centered" id="alignCentered">
+                                <span>Centered</span>
+                            </label>
+                            <label class="radio-option">
+                                <input type="radio" name="messageAlignment" value="left" id="alignLeft">
+                                <span>Left-aligned</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="setting-item">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="typingIndicator">
+                            <span class="slider"></span>
+                            <span class="label-text">Typing Indicator</span>
+                        </label>
+                        <small>Show "AI is thinking..." animation</small>
+                    </div>
+
+                    <div class="setting-item">
+                        <label>Send Button Style</label>
+                        <div class="radio-group">
+                            <label class="radio-option">
+                                <input type="radio" name="sendButtonStyle" value="icon" id="sendIcon">
+                                <span>Icon only</span>
+                            </label>
+                            <label class="radio-option">
+                                <input type="radio" name="sendButtonStyle" value="text" id="sendText">
+                                <span>Text</span>
+                            </label>
+                            <label class="radio-option">
+                                <input type="radio" name="sendButtonStyle" value="both" id="sendBoth">
+                                <span>Both</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="setting-item">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="showTimestamps">
+                            <span class="slider"></span>
+                            <span class="label-text">Show Timestamps</span>
+                        </label>
+                        <small>Display time on messages</small>
+                    </div>
+
+                    <div class="setting-item">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="autoScroll">
+                            <span class="slider"></span>
+                            <span class="label-text">Auto-Scroll</span>
+                        </label>
+                        <small>Automatically scroll to new messages</small>
+                    </div>
+                </div>
+
+                <!-- Feedback & Feel -->
+                <div class="settings-section">
+                    <h3>🔔 Feedback & Feel</h3>
+                    
+                    <div class="setting-item">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="soundEffects">
+                            <span class="slider"></span>
+                            <span class="label-text">Sound Effects</span>
+                        </label>
+                        <small>Play sounds for sent messages and AI replies</small>
+                    </div>
+
+                    <div class="setting-item">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="animations">
+                            <span class="slider"></span>
+                            <span class="label-text">Animations</span>
+                        </label>
+                        <small>Smooth message pop-in animations</small>
+                    </div>
+                </div>
+
+                <!-- Layout -->
+                <div class="settings-section">
+                    <h3>🧭 Layout</h3>
+                    
+                    <div class="setting-item">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="compactMode">
+                            <span class="slider"></span>
+                            <span class="label-text">Compact Mode</span>
+                        </label>
+                        <small>Smaller padding, more text visible</small>
+                    </div>
+                </div>
+
+                <!-- Preferences -->
+                <div class="settings-section">
+                    <h3>Preferences</h3>
+                    
+                    <div class="setting-item">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="settingsSimpleLanguage">
+                            <span class="slider"></span>
+                            <span class="label-text">Simple Language Mode</span>
+                        </label>
+                        <small>Get responses in simpler, easier-to-understand language</small>
+                    </div>
+
+                    <div class="setting-item">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="ttsEnabled">
+                            <span class="slider"></span>
+                            <span class="label-text">Read Responses Aloud</span>
+                        </label>
+                        <small>Use a professional AI-style voice to speak answers</small>
+                    </div>
+
+                    <div class="setting-item">
+                        <label>Voice</label>
+                        <div class="radio-group">
+                            <label class="radio-option">
+                                <input type="radio" name="ttsVoice" value="female" id="ttsVoiceFemale">
+                                <span>Female</span>
+                            </label>
+                            <label class="radio-option">
+                                <input type="radio" name="ttsVoice" value="male" id="ttsVoiceMale">
+                                <span>Male</span>
+                            </label>
+                        </div>
+                        <small>Choose between a male or female professional voice</small>
+                    </div>
+
+                    <div class="setting-item">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="imageMode">
+                            <span class="slider"></span>
+                            <span class="label-text">Picture Mode</span>
+                        </label>
+                        <small>When on, your prompts will create AI-generated pictures instead of text answers</small>
+                    </div>
+
+                    <div class="setting-item">
+                        <label>Response Mode</label>
+                        <div class="radio-group">
+                            <label class="radio-option">
+                                <input type="radio" name="chatMode" value="fast" id="chatModeFast">
+                                <span>Fast (short answers)</span>
+                            </label>
+                            <label class="radio-option">
+                                <input type="radio" name="chatMode" value="detailed" id="chatModeDetailed">
+                                <span>Long & detailed</span>
+                            </label>
+                            <label class="radio-option">
+                                <input type="radio" name="chatMode" value="coding" id="chatModeCoding">
+                                <span>Coding help</span>
+                            </label>
+                        </div>
+                        <small>Choose how the AI should answer: quick, detailed, or focused on writing code.</small>
+                    </div>
+
+                    <div class="setting-item">
+                        <label>Reply Mood</label>
+                        <div class="radio-group">
+                            <label class="radio-option">
+                                <input type="radio" name="mood" value="friendly" id="moodFriendly">
+                                <span>Friendly</span>
+                            </label>
+                            <label class="radio-option">
+                                <input type="radio" name="mood" value="serious" id="moodSerious">
+                                <span>Serious</span>
+                            </label>
+                            <label class="radio-option">
+                                <input type="radio" name="mood" value="funny" id="moodFunny">
+                                <span>Funny</span>
+                            </label>
+                            <label class="radio-option">
+                                <input type="radio" name="mood" value="calm" id="moodCalm">
+                                <span>Calm</span>
+                            </label>
+                        </div>
+                        <small>Pick the personality the AI should use when replying.</small>
+                    </div>
+
+                    <div class="setting-item">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="typingEffect">
+                            <span class="slider"></span>
+                            <span class="label-text">Typing Effect</span>
+                        </label>
+                        <small>AI text appears like it is being typed out.</small>
+                    </div>
+
+                    <div class="setting-item">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="errorFreeMode">
+                            <span class="slider"></span>
+                            <span class="label-text">Error-Free Mode</span>
+                        </label>
+                        <small>If the AI is not sure, it will say: "I don’t know yet, but here’s what I can explain."</small>
+                    </div>
+                </div>
+
+                <!-- Actions -->
+                <div class="settings-section">
+                    <h3>Actions</h3>
+                    <button id="clearChatBtn" class="btn-danger">Clear Chat History</button>
+                </div>
+
+                <div class="settings-actions">
+                    <button id="saveSettingsBtn" class="btn-primary">Save Settings</button>
+                    <button id="backToChatBtn" class="btn-secondary">Back to Chat</button>
+                </div>
+
+                <div id="settingsMessage" class="settings-message"></div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        window.SUPABASE_URL = 'https://vexmydzwlongsqnzamdk.supabase.co';
+        window.SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZleG15ZHp3bG9uZ3NxbnphbWRrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU5ODQzNTEsImV4cCI6MjA4MTU2MDM1MX0.2sswoFrrYryzpDircWi2HtRFiE5x5Pp-N_oUYunPO1o';
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="app.js"></script>
+</body>
+</html>
+
