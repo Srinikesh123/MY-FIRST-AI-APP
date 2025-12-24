@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Diagnostics - voidzenzi</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .test-box {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .test-box h3 {
+            margin-top: 0;
+            color: #333;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+        }
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        .status.warning {
+            background: #fff3cd;
+            color: #856404;
+        }
+        code {
+            background: #f4f4f4;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: monospace;
+        }
+        button {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background: #5568d3;
+        }
+        pre {
+            background: #f4f4f4;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔍 voidzenzi Diagnostics</h1>
+    <p>This page will help diagnose issues with your application.</p>
+    
+    <div class="test-box">
+        <h3>1. Supabase Configuration</h3>
+        <div id="supabaseConfig"></div>
+    </div>
+    
+    <div class="test-box">
+        <h3>2. Authentication Status</h3>
+        <div id="authStatus"></div>
+    </div>
+    
+    <div class="test-box">
+        <h3>3. Server Connection</h3>
+        <div id="serverStatus"></div>
+        <button onclick="testServer()">Test Server</button>
+    </div>
+    
+    <div class="test-box">
+        <h3>4. Database Tables</h3>
+        <div id="databaseStatus"></div>
+        <button onclick="testDatabase()">Test Database</button>
+    </div>
+    
+    <div class="test-box">
+        <h3>5. Games Endpoint</h3>
+        <div id="gamesStatus"></div>
+        <button onclick="testGames()">Test Games</button>
+    </div>
+    
+    <div class="test-box">
+        <h3>6. Chats Table</h3>
+        <div id="chatsStatus"></div>
+        <button onclick="testChats()">Test Chats</button>
+    </div>
+    
+    <div class="test-box">
+        <h3>7. Messages Table</h3>
+        <div id="messagesStatus"></div>
+        <button onclick="testMessages()">Test Messages</button>
+    </div>
+
+    <script>
+        window.SUPABASE_URL = 'https://vexmydzwlongsqnzamdk.supabase.co';
+        window.SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZleG15ZHp3bG9uZ3NxbnphbWRrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU5ODQzNTEsImV4cCI6MjA4MTU2MDM1MX0.2sswoFrrYryzpDircWi2HtRFiE5x5Pp-N_oUYunPO1o';
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script>
+        const supabase = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+        const apiUrl = 'http://localhost:3000/api';
+
+        // Test 1: Supabase Configuration
+        function checkSupabaseConfig() {
+            const div = document.getElementById('supabaseConfig');
+            if (window.SUPABASE_URL && window.SUPABASE_ANON_KEY) {
+                div.innerHTML = `
+                    <div class="status success">
+                        ✅ Supabase URL: <code>${window.SUPABASE_URL}</code><br>
+                        ✅ Anon Key: <code>${window.SUPABASE_ANON_KEY.substring(0, 20)}...</code>
+                    </div>
+                `;
+            } else {
+                div.innerHTML = `
+                    <div class="status error">
+                        ❌ Supabase not configured. Check index.html for SUPABASE_URL and SUPABASE_ANON_KEY.
+                    </div>
+                `;
+            }
+        }
+
+        // Test 2: Authentication
+        async function checkAuth() {
+            const div = document.getElementById('authStatus');
+            try {
+                const { data: { session }, error } = await supabase.auth.getSession();
+                if (error) {
+                    div.innerHTML = `<div class="status error">❌ Auth Error: ${error.message}</div>`;
+                    return;
+                }
+                if (session && session.user) {
+                    div.innerHTML = `
+                        <div class="status success">
+                            ✅ Authenticated as: <code>${session.user.email}</code><br>
+                            User ID: <code>${session.user.id.substring(0, 20)}...</code>
+                        </div>
+                    `;
+                } else {
+                    div.innerHTML = `
+                        <div class="status warning">
+                            ⚠️ Not authenticated. <a href="login.html">Login here</a>
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                div.innerHTML = `<div class="status error">❌ Error: ${error.message}</div>`;
+            }
+        }
+
+        // Test 3: Server Connection
+        async function testServer() {
+            const div = document.getElementById('serverStatus');
+            div.innerHTML = '<div class="status">Testing...</div>';
+            try {
+                const response = await fetch(`${apiUrl}/health`, {
+                    method: 'GET',
+                    signal: AbortSignal.timeout(5000)
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    div.innerHTML = `
+                        <div class="status success">
+                            ✅ Server is running!<br>
+                            Status: ${data.status || 'OK'}<br>
+                            Message: ${data.message || 'Server responding'}
+                        </div>
+                    `;
+                } else {
+                    div.innerHTML = `<div class="status error">❌ Server returned status: ${response.status}</div>`;
+                }
+            } catch (error) {
+                div.innerHTML = `
+                    <div class="status error">
+                        ❌ Server not reachable!<br>
+                        Error: ${error.message}<br>
+                        <strong>Solution:</strong> Start the server with <code>npm start</code> or <code>node server.js</code>
+                    </div>
+                `;
+            }
+        }
+
+        // Test 4: Database Tables
+        async function testDatabase() {
+            const div = document.getElementById('databaseStatus');
+            div.innerHTML = '<div class="status">Testing...</div>';
+            try {
+                const { data: { session } } = await supabase.auth.getSession();
+                if (!session) {
+                    div.innerHTML = '<div class="status warning">⚠️ Please login first</div>';
+                    return;
+                }
+
+                const tables = ['chats', 'messages', 'games', 'users', 'user_settings'];
+                const results = [];
+
+                for (const table of tables) {
+                    try {
+                        const { data, error } = await supabase
+                            .from(table)
+                            .select('*')
+                            .limit(1);
+                        
+                        if (error) {
+                            if (error.message && error.message.includes('does not exist')) {
+                                results.push(`❌ ${table}: Table doesn't exist`);
+                            } else if (error.message && error.message.includes('permission')) {
+                                results.push(`⚠️ ${table}: Permission denied (RLS issue)`);
+                            } else {
+                                results.push(`❌ ${table}: ${error.message}`);
+                            }
+                        } else {
+                            results.push(`✅ ${table}: Table exists and accessible`);
+                        }
+                    } catch (e) {
+                        results.push(`❌ ${table}: ${e.message}`);
+                    }
+                }
+
+                div.innerHTML = `
+                    <div class="status ${results.some(r => r.includes('❌')) ? 'error' : 'success'}>
+                        ${results.join('<br>')}
+                    </div>
+                `;
+            } catch (error) {
+                div.innerHTML = `<div class="status error">❌ Error: ${error.message}</div>`;
+            }
+        }
+
+        // Test 5: Games Endpoint
+        async function testGames() {
+            const div = document.getElementById('gamesStatus');
+            div.innerHTML = '<div class="status">Testing...</div>';
+            try {
+                const response = await fetch(`${apiUrl}/games/list`, {
+                    signal: AbortSignal.timeout(10000)
+                });
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    div.innerHTML = `<div class="status error">❌ Games endpoint error: ${response.status} - ${errorText}</div>`;
+                    return;
+                }
+                
+                const data = await response.json();
+                div.innerHTML = `
+                    <div class="status success">
+                        ✅ Games endpoint working!<br>
+                        Found ${data.games ? data.games.length : 0} games<br>
+                        <pre>${JSON.stringify(data, null, 2)}</pre>
+                    </div>
+                `;
+            } catch (error) {
+                div.innerHTML = `
+                    <div class="status error">
+                        ❌ Games endpoint failed!<br>
+                        Error: ${error.message}<br>
+                        <strong>Solution:</strong> Start the server with <code>npm start</code>
+                    </div>
+                `;
+            }
+        }
+
+        // Test 6: Chats Table
+        async function testChats() {
+            const div = document.getElementById('chatsStatus');
+            div.innerHTML = '<div class="status">Testing...</div>';
+            try {
+                const { data: { session } } = await supabase.auth.getSession();
+                if (!session) {
+                    div.innerHTML = '<div class="status warning">⚠️ Please login first</div>';
+                    return;
+                }
+
+                const { data, error } = await supabase
+                    .from('chats')
+                    .select('*')
+                    .eq('user_id', session.user.id)
+                    .limit(5);
+
+                if (error) {
+                    if (error.message && error.message.includes('does not exist')) {
+                        div.innerHTML = `
+                            <div class="status error">
+                                ❌ Chats table doesn't exist!<br>
+                                <strong>Solution:</strong> Run SUPABASE_SETUP.sql in Supabase SQL Editor
+                            </div>
+                        `;
+                    } else if (error.message && error.message.includes('permission')) {
+                        div.innerHTML = `
+                            <div class="status error">
+                                ❌ Permission denied!<br>
+                                <strong>Solution:</strong> Check RLS policies for chats table
+                            </div>
+                        `;
+                    } else {
+                        div.innerHTML = `<div class="status error">❌ Error: ${error.message}</div>`;
+                    }
+                } else {
+                    div.innerHTML = `
+                        <div class="status success">
+                            ✅ Chats table accessible!<br>
+                            Found ${data ? data.length : 0} chats<br>
+                            <pre>${JSON.stringify(data, null, 2)}</pre>
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                div.innerHTML = `<div class="status error">❌ Error: ${error.message}</div>`;
+            }
+        }
+
+        // Test 7: Messages Table
+        async function testMessages() {
+            const div = document.getElementById('messagesStatus');
+            div.innerHTML = '<div class="status">Testing...</div>';
+            try {
+                const { data: { session } } = await supabase.auth.getSession();
+                if (!session) {
+                    div.innerHTML = '<div class="status warning">⚠️ Please login first</div>';
+                    return;
+                }
+
+                // Try to query messages
+                const { data, error } = await supabase
+                    .from('messages')
+                    .select('*')
+                    .eq('user_id', session.user.id)
+                    .limit(5);
+
+                if (error) {
+                    if (error.message && error.message.includes('does not exist')) {
+                        div.innerHTML = `
+                            <div class="status error">
+                                ❌ Messages table doesn't exist!<br>
+                                <strong>Solution:</strong> Run FIX_MESSAGES_TABLE.sql in Supabase SQL Editor
+                            </div>
+                        `;
+                    } else if (error.message && error.message.includes('permission')) {
+                        div.innerHTML = `
+                            <div class="status error">
+                                ❌ Permission denied!<br>
+                                <strong>Solution:</strong> Check RLS policies for messages table
+                            </div>
+                        `;
+                    } else {
+                        div.innerHTML = `<div class="status error">❌ Error: ${error.message}</div>`;
+                    }
+                } else {
+                    div.innerHTML = `
+                        <div class="status success">
+                            ✅ Messages table accessible!<br>
+                            Found ${data ? data.length : 0} messages<br>
+                            <pre>${JSON.stringify(data, null, 2)}</pre>
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                div.innerHTML = `<div class="status error">❌ Error: ${error.message}</div>`;
+            }
+        }
+
+        // Run initial checks
+        window.addEventListener('DOMContentLoaded', () => {
+            checkSupabaseConfig();
+            checkAuth();
+            testServer();
+        });
+    </script>
+</body>
+</html>
+
+
+

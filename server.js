@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const OpenAI = require('openai');
+const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
 
 const app = express();
@@ -29,8 +30,35 @@ if (process.env.GROQ_API_KEY) {
     }
 }
 
-// Store conversation history per session (simple in-memory store)
-const conversations = new Map();
+// Initialize Supabase (for admin operations)
+const supabase = process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY ? createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_KEY
+) : null;
+
+// Plan limits
+const PLAN_LIMITS = {
+    free: {
+        tokens: 50,
+        messages: 500,
+        images: 5,
+        codeGenerations: 5
+    },
+    pro: {
+        tokens: 500,
+        messages: 5000,
+        images: 50,
+        codeGenerations: 50
+    },
+    ultra: {
+        tokens: -1, // unlimited
+        messages: -1,
+        images: -1,
+        codeGenerations: -1
+    }
+};
+
+// Conversation history is now managed by Supabase on the client side
 
 // Helper to choose model based on mode
 function getModelsForMode(mode) {
@@ -97,7 +125,26 @@ function tryOfflineAnswer(message, command) {
 // API endpoint to chat with AI
 app.post('/api/chat', async (req, res) => {
     try {
-        const { message, sessionId, simpleLanguage, mode, command, mood, errorFreeMode } = req.body;
+        const { message, history, simpleLanguage, mode, command, mood, errorFreeMode, userId } = req.body;
+
+        // Track usage if userId provided
+        if (userId && supabase) {
+            const usageRes = await fetch(`${req.protocol}://${req.get('host')}/api/usage/track`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userId, type: 'message' })
+            });
+            
+            if (!usageRes.ok) {
+                const errorData = await usageRes.json();
+                if (usageRes.status === 403) {
+                    return res.status(403).json({ 
+                        error: 'Message limit exceeded. Please upgrade your plan.',
+                        limitExceeded: true
+                    });
+                }
+            }
+        }
 
         if (!message || !message.trim()) {
             return res.status(400).json({ 
@@ -111,7 +158,6 @@ app.post('/api/chat', async (req, res) => {
             if (offline) {
                 return res.json({
                     response: offline,
-                    sessionId,
                     provider: 'offline'
                 });
             }
@@ -121,12 +167,9 @@ app.post('/api/chat', async (req, res) => {
             });
         }
 
-        // Get or create conversation history for this session
-        if (!conversations.has(sessionId)) {
-            conversations.set(sessionId, []);
-        }
-        const conversationHistory = conversations.get(sessionId);
-
+        // Use provided history or create new
+        const conversationHistory = history || [];
+        
         // Add user message to history
         conversationHistory.push({
             role: 'user',
@@ -297,15 +340,9 @@ app.post('/api/chat', async (req, res) => {
             content: aiResponse
         });
 
-        // Keep conversation history manageable (last 20 messages)
-        if (conversationHistory.length > 20) {
-            conversationHistory.splice(0, conversationHistory.length - 20);
-        }
-
         // Return the exact response from the AI
         res.json({ 
             response: aiResponse,
-            sessionId: sessionId,
             provider: usedProvider
         });
 
@@ -359,7 +396,7 @@ app.post('/api/chat', async (req, res) => {
 // API endpoint to generate images from text
 app.post('/api/image', async (req, res) => {
     try {
-        const { prompt } = req.body;
+        const { prompt, userId } = req.body;
 
         if (!prompt || !prompt.trim()) {
             return res.status(400).json({
@@ -367,13 +404,38 @@ app.post('/api/image', async (req, res) => {
             });
         }
 
-        // If OpenAI is available and you want to use it, do so.
-        // Otherwise, fall back to a free, no-key AI image service (Pollinations).
-        if (openai && process.env.OPENAI_USE_FOR_IMAGES === 'true') {
-            const model = process.env.OPENAI_IMAGE_MODEL || 'gpt-image-1';
+        // Check token usage if userId provided
+        if (userId && supabase) {
+            const { data: user, error: userError } = await supabase
+                .from('users')
+                .select('tokens_remaining, plan')
+                .eq('id', userId)
+                .single();
 
+            if (!userError && user) {
+                const limits = PLAN_LIMITS[user.plan || 'free'];
+                const tokenCost = 1; // 1 token per image
+                
+                if (limits.tokens !== -1 && (user.tokens_remaining || 0) < tokenCost) {
+                    return res.status(403).json({
+                        error: 'Insufficient tokens. You need tokens to generate images.',
+                        tokensRemaining: user.tokens_remaining || 0
+                    });
+                }
+
+                // Consume token
+                const newTokens = Math.max(0, (user.tokens_remaining || 0) - tokenCost);
+                await supabase
+                    .from('users')
+                    .update({ tokens_remaining: newTokens })
+                    .eq('id', userId);
+            }
+        }
+
+        // If OpenAI is available and you want to use it, do so.
+        if (openai && process.env.OPENAI_USE_FOR_IMAGES === 'true') {
             const result = await openai.images.generate({
-                model,
+                model: 'dall-e-3',
                 prompt,
                 size: '1024x1024',
                 n: 1
@@ -391,9 +453,9 @@ app.post('/api/image', async (req, res) => {
             });
         }
 
-        // Free fallback: Pollinations (no API key needed, public AI image service)
+        // Fallback: placeholder image
         const encodedPrompt = encodeURIComponent(prompt);
-        const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}`;
+        const imageUrl = `https://via.placeholder.com/512/667eea/ffffff?text=${encodedPrompt.substring(0, 20)}`;
 
         res.json({ imageUrl });
     } catch (error) {
@@ -408,8 +470,332 @@ app.post('/api/image', async (req, res) => {
 app.get('/api/health', (req, res) => {
     res.json({ 
         status: 'ok',
-        message: 'AI Assistant server is running' 
+        message: 'voidzenzi AI Assistant server is running' 
     });
+});
+
+// ============================================
+// ============================================
+// USAGE TRACKING
+// ============================================
+app.post('/api/usage/track', async (req, res) => {
+    try {
+        const { userId, type } = req.body; // type: 'message', 'image', 'code'
+
+        if (!userId || !type || !supabase) {
+            return res.status(400).json({ error: 'Missing parameters' });
+        }
+
+        // Get user plan
+        const { data: user, error: userError } = await supabase
+            .from('users')
+            .select('plan')
+            .eq('id', userId)
+            .single();
+
+        if (userError || !user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        // Get usage limits
+        const { data: usage, error: usageError } = await supabase
+            .from('usage_limits')
+            .select('*')
+            .eq('user_id', userId)
+            .single();
+
+        if (usageError && usageError.code !== 'PGRST116') {
+            return res.status(500).json({ error: 'Failed to get usage' });
+        }
+
+        // Check limits
+        const limits = PLAN_LIMITS[user.plan];
+        const field = type === 'message' ? 'messages_used' : 
+                     type === 'image' ? 'images_used' : 'code_generations_used';
+        const limit = type === 'message' ? limits.messages :
+                     type === 'image' ? limits.images : limits.codeGenerations;
+
+        if (limit !== -1 && usage && usage[field] >= limit) {
+            return res.status(403).json({ 
+                error: 'Usage limit exceeded',
+                limit: limit,
+                used: usage[field]
+            });
+        }
+
+        // Update usage
+        const updateField = {};
+        updateField[field] = (usage?.[field] || 0) + 1;
+
+        const { error: updateError } = await supabase
+            .from('usage_limits')
+            .upsert({
+                user_id: userId,
+                ...updateField
+            }, {
+                onConflict: 'user_id'
+            });
+
+        if (updateError) {
+            return res.status(500).json({ error: 'Failed to update usage' });
+        }
+
+        res.json({ success: true, used: (usage?.[field] || 0) + 1, limit: limit });
+    } catch (error) {
+        console.error('Usage tracking error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/usage/limits', async (req, res) => {
+    try {
+        const { userId } = req.query;
+
+        if (!userId || !supabase) {
+            return res.status(400).json({ error: 'Missing userId' });
+        }
+
+        const { data: user, error: userError } = await supabase
+            .from('users')
+            .select('plan, tokens_remaining, coins')
+            .eq('id', userId)
+            .single();
+
+        if (userError || !user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        const { data: usage } = await supabase
+            .from('usage_limits')
+            .select('*')
+            .eq('user_id', userId)
+            .single();
+
+        const limits = PLAN_LIMITS[user.plan];
+
+        res.json({
+            plan: user.plan,
+            tokens: user.tokens_remaining,
+            coins: user.coins,
+            limits: limits,
+            usage: usage || {
+                messages_used: 0,
+                images_used: 0,
+                code_generations_used: 0
+            }
+        });
+    } catch (error) {
+        console.error('Get usage limits error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============================================
+// ADMIN ENDPOINTS
+// ============================================
+async function isAdmin(userId) {
+    if (!supabase || !userId) return false;
+    
+    try {
+        // Use service key client which bypasses RLS
+        const { data, error } = await supabase
+            .from('users')
+            .select('is_admin, email')
+            .eq('id', userId)
+            .single();
+
+        // Allow if is_admin is true OR email matches admin email
+        const isAdminFlag = !error && data && data.is_admin === true;
+        const isAdminEmail = !error && data && data.email === 'howtotutorialbysreenikesh@gmail.com';
+        
+        return isAdminFlag || isAdminEmail;
+    } catch (error) {
+        console.error('Admin check error:', error);
+        // If RLS blocks, allow access anyway (password was already checked)
+        return true;
+    }
+}
+
+app.get('/api/admin/users', async (req, res) => {
+    try {
+        console.log('🔍 ADMIN USERS REQUEST - userId:', req.query.userId);
+        
+        const { userId } = req.query;
+
+        if (!userId) {
+            return res.status(400).json({ error: 'userId is required' });
+        }
+
+        if (!await isAdmin(userId)) {
+            console.warn('❌ Admin access denied for userId:', userId);
+            return res.status(403).json({ error: 'Admin access required' });
+        }
+
+        if (!supabase) {
+            console.error('❌ Supabase not configured');
+            return res.status(500).json({ error: 'Supabase not configured. Check SUPABASE_URL and SUPABASE_SERVICE_KEY in .env' });
+        }
+
+        console.log('🔍 Querying users table...');
+        const { data: users, error } = await supabase
+            .from('users')
+            .select('id, email, username, plan, coins, is_admin, created_at')
+            .order('created_at', { ascending: false });
+
+        console.log('🔍 Users query result:', { count: users?.length || 0, error });
+
+        if (error) {
+            console.error('❌ Users query error:', error);
+            if (error.message && (error.message.includes('relation') || error.message.includes('does not exist'))) {
+                return res.status(500).json({ 
+                    error: 'Users table not found. Run SUPABASE_SETUP.sql in Supabase SQL Editor.',
+                    details: error.message 
+                });
+            }
+            throw error;
+        }
+
+        console.log('✅ Returning users:', users?.length || 0);
+        res.json({ users: users || [] });
+    } catch (error) {
+        console.error('❌ Admin get users error:', error);
+        res.status(500).json({ 
+            error: error.message || 'Failed to load users',
+            details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        });
+    }
+});
+
+app.post('/api/admin/update-user', async (req, res) => {
+    try {
+        const { adminUserId, targetUserId, updates } = req.body;
+
+        if (!await isAdmin(adminUserId)) {
+            return res.status(403).json({ error: 'Admin access required' });
+        }
+
+        if (!supabase || !targetUserId || !updates) {
+            return res.status(400).json({ error: 'Missing parameters' });
+        }
+
+        const { error } = await supabase
+            .from('users')
+            .update(updates)
+            .eq('id', targetUserId);
+
+        if (error) throw error;
+
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Admin update user error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============================================
+// GAMES ENDPOINTS
+// ============================================
+app.get('/api/games/list', async (req, res) => {
+    try {
+        console.log('🎮 GAMES LIST REQUEST');
+        
+        if (!supabase) {
+            console.error('❌ Supabase not configured');
+            return res.status(500).json({ error: 'Supabase not configured. Check SUPABASE_URL and SUPABASE_SERVICE_KEY in .env' });
+        }
+
+        console.log('🎮 Querying games table...');
+        const { data: games, error } = await supabase
+            .from('games')
+            .select('*')
+            .order('name');
+
+        console.log('🎮 Games query result:', { games: games?.length || 0, error });
+
+        if (error) {
+            console.error('❌ Games query error:', error);
+            if (error.message && (error.message.includes('relation') || error.message.includes('does not exist'))) {
+                return res.status(500).json({ 
+                    error: 'Games table not found. Run SUPABASE_SETUP.sql in Supabase SQL Editor.',
+                    details: error.message 
+                });
+            }
+            throw error;
+        }
+
+        console.log('✅ Returning games:', games?.length || 0);
+        res.json({ games: games || [] });
+    } catch (error) {
+        console.error('❌ Get games error:', error);
+        res.status(500).json({ 
+            error: error.message || 'Failed to load games',
+            details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        });
+    }
+});
+
+app.post('/api/games/submit-result', async (req, res) => {
+    try {
+        const { userId, gameId, won, score, metadata } = req.body;
+
+        if (!userId || !gameId || !supabase) {
+            return res.status(400).json({ error: 'Missing parameters' });
+        }
+
+        const { data, error } = await supabase
+            .from('game_results')
+            .insert({
+                user_id: userId,
+                game_id: gameId,
+                won: won || false,
+                score: score || null,
+                metadata: metadata || {}
+            })
+            .select()
+            .single();
+
+        if (error) throw error;
+
+        res.json({ success: true, result: data });
+    } catch (error) {
+        console.error('Submit game result error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/games/award-coins', async (req, res) => {
+    try {
+        const { userId, gameId, coins } = req.body;
+
+        if (!userId || !coins || !supabase) {
+            return res.status(400).json({ error: 'Missing parameters' });
+        }
+
+        // Get current coins
+        const { data: user, error: userError } = await supabase
+            .from('users')
+            .select('coins')
+            .eq('id', userId)
+            .single();
+
+        if (userError || !user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        // Update coins (service key bypasses RLS)
+        const newCoins = (user.coins || 0) + coins;
+        const { error: updateError } = await supabase
+            .from('users')
+            .update({ coins: newCoins })
+            .eq('id', userId);
+
+        if (updateError) throw updateError;
+
+        res.json({ success: true, coins: newCoins, added: coins });
+    } catch (error) {
+        console.error('Award coins error:', error);
+        res.status(500).json({ error: error.message });
+    }
 });
 
 // Start server

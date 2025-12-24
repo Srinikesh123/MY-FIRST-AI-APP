@@ -3,14 +3,109 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Assistant</title>
+    <title>voidzenzi - AI Assistant</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+    <!-- Sidebar for Chats -->
+    <div class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <h3>voidzenzi</h3>
+            <button id="closeSidebarBtn" class="icon-btn-small" title="Close">×</button>
+        </div>
+        <div class="chats-list" id="chatsList">
+            <div class="loading-chats">Loading chats...</div>
+        </div>
+    </div>
+    <div class="sidebar-overlay" id="sidebarOverlay"></div>
+
+    <!-- Chat Name Modal -->
+    <div class="modal" id="chatNameModal">
+        <div class="modal-content">
+            <h2>Create New Chat</h2>
+            <p>Please enter a name for this chat before sending your first message.</p>
+            <input type="text" id="chatNameInput" placeholder="Enter chat name..." autocomplete="off">
+            <div class="modal-actions">
+                <button id="createChatBtn" class="btn-primary">Create Chat</button>
+                <button id="cancelChatBtn" class="btn-secondary">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Admin Password Modal -->
+    <div class="modal" id="adminPasswordModal">
+        <div class="modal-content">
+            <h2>Admin Access</h2>
+            <p>Enter admin password to access the admin panel.</p>
+            <input type="password" id="adminPasswordInput" placeholder="Enter password..." autocomplete="off">
+            <div id="adminPasswordError" class="error-message" style="display: none; color: #c33; margin-top: 10px;"></div>
+            <div class="modal-actions">
+                <button id="adminPasswordSubmit" class="btn-primary">Enter</button>
+                <button id="adminPasswordCancel" class="btn-secondary">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Mini-Games Modal -->
+    <div class="modal" id="gamesModal">
+        <div class="modal-content games-modal">
+            <h2>🎮 Mini-Games</h2>
+            <p>Play games to earn coins! Win to get rewards.</p>
+            <div class="games-grid" id="gamesGrid">
+                <!-- Games will load here instantly -->
+            </div>
+            <div class="modal-actions">
+                <button id="closeGamesBtn" class="btn-secondary">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Shop Modal -->
+    <div class="modal" id="shopModal">
+        <div class="modal-content shop-modal">
+            <h2>🛒 Upgrade Plan</h2>
+            <p>Use your coins to unlock premium features!</p>
+            <div class="shop-plans">
+                <div class="shop-plan-card">
+                    <h3>Pro Plan</h3>
+                    <div class="plan-price">🪙 500 coins</div>
+                    <ul class="plan-features">
+                        <li>500 tokens</li>
+                        <li>5,000 messages</li>
+                        <li>50 images</li>
+                        <li>50 code generations</li>
+                    </ul>
+                    <button class="btn-primary buy-plan-btn" data-plan="pro" data-price="500">Buy Pro</button>
+                </div>
+                <div class="shop-plan-card">
+                    <h3>Ultra Plan</h3>
+                    <div class="plan-price">🪙 10,000 coins</div>
+                    <ul class="plan-features">
+                        <li>Unlimited tokens</li>
+                        <li>Unlimited messages</li>
+                        <li>Unlimited images</li>
+                        <li>Unlimited code generations</li>
+                    </ul>
+                    <button class="btn-primary buy-plan-btn" data-plan="ultra" data-price="10000">Buy Ultra</button>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button id="closeShopBtn" class="btn-secondary">Close</button>
+            </div>
+        </div>
+    </div>
+
     <div class="container">
         <header>
             <div class="header-left">
-                <h1>AI Assistant</h1>
+                <button id="toggleSidebarBtn" class="icon-btn" title="Toggle Sidebar">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="3" y1="12" x2="21" y2="12"></line>
+                        <line x1="3" y1="6" x2="21" y2="6"></line>
+                        <line x1="3" y1="18" x2="21" y2="18"></line>
+                    </svg>
+                </button>
+                <h1>voidzenzi</h1>
                 <button id="newChatBtn" class="icon-btn" title="New Chat">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <line x1="12" y1="5" x2="12" y2="19"></line>
@@ -19,15 +114,38 @@
                 </button>
             </div>
             <div class="controls">
+                <div class="coin-counter" id="coinCounter" title="Your Coins">
+                    🪙 <span id="coinAmount">0</span>
+                </div>
                 <label class="toggle-switch">
                     <input type="checkbox" id="simpleLanguage">
                     <span class="slider"></span>
                     <span class="label-text">Simple Language</span>
                 </label>
+                <button id="gamesBtn" class="icon-btn" title="Mini-Games">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="2" y="2" width="20" height="20" rx="5" ry="5"></rect>
+                        <path d="M12 8v8M8 12h8"></path>
+                    </svg>
+                </button>
                 <button id="settingsBtn" class="icon-btn" title="Settings">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <circle cx="12" cy="12" r="3"></circle>
                         <path d="M12 1v6m0 6v6m9-9h-6m-6 0H3m15.364 6.364l-4.243-4.243m-4.242 0l-4.243 4.243m8.485 0l-4.243-4.243m-4.242 0l-4.243 4.243"></path>
+                    </svg>
+                </button>
+                <button id="adminBtn" class="icon-btn" title="Admin Panel">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+                        <path d="M2 17l10 5 10-5"></path>
+                        <path d="M2 12l10 5 10-5"></path>
+                    </svg>
+                </button>
+                <button id="logoutBtn" class="icon-btn" title="Logout">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                        <polyline points="16 17 21 12 16 7"></polyline>
+                        <line x1="21" y1="12" x2="9" y2="12"></line>
                     </svg>
                 </button>
             </div>
@@ -36,14 +154,38 @@
         
         <!-- Chat View -->
         <div id="chatView" class="view active">
+            <div class="chat-header" id="chatHeader" style="display: none;">
+                <div class="chat-header-info">
+                    <h3 id="currentChatTitle">Chat</h3>
+                    <span class="chat-memory-status" id="chatMemoryStatus"></span>
+                </div>
+                <div class="chat-header-actions">
+                    <button id="deleteChatBtn" class="btn-danger btn-small" title="Delete Chat">🗑️ Delete</button>
+                </div>
+            </div>
             <div class="chat-container" id="chatContainer">
                 <div class="welcome-message">
-                    <p>Hello! I'm your AI assistant. I'm here to help with clear, honest answers.</p>
-                    <p>Ask me anything, and I'll do my best to help you.</p>
+                    <p>Hello! I'm your voidzenzi AI assistant. I'm here to help with clear, honest answers.</p>
+                    <p>Click "New Chat" to start a conversation, or select an existing chat from the sidebar.</p>
                 </div>
             </div>
             
             <div class="input-container">
+                <button id="shopBtn" class="icon-btn shop-btn" title="Shop - Upgrade Plan" style="margin-right: 8px;">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"></path>
+                        <line x1="3" y1="6" x2="21" y2="6"></line>
+                        <path d="M16 10a4 4 0 0 1-8 0"></path>
+                    </svg>
+                </button>
+                <div id="usageCircle" class="usage-circle" title="Usage Limits">
+                    <svg width="24" height="24" viewBox="0 0 24 24">
+                        <circle cx="12" cy="12" r="10" stroke="#e0e0e0" stroke-width="2" fill="none"/>
+                        <circle id="usageProgress" cx="12" cy="12" r="10" stroke="#667eea" stroke-width="2" fill="none" 
+                                stroke-dasharray="62.83" stroke-dashoffset="62.83" transform="rotate(-90 12 12)"/>
+                    </svg>
+                    <span id="usageText" class="usage-text">0%</span>
+                </div>
                 <input 
                     type="text" 
                     id="userInput" 
@@ -64,6 +206,16 @@
                         <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
                     </svg>
                 </button>
+            </div>
+            
+            <!-- User Profile Widget (Bottom Left) -->
+            <div id="userProfileWidget" class="user-profile-widget" style="display: none;">
+                <div class="user-profile-avatar">👤</div>
+                <div class="user-profile-info">
+                    <div id="userProfileName" class="user-profile-name">Loading...</div>
+                    <div id="userProfileTier" class="user-profile-tier">Free</div>
+                    <div id="userProfileCoins" class="user-profile-coins">🪙 0 coins</div>
+                </div>
             </div>
         </div>
 
@@ -370,10 +522,60 @@
                     </div>
                 </div>
 
+                <!-- Memory Settings -->
+                <div class="settings-section">
+                    <h3>🧠 Memory</h3>
+                    
+                    <div class="setting-item">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="memoryEnabled">
+                            <span class="slider"></span>
+                            <span class="label-text">Store memory for this chat</span>
+                        </label>
+                        <small>When ON: AI remembers context. When OFF: No memory stored.</small>
+                        <div class="memory-status" id="memoryStatus" style="margin-top: 10px; padding: 8px; border-radius: 4px; background: #f0f0f0;">
+                            <strong>Status:</strong> <span id="memoryStatusText">OFF - No memory stored</span>
+                        </div>
+                    </div>
+
+                    <div class="setting-item">
+                        <button id="clearMemoryBtn" class="btn-danger">Clear All Memory</button>
+                        <small>Delete all stored memory data from Supabase</small>
+                    </div>
+                </div>
+
+                <!-- Referral System -->
+                <div class="settings-section">
+                    <h3>🎁 Referral System</h3>
+                    
+                    <div class="setting-item">
+                        <label>Your Referral Code</label>
+                        <div class="referral-code-display">
+                            <input type="text" id="referralCodeDisplay" readonly style="font-family: monospace; font-weight: bold; letter-spacing: 2px;">
+                            <button id="copyReferralBtn" class="btn-secondary btn-small">Copy</button>
+                        </div>
+                        <small>Share this code with friends! Get Pro at 3 invites, Ultra at 10 invites.</small>
+                    </div>
+
+                    <div class="setting-item">
+                        <label>Your Invites</label>
+                        <div class="invite-progress">
+                            <div class="progress-bar">
+                                <div class="progress-fill" id="inviteProgressBar" style="width: 0%;"></div>
+                            </div>
+                            <div class="progress-text">
+                                <span id="inviteCount">0</span> / 10 invites
+                                <span id="inviteStatus" style="margin-left: 10px; font-weight: bold; color: #667eea;"></span>
+                            </div>
+                        </div>
+                        <small>Current Plan: <strong id="currentPlanDisplay">Free</strong></small>
+                    </div>
+                </div>
+
                 <!-- Actions -->
                 <div class="settings-section">
                     <h3>Actions</h3>
-                    <button id="clearChatBtn" class="btn-danger">Clear Chat History</button>
+                    <button id="clearChatBtn" class="btn-danger">Clear Current Chat</button>
                 </div>
 
                 <div class="settings-actions">
@@ -384,6 +586,23 @@
                 <div id="settingsMessage" class="settings-message"></div>
             </div>
         </div>
+    </div>
+    
+    <!-- Footer Branding (voidzen.ai for free users only) -->
+    <footer class="footer-branding">voidzen.ai</footer>
+    
+    <!-- Debug Panel (temporary) -->
+    <div id="debugPanel" style="position: fixed; bottom: 10px; left: 10px; background: rgba(0,0,0,0.8); color: #0f0; padding: 10px; border-radius: 6px; font-size: 11px; font-family: monospace; z-index: 9999; max-width: 300px; max-height: 200px; overflow-y: auto; display: none;">
+        <div style="font-weight: bold; margin-bottom: 5px;">🐛 DEBUG PANEL</div>
+        <div>User ID: <span id="debugUserId">-</span></div>
+        <div>Active Chat: <span id="debugChatId">-</span></div>
+        <div>Chats Loaded: <span id="debugChatsCount">0</span></div>
+        <div>Messages Loaded: <span id="debugMessagesCount">0</span></div>
+        <div>Coins: <span id="debugCoins">0</span></div>
+        <div>Plan: <span id="debugPlan">-</span></div>
+        <div>Memory: <span id="debugMemory">OFF</span></div>
+        <div>Admin: <span id="debugAdmin">-</span></div>
+        <button onclick="document.getElementById('debugPanel').style.display='none'" style="margin-top: 5px; padding: 2px 5px; font-size: 10px;">Hide</button>
     </div>
     
     <script>

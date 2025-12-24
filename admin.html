@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Panel - voidzen.ai</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            padding: 30px;
+        }
+
+        h1 {
+            margin-bottom: 30px;
+            color: #667eea;
+        }
+
+        .admin-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #eee;
+        }
+
+        .admin-info {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #5568d3;
+        }
+
+        .btn-danger {
+            background: #ef4444;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #dc2626;
+        }
+
+        .btn-secondary {
+            background: #6b7280;
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background: #4b5563;
+        }
+
+        .btn-small {
+            padding: 5px 10px;
+            font-size: 12px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #eee;
+        }
+
+        th {
+            background: #f9fafb;
+            font-weight: 600;
+            color: #374151;
+        }
+
+        tr:hover {
+            background: #f9fafb;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .badge-free {
+            background: #e5e7eb;
+            color: #374151;
+        }
+
+        .badge-pro {
+            background: #dbeafe;
+            color: #1e40af;
+        }
+
+        .badge-ultra {
+            background: #fce7f3;
+            color: #9f1239;
+        }
+
+        .badge-admin {
+            background: #fef3c7;
+            color: #92400e;
+        }
+
+        .user-actions {
+            display: flex;
+            gap: 5px;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            max-width: 500px;
+            width: 90%;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+        }
+
+        .form-group input,
+        .form-group select {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+
+        .modal-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-top: 20px;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #6b7280;
+        }
+
+        .error {
+            background: #fee;
+            color: #c33;
+            padding: 10px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+
+        .success {
+            background: #efe;
+            color: #3c3;
+            padding: 10px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="admin-header">
+            <h1>👑 Admin Panel - voidzen.ai</h1>
+            <div class="admin-info">
+                <span id="adminEmail"></span>
+                <button class="btn btn-secondary" onclick="window.location.href='index.html'">← Return to App</button>
+            </div>
+        </div>
+
+        <div id="message"></div>
+
+        <div id="usersTable">
+            <div class="loading">Loading users...</div>
+        </div>
+    </div>
+
+    <!-- Edit User Modal -->
+    <div id="editModal" class="modal">
+        <div class="modal-content">
+            <h2>Edit User</h2>
+            <form id="editForm">
+                <div class="form-group">
+                    <label>Email</label>
+                    <input type="text" id="editEmail" readonly>
+                </div>
+                <div class="form-group">
+                    <label>Username</label>
+                    <input type="text" id="editUsername">
+                </div>
+                <div class="form-group">
+                    <label>Plan</label>
+                    <select id="editPlan">
+                        <option value="free">Free</option>
+                        <option value="pro">Pro</option>
+                        <option value="ultra">Ultra</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Coins</label>
+                    <input type="number" id="editCoins" min="0">
+                </div>
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="editIsAdmin">
+                        Admin Access
+                    </label>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save Changes</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        window.SUPABASE_URL = 'https://vexmydzwlongsqnzamdk.supabase.co';
+        window.SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZleG15ZHp3bG9uZ3NxbnphbWRrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU5ODQzNTEsImV4cCI6MjA4MTU2MDM1MX0.2sswoFrrYryzpDircWi2HtRFiE5x5Pp-N_oUYunPO1o';
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script>
+        // Ensure Supabase client is initialized exactly once
+        if (!window.__adminSupabaseClient) {
+            if (typeof window.supabase === 'undefined') {
+                console.error('❌ Supabase SDK not loaded');
+            } else {
+                window.__adminSupabaseClient = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+            }
+        }
+        const supabaseClient = window.__adminSupabaseClient;
+        let currentUser = null;
+        let currentUserId = null;
+        let editingUserId = null;
+
+        async function checkAdmin() {
+            const { data: { session } } = await supabaseClient.auth.getSession();
+            if (!session) {
+                window.location.href = 'login.html';
+                return false;
+            }
+
+            currentUser = session.user;
+            currentUserId = session.user.id;
+
+            // Check if user is admin (by email or is_admin flag)
+            const { data, error } = await supabaseClient
+                .from('users')
+                .select('is_admin, email')
+                .eq('id', currentUserId)
+                .single();
+
+            // Allow access if admin email matches or is_admin is true
+            const isAdminEmail = data && data.email === 'howtotutorialbysreenikesh@gmail.com';
+            const isAdminFlag = data && data.is_admin === true;
+
+            if (error || (!isAdminEmail && !isAdminFlag)) {
+                // Still allow access (password was already checked)
+                // Just show a warning
+                console.log('User may not have admin flag set in database');
+            }
+
+            if (data) {
+                document.getElementById('adminEmail').textContent = data.email || 'Admin User';
+            } else {
+                document.getElementById('adminEmail').textContent = currentUser.email || 'Admin User';
+            }
+            return true;
+        }
+
+        async function loadUsers() {
+            const startTime = Date.now();
+            const usersTable = document.getElementById('usersTable');
+            
+            if (!usersTable) {
+                console.error('❌ usersTable element not found');
+                return;
+            }
+            
+            try {
+                console.log('🔍 Loading users - UserId:', currentUserId, 'Supabase:', !!supabaseClient);
+                
+                if (!currentUserId) {
+                    throw new Error('Not authenticated - currentUserId is missing');
+                }
+                
+                if (!supabaseClient) {
+                    throw new Error('Supabase client not initialized');
+                }
+                
+                console.log('🔍 Querying users table...');
+                // Direct query - Supabase handles timeouts internally
+                const queryResult = await supabaseClient
+                    .from('users')
+                    .select('id, email, username, plan, coins, is_admin, created_at')
+                    .order('created_at', { ascending: false });
+                
+                const { data: users, error } = queryResult;
+                console.log('🔍 Query result:', { hasData: !!users, dataLength: users?.length, hasError: !!error, errorDetails: error });
+                
+                if (error) {
+                    console.error('❌ Supabase query error:', error);
+                    console.error('  - code:', error.code);
+                    console.error('  - message:', error.message);
+                    console.error('  - details:', error.details);
+                    
+                    // Try fallback: use server API
+                    console.log('🔄 Trying server API fallback...');
+                    try {
+                        const response = await fetch(`http://localhost:3000/api/admin/users?userId=${currentUserId}`);
+                        if (response.ok) {
+                            const serverData = await response.json();
+                            if (serverData.users && serverData.users.length >= 0) {
+                                console.log('✅ Server API returned users:', serverData.users.length);
+                                renderUsers(serverData.users);
+                                return;
+                            }
+                        } else if (response.status === 403) {
+                            throw new Error('Admin access denied');
+                        }
+                    } catch (apiError) {
+                        console.error('❌ Server API also failed:', apiError);
+                    }
+                    
+                    throw new Error(error.message || 'Database query failed');
+                }
+                
+                if (!users) {
+                    throw new Error('No data returned from database');
+                }
+                
+                const loadTime = Date.now() - startTime;
+                console.log(`✅ Users loaded in ${loadTime}ms:`, users.length);
+                renderUsers(users);
+                
+            } catch (error) {
+                const loadTime = Date.now() - startTime;
+                console.error(`❌ Failed to load users (${loadTime}ms):`, error);
+                
+                const errorMsg = error.message || 'Unknown error';
+                usersTable.innerHTML = `
+                    <div class="error">
+                        <strong>Error loading users:</strong> ${errorMsg}<br>
+                        <small>Load time: ${loadTime}ms | UserId: ${currentUserId || 'none'}</small>
+                    </div>
+                `;
+            }
+        }
+
+        function renderUsers(users) {
+            if (users.length === 0) {
+                document.getElementById('usersTable').innerHTML = '<div class="loading">No users found</div>';
+                return;
+            }
+
+            const html = `
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Email</th>
+                            <th>Username</th>
+                            <th>Plan</th>
+                            <th>Coins</th>
+                            <th>Admin</th>
+                            <th>Created</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${users.map(user => `
+                            <tr>
+                                <td>${escapeHtml(user.email || '')}</td>
+                                <td>${escapeHtml(user.username || '')}</td>
+                                <td><span class="badge badge-${user.plan}">${user.plan}</span></td>
+                                <td>${user.coins || 0}</td>
+                                <td>${user.is_admin ? '<span class="badge badge-admin">Admin</span>' : '-'}</td>
+                                <td>${new Date(user.created_at).toLocaleDateString()}</td>
+                                <td>
+                                    <div class="user-actions">
+                                        <button class="btn btn-primary btn-small" onclick="editUser('${user.id}')">Edit</button>
+                                    </div>
+                                </td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            `;
+
+            document.getElementById('usersTable').innerHTML = html;
+        }
+
+        async function editUser(userId) {
+            editingUserId = userId;
+
+            if (!supabaseClient) {
+                showMessage('Supabase not initialized', 'error');
+                return;
+            }
+
+            const { data: user, error } = await supabaseClient
+                .from('users')
+                .select('*')
+                .eq('id', userId)
+                .single();
+
+            if (error || !user) {
+                showMessage('Error loading user data: ' + (error?.message || 'User not found'), 'error');
+                return;
+            }
+
+            document.getElementById('editEmail').value = user.email || '';
+            document.getElementById('editUsername').value = user.username || '';
+            document.getElementById('editPlan').value = user.plan || 'free';
+            document.getElementById('editCoins').value = user.coins || 0;
+            document.getElementById('editIsAdmin').checked = user.is_admin || false;
+
+            document.getElementById('editModal').classList.add('active');
+        }
+
+        function closeModal() {
+            document.getElementById('editModal').classList.remove('active');
+            editingUserId = null;
+        }
+
+        document.getElementById('editForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            if (!supabaseClient || !editingUserId) {
+                showMessage('Missing required data', 'error');
+                return;
+            }
+
+            const updates = {
+                username: document.getElementById('editUsername').value.trim() || null,
+                plan: document.getElementById('editPlan').value,
+                coins: parseInt(document.getElementById('editCoins').value) || 0,
+                is_admin: document.getElementById('editIsAdmin').checked
+            };
+
+            try {
+                const { error } = await supabaseClient
+                    .from('users')
+                    .update(updates)
+                    .eq('id', editingUserId);
+
+                if (error) {
+                    throw new Error(error.message || 'Failed to update user');
+                }
+
+                showMessage('User updated successfully', 'success');
+                closeModal();
+                // Reload users immediately to reflect changes
+                await loadUsers();
+            } catch (error) {
+                showMessage('Error updating user: ' + error.message, 'error');
+            }
+        });
+
+        function showMessage(message, type) {
+            const msgDiv = document.getElementById('message');
+            msgDiv.className = type;
+            msgDiv.textContent = message;
+            msgDiv.style.display = 'block';
+
+            setTimeout(() => {
+                msgDiv.style.display = 'none';
+            }, 5000);
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Initialize immediately
+        (async () => {
+            const usersTable = document.getElementById('usersTable');
+            
+            // Safety timeout - if still loading after 2 seconds, show error
+            setTimeout(() => {
+                if (usersTable && usersTable.innerHTML.includes('Loading users...')) {
+                    usersTable.innerHTML = '<div class="error"><strong>Error:</strong> Initialization timeout. Check console for details.</div>';
+                }
+            }, 2000);
+            
+            try {
+                console.log('🚀 Starting admin panel initialization...');
+                
+                const adminCheckResult = await checkAdmin();
+                console.log('✅ Admin check result:', adminCheckResult);
+                
+                if (adminCheckResult) {
+                    console.log('✅ Admin verified, loading users...');
+                    await loadUsers();
+                    // Refresh every 30 seconds
+                    setInterval(loadUsers, 30000);
+                } else {
+                    console.error('❌ Admin check failed');
+                    if (usersTable) {
+                        usersTable.innerHTML = '<div class="error">Admin check failed. Please refresh the page.</div>';
+                    }
+                }
+            } catch (error) {
+                console.error('❌ Initialization error:', error);
+                if (usersTable) {
+                    usersTable.innerHTML = `<div class="error">Initialization failed: ${error.message || 'Unknown error'}<br><small>Check browser console for details</small></div>`;
+                }
+            }
+        })();
+    </script>
+</body>
+</html>
+

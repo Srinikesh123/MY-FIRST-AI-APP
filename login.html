@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Login - AI Assistant</title>
+    <title>Login - voidzenzi</title>
     <link rel="stylesheet" href="styles.css">
     <style>
         .login-container {
@@ -228,7 +228,7 @@
 <body>
     <div class="login-container">
         <div class="login-box">
-            <h1>AI Assistant</h1>
+            <h1>voidzenzi</h1>
             
             <div class="login-tabs">
                 <button class="login-tab active" data-tab="login">Login</button>
@@ -264,6 +264,11 @@
                 <div class="form-group">
                     <label for="registerPassword">Password</label>
                     <input type="password" id="registerPassword" required placeholder="Create a password" minlength="6">
+                </div>
+                <div class="form-group">
+                    <label for="referralCode">Referral Code (Optional)</label>
+                    <input type="text" id="referralCode" placeholder="Enter referral code" style="text-transform: uppercase;">
+                    <small>Get Pro/Ultra by referring friends!</small>
                 </div>
                 
                 <div class="profile-picture-section">
@@ -471,6 +476,7 @@
             const name = document.getElementById('registerName').value;
             const email = document.getElementById('registerEmail').value;
             const password = document.getElementById('registerPassword').value;
+            const referralCode = document.getElementById('referralCode').value.trim().toUpperCase();
 
             try {
                 const { data, error } = await supabaseClient.auth.signUp({
@@ -479,7 +485,8 @@
                     options: {
                         data: {
                             name,
-                            avatar: selectedAvatar || null
+                            avatar: selectedAvatar || null,
+                            referral_code: referralCode || null
                         },
                         emailRedirectTo: window.location.origin + '/index.html'
                     }
