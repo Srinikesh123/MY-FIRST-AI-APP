@@ -21,6 +21,11 @@ class GameManager {
         const normalized = this.normalizeGameName(gameName);
         
         const gameMap = {
+            '1v1 quick duel': this.play1v1QuickDuel.bind(this),
+            'speed run challenge': this.playSpeedRunChallenge.bind(this),
+            'guess the right door': this.playGuessTheRightDoor.bind(this),
+            'last player standing': this.playLastPlayerStanding.bind(this),
+            'mini quiz battle': this.playMiniQuizBattle.bind(this),
             'bounce game': this.playBounceGame.bind(this),
             'click speed challenge': this.playClickSpeedChallenge.bind(this),
             'memory tiles': this.playMemoryTiles.bind(this),
@@ -192,6 +197,12 @@ class GameManager {
                     if (response.ok) {
                         const result = await response.json();
                         console.log('✅ Coins awarded via server:', result);
+                        // Notify parent window to refresh coins
+                        if (window.opener && typeof window.opener.postMessage === 'function') {
+                            window.opener.postMessage({ type: 'coinsUpdated', coins: result.coins }, '*');
+                        }
+                        // Also try localStorage event for same-window games
+                        window.dispatchEvent(new CustomEvent('coinsUpdated', { detail: { coins: result.coins } }));
                     } else {
                         console.warn('⚠️ Server coin award failed, but database trigger should handle it');
                     }
@@ -1964,6 +1975,662 @@ class GameManager {
                     this.closeGameModal();
                 }, 2000);
             }
+        }
+    }
+
+    // ============================================
+    // NEW GAMES - USER REQUESTED
+    // ============================================
+
+    play1v1QuickDuel(container, gameId, gameName, rewardCoins) {
+        container.innerHTML = `
+            <div style="text-align: center;">
+                <div style="display: flex; justify-content: space-around; margin: 20px 0;">
+                    <div>
+                        <div style="font-size: 24px; font-weight: bold; color: #667eea;">YOU</div>
+                        <div id="playerHealth" style="font-size: 32px; margin: 10px 0;">❤️❤️❤️</div>
+                        <div id="playerScore" style="font-size: 20px;">0</div>
+                    </div>
+                    <div style="font-size: 48px; margin-top: 20px;">⚔️</div>
+                    <div>
+                        <div style="font-size: 24px; font-weight: bold; color: #ef4444;">AI</div>
+                        <div id="aiHealth" style="font-size: 32px; margin: 10px 0;">❤️❤️❤️</div>
+                        <div id="aiScore" style="font-size: 20px;">0</div>
+                    </div>
+                </div>
+                <div id="duelStatus" style="font-size: 18px; margin: 20px 0; color: #6b7280;">Click to attack!</div>
+                <button id="attackBtn" style="
+                    padding: 20px 40px;
+                    font-size: 20px;
+                    background: #667eea;
+                    color: white;
+                    border: none;
+                    border-radius: 12px;
+                    cursor: pointer;
+                    font-weight: bold;
+                    margin: 10px;
+                ">⚔️ ATTACK</button>
+                <div id="duelResult" style="margin-top: 20px;"></div>
+            </div>
+        `;
+
+        let playerHealth = 3;
+        let aiHealth = 3;
+        let playerScore = 0;
+        let aiScore = 0;
+        let gameActive = true;
+
+        const updateDisplay = () => {
+            document.getElementById('playerHealth').textContent = '❤️'.repeat(playerHealth) + '💔'.repeat(3 - playerHealth);
+            document.getElementById('aiHealth').textContent = '❤️'.repeat(aiHealth) + '💔'.repeat(3 - aiHealth);
+            document.getElementById('playerScore').textContent = playerScore;
+            document.getElementById('aiScore').textContent = aiScore;
+        };
+
+        document.getElementById('attackBtn').onclick = () => {
+            if (!gameActive) return;
+
+            // Player attack
+            const playerDamage = Math.random() > 0.3 ? 1 : 0;
+            if (playerDamage > 0) {
+                aiHealth -= 1;
+                playerScore += 10;
+                document.getElementById('duelStatus').textContent = '💥 You hit!';
+            } else {
+                document.getElementById('duelStatus').textContent = '❌ You missed!';
+            }
+
+            updateDisplay();
+
+            if (aiHealth <= 0) {
+                gameActive = false;
+                this.end1v1Duel(gameId, rewardCoins, true, playerScore);
+                return;
+            }
+
+            // AI attack (after short delay)
+            setTimeout(() => {
+                if (!gameActive) return;
+                const aiDamage = Math.random() > 0.4 ? 1 : 0;
+                if (aiDamage > 0) {
+                    playerHealth -= 1;
+                    aiScore += 10;
+                    document.getElementById('duelStatus').textContent = '💥 AI hit you!';
+                } else {
+                    document.getElementById('duelStatus').textContent = '✅ AI missed!';
+                }
+
+                updateDisplay();
+
+                if (playerHealth <= 0) {
+                    gameActive = false;
+                    this.end1v1Duel(gameId, 10, false, playerScore); // Loser gets 10 coins
+                }
+            }, 500);
+        };
+
+        updateDisplay();
+    }
+
+    async end1v1Duel(gameId, rewardCoins, won, score) {
+        const resultEl = document.getElementById('duelResult');
+        resultEl.innerHTML = `
+            <div style="padding: 20px; background: ${won ? '#10b981' : '#ef4444'}; color: white; border-radius: 8px;">
+                <strong>${won ? '🏆 You Won!' : '😔 You Lost'}</strong><br>
+                Final Score: ${score}<br>
+                ${won ? `You earned ${rewardCoins} coins!` : `You earned ${rewardCoins} coins (loser reward)!`}
+            </div>
+        `;
+        const result = await this.submitGameResult(gameId, true, score);
+        if (result.success) {
+            setTimeout(() => {
+                alert(`🎉 You earned ${rewardCoins} coins!`);
+                this.closeGameModal();
+            }, 2000);
+        }
+    }
+
+    playSpeedRunChallenge(container, gameId, gameName, rewardCoins) {
+        container.innerHTML = `
+            <div style="text-align: center;">
+                <div id="speedTimer" style="font-size: 32px; font-weight: bold; color: #667eea; margin: 20px 0;">0.00s</div>
+                <div id="speedProgress" style="
+                    width: 100%;
+                    height: 30px;
+                    background: #e5e7eb;
+                    border-radius: 15px;
+                    margin: 20px 0;
+                    overflow: hidden;
+                ">
+                    <div id="speedBar" style="
+                        height: 100%;
+                        background: linear-gradient(90deg, #667eea, #764ba2);
+                        width: 0%;
+                        transition: width 0.1s;
+                        border-radius: 15px;
+                    "></div>
+                </div>
+                <div id="speedObstacles" style="
+                    min-height: 200px;
+                    border: 2px solid #667eea;
+                    border-radius: 8px;
+                    padding: 20px;
+                    background: #f9fafb;
+                    position: relative;
+                "></div>
+                <div style="margin-top: 15px; color: #6b7280; font-size: 14px;">
+                    Use A/D or Arrow Keys to move left/right
+                </div>
+                <div id="speedResult" style="margin-top: 20px;"></div>
+            </div>
+        `;
+
+        let startTime = null;
+        let progress = 0;
+        let gameActive = false;
+        let playerX = 50;
+        const obstacles = [];
+        let obstacleId = 0;
+
+        const startGame = () => {
+            if (gameActive) return;
+            gameActive = true;
+            startTime = Date.now();
+            progress = 0;
+            playerX = 50;
+            obstacles.length = 0;
+            document.getElementById('speedObstacles').innerHTML = '';
+            document.getElementById('speedResult').innerHTML = '';
+
+            // Create player
+            const player = document.createElement('div');
+            player.id = 'speedPlayer';
+            player.style.cssText = `
+                position: absolute;
+                bottom: 20px;
+                left: ${playerX}%;
+                width: 30px;
+                height: 30px;
+                background: #667eea;
+                border-radius: 50%;
+                transition: left 0.1s;
+            `;
+            document.getElementById('speedObstacles').appendChild(player);
+
+            // Spawn obstacles
+            const spawnObstacle = () => {
+                if (!gameActive) return;
+                const obstacle = document.createElement('div');
+                obstacle.id = `obstacle-${obstacleId++}`;
+                obstacle.style.cssText = `
+                    position: absolute;
+                    top: 0;
+                    left: ${Math.random() * 80 + 10}%;
+                    width: 20px;
+                    height: 20px;
+                    background: #ef4444;
+                    border-radius: 4px;
+                    animation: fall 2s linear;
+                `;
+                document.getElementById('speedObstacles').appendChild(obstacle);
+                obstacles.push({ el: obstacle, x: parseFloat(obstacle.style.left) });
+
+                setTimeout(() => {
+                    if (obstacle.parentNode) {
+                        const obsX = parseFloat(obstacle.style.left);
+                        if (Math.abs(obsX - playerX) < 5) {
+                            // Hit!
+                            gameActive = false;
+                            this.endSpeedRun(gameId, rewardCoins, false, (Date.now() - startTime) / 1000);
+                            return;
+                        }
+                        obstacle.remove();
+                    }
+                }, 2000);
+            };
+
+            // Add CSS animation
+            if (!document.getElementById('speedRunStyle')) {
+                const style = document.createElement('style');
+                style.id = 'speedRunStyle';
+                style.textContent = `
+                    @keyframes fall {
+                        from { top: 0; }
+                        to { top: 200px; }
+                    }
+                `;
+                document.head.appendChild(style);
+            }
+
+            // Controls
+            const handleKey = (e) => {
+                if (!gameActive) return;
+                if (e.key === 'a' || e.key === 'A' || e.key === 'ArrowLeft') {
+                    playerX = Math.max(10, playerX - 5);
+                    document.getElementById('speedPlayer').style.left = playerX + '%';
+                } else if (e.key === 'd' || e.key === 'D' || e.key === 'ArrowRight') {
+                    playerX = Math.min(90, playerX + 5);
+                    document.getElementById('speedPlayer').style.left = playerX + '%';
+                }
+            };
+            window.addEventListener('keydown', handleKey);
+
+            // Game loop
+            const gameLoop = setInterval(() => {
+                if (!gameActive) {
+                    clearInterval(gameLoop);
+                    window.removeEventListener('keydown', handleKey);
+                    return;
+                }
+
+                const elapsed = (Date.now() - startTime) / 1000;
+                document.getElementById('speedTimer').textContent = elapsed.toFixed(2) + 's';
+                progress = Math.min(100, (elapsed / 30) * 100); // 30s to complete
+                document.getElementById('speedBar').style.width = progress + '%';
+
+                if (progress >= 100) {
+                    gameActive = false;
+                    clearInterval(gameLoop);
+                    window.removeEventListener('keydown', handleKey);
+                    this.endSpeedRun(gameId, rewardCoins, true, elapsed);
+                }
+            }, 100);
+
+            // Spawn obstacles
+            const obstacleInterval = setInterval(() => {
+                if (!gameActive) {
+                    clearInterval(obstacleInterval);
+                    return;
+                }
+                spawnObstacle();
+            }, 1500);
+        };
+
+        // Start button
+        const startBtn = document.createElement('button');
+        startBtn.textContent = '🚀 Start Run';
+        startBtn.style.cssText = `
+            padding: 15px 30px;
+            font-size: 18px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: bold;
+            margin-top: 20px;
+        `;
+        startBtn.onclick = startGame;
+        container.querySelector('#speedResult').parentNode.insertBefore(startBtn, document.getElementById('speedResult'));
+    }
+
+    async endSpeedRun(gameId, rewardCoins, won, time) {
+        const resultEl = document.getElementById('speedResult');
+        const coins = won ? Math.max(10, Math.floor(50 - time)) : 0;
+        resultEl.innerHTML = `
+            <div style="padding: 20px; background: ${won ? '#10b981' : '#ef4444'}; color: white; border-radius: 8px;">
+                <strong>${won ? '🥇 Completed!' : '😔 Failed'}</strong><br>
+                Time: ${time.toFixed(2)}s<br>
+                ${won ? `You earned ${coins} coins!` : 'Try again!'}
+            </div>
+        `;
+        if (won) {
+            const result = await this.submitGameResult(gameId, true, Math.floor(time * 100));
+            if (result.success) {
+                setTimeout(() => {
+                    alert(`🎉 You earned ${coins} coins!`);
+                    this.closeGameModal();
+                }, 2000);
+            }
+        }
+    }
+
+    playGuessTheRightDoor(container, gameId, gameName, rewardCoins) {
+        container.innerHTML = `
+            <div style="text-align: center;">
+                <div style="font-size: 20px; margin-bottom: 30px; color: #6b7280;">
+                    Pick the right door to win coins!
+                </div>
+                <div style="display: flex; justify-content: center; gap: 20px; margin: 20px 0;">
+                    <button id="door1" class="door-btn" style="
+                        width: 120px;
+                        height: 200px;
+                        background: #8b5cf6;
+                        color: white;
+                        border: 4px solid #667eea;
+                        border-radius: 8px;
+                        font-size: 48px;
+                        cursor: pointer;
+                        font-weight: bold;
+                    ">🚪 1</button>
+                    <button id="door2" class="door-btn" style="
+                        width: 120px;
+                        height: 200px;
+                        background: #8b5cf6;
+                        color: white;
+                        border: 4px solid #667eea;
+                        border-radius: 8px;
+                        font-size: 48px;
+                        cursor: pointer;
+                        font-weight: bold;
+                    ">🚪 2</button>
+                    <button id="door3" class="door-btn" style="
+                        width: 120px;
+                        height: 200px;
+                        background: #8b5cf6;
+                        color: white;
+                        border: 4px solid #667eea;
+                        border-radius: 8px;
+                        font-size: 48px;
+                        cursor: pointer;
+                        font-weight: bold;
+                    ">🚪 3</button>
+                </div>
+                <div id="doorResult" style="margin-top: 20px; font-size: 18px;"></div>
+            </div>
+        `;
+
+        const winningDoor = Math.floor(Math.random() * 3) + 1;
+        let gameEnded = false;
+
+        const checkDoor = (doorNum) => {
+            if (gameEnded) return;
+            gameEnded = true;
+
+            const won = doorNum === winningDoor;
+            const doors = ['door1', 'door2', 'door3'];
+
+            doors.forEach((doorId, idx) => {
+                const door = document.getElementById(doorId);
+                const num = idx + 1;
+                if (num === winningDoor) {
+                    door.style.background = '#10b981';
+                    door.textContent = '💰 WIN';
+                } else if (num === doorNum) {
+                    door.style.background = '#ef4444';
+                    door.textContent = '❌ LOSE';
+                } else {
+                    door.style.background = '#6b7280';
+                    door.textContent = '🚪';
+                }
+                door.disabled = true;
+            });
+
+            this.endGuessDoor(gameId, rewardCoins, won);
+        };
+
+        document.getElementById('door1').onclick = () => checkDoor(1);
+        document.getElementById('door2').onclick = () => checkDoor(2);
+        document.getElementById('door3').onclick = () => checkDoor(3);
+    }
+
+    async endGuessDoor(gameId, rewardCoins, won) {
+        const resultEl = document.getElementById('doorResult');
+        resultEl.innerHTML = `
+            <div style="padding: 20px; background: ${won ? '#10b981' : '#ef4444'}; color: white; border-radius: 8px;">
+                <strong>${won ? '🎉 You Won!' : '😔 Wrong Door'}</strong><br>
+                ${won ? `You earned ${rewardCoins} coins!` : 'Better luck next time!'}
+            </div>
+        `;
+        if (won) {
+            const result = await this.submitGameResult(gameId, true, 100);
+            if (result.success) {
+                setTimeout(() => {
+                    alert(`🎉 You earned ${rewardCoins} coins!`);
+                    this.closeGameModal();
+                }, 2000);
+            }
+        } else {
+            setTimeout(() => {
+                this.closeGameModal();
+            }, 2000);
+        }
+    }
+
+    playLastPlayerStanding(container, gameId, gameName, rewardCoins) {
+        container.innerHTML = `
+            <div style="text-align: center;">
+                <div id="standingStatus" style="font-size: 20px; margin: 20px 0; color: #667eea; font-weight: bold;">
+                    Players: 10
+                </div>
+                <div id="standingLava" style="
+                    width: 100%;
+                    height: 30px;
+                    background: linear-gradient(180deg, #ef4444, #dc2626);
+                    border-radius: 8px;
+                    margin: 20px 0;
+                    position: relative;
+                    transition: margin-top 0.5s;
+                "></div>
+                <div id="standingPlatforms" style="
+                    min-height: 300px;
+                    border: 2px solid #667eea;
+                    border-radius: 8px;
+                    padding: 20px;
+                    background: #f9fafb;
+                    position: relative;
+                ">
+                    <div id="standingPlayer" style="
+                        position: absolute;
+                        bottom: 20px;
+                        left: 50%;
+                        transform: translateX(-50%);
+                        width: 40px;
+                        height: 40px;
+                        background: #667eea;
+                        border-radius: 50%;
+                        transition: all 0.2s;
+                    ">👤</div>
+                </div>
+                <div style="margin-top: 15px; color: #6b7280; font-size: 14px;">
+                    Use A/D or Arrow Keys to move
+                </div>
+                <div id="standingResult" style="margin-top: 20px;"></div>
+            </div>
+        `;
+
+        let players = 10;
+        let lavaHeight = 0;
+        let playerX = 50;
+        let gameActive = false;
+        let eliminated = false;
+
+        const updateDisplay = () => {
+            document.getElementById('standingStatus').textContent = `Players: ${players}`;
+            document.getElementById('standingLava').style.marginTop = (300 - lavaHeight) + 'px';
+        };
+
+        const startGame = () => {
+            if (gameActive) return;
+            gameActive = true;
+            players = 10;
+            lavaHeight = 0;
+            playerX = 50;
+            eliminated = false;
+            updateDisplay();
+
+            // Controls
+            const handleKey = (e) => {
+                if (!gameActive || eliminated) return;
+                if (e.key === 'a' || e.key === 'A' || e.key === 'ArrowLeft') {
+                    playerX = Math.max(5, playerX - 3);
+                    document.getElementById('standingPlayer').style.left = playerX + '%';
+                } else if (e.key === 'd' || e.key === 'D' || e.key === 'ArrowRight') {
+                    playerX = Math.min(95, playerX + 3);
+                    document.getElementById('standingPlayer').style.left = playerX + '%';
+                }
+            };
+            window.addEventListener('keydown', handleKey);
+
+            // Game loop
+            const gameLoop = setInterval(() => {
+                if (!gameActive || eliminated) return;
+
+                // Eliminate random players
+                if (players > 1 && Math.random() < 0.3) {
+                    players--;
+                }
+
+                // Lava rises
+                lavaHeight += 2;
+
+                updateDisplay();
+
+                // Check if player is eliminated
+                if (lavaHeight >= 280) {
+                    eliminated = true;
+                    gameActive = false;
+                    clearInterval(gameLoop);
+                    window.removeEventListener('keydown', handleKey);
+                    this.endLastStanding(gameId, rewardCoins, false);
+                    return;
+                }
+
+                // Check win condition
+                if (players === 1 && !eliminated) {
+                    gameActive = false;
+                    clearInterval(gameLoop);
+                    window.removeEventListener('keydown', handleKey);
+                    this.endLastStanding(gameId, rewardCoins, true);
+                }
+            }, 500);
+        };
+
+        // Start button
+        const startBtn = document.createElement('button');
+        startBtn.textContent = '👑 Start Battle';
+        startBtn.style.cssText = `
+            padding: 15px 30px;
+            font-size: 18px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: bold;
+            margin-top: 20px;
+        `;
+        startBtn.onclick = startGame;
+        container.querySelector('#standingResult').parentNode.insertBefore(startBtn, document.getElementById('standingResult'));
+    }
+
+    async endLastStanding(gameId, rewardCoins, won) {
+        const resultEl = document.getElementById('standingResult');
+        resultEl.innerHTML = `
+            <div style="padding: 20px; background: ${won ? '#10b981' : '#ef4444'}; color: white; border-radius: 8px;">
+                <strong>${won ? '👑 Last Player Standing!' : '😔 Eliminated'}</strong><br>
+                ${won ? `You earned ${rewardCoins} coins!` : 'Better luck next time!'}
+            </div>
+        `;
+        if (won) {
+            const result = await this.submitGameResult(gameId, true, 100);
+            if (result.success) {
+                setTimeout(() => {
+                    alert(`🎉 You earned ${rewardCoins} coins!`);
+                    this.closeGameModal();
+                }, 2000);
+            }
+        } else {
+            setTimeout(() => {
+                this.closeGameModal();
+            }, 2000);
+        }
+    }
+
+    playMiniQuizBattle(container, gameId, gameName, rewardCoins) {
+        const questions = [
+            { q: 'What is 2 + 2?', a: '4', options: ['3', '4', '5', '6'] },
+            { q: 'What is the capital of France?', a: 'Paris', options: ['London', 'Paris', 'Berlin', 'Madrid'] },
+            { q: 'What planet do we live on?', a: 'Earth', options: ['Mars', 'Earth', 'Venus', 'Jupiter'] },
+            { q: 'How many days in a week?', a: '7', options: ['5', '6', '7', '8'] },
+            { q: 'What color is the sky?', a: 'Blue', options: ['Red', 'Green', 'Blue', 'Yellow'] }
+        ];
+
+        let currentQuestion = 0;
+        let correctAnswers = 0;
+
+        const showQuestion = () => {
+            if (currentQuestion >= questions.length) {
+                this.endQuiz(gameId, rewardCoins, correctAnswers);
+                return;
+            }
+
+            const q = questions[currentQuestion];
+            container.innerHTML = `
+                <div style="text-align: center;">
+                    <div style="font-size: 18px; color: #6b7280; margin-bottom: 10px;">
+                        Question ${currentQuestion + 1} of ${questions.length}
+                    </div>
+                    <div style="font-size: 24px; font-weight: bold; color: #667eea; margin: 20px 0;">
+                        ${q.q}
+                    </div>
+                    <div style="display: flex; flex-direction: column; gap: 15px; margin: 30px 0;">
+                        ${q.options.map((opt, idx) => `
+                            <button class="quiz-option" data-answer="${opt}" style="
+                                padding: 15px 30px;
+                                font-size: 18px;
+                                background: white;
+                                color: #667eea;
+                                border: 2px solid #667eea;
+                                border-radius: 8px;
+                                cursor: pointer;
+                                transition: all 0.2s;
+                            " onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='white'">
+                                ${opt}
+                            </button>
+                        `).join('')}
+                    </div>
+                    <div id="quizResult" style="margin-top: 20px;"></div>
+                </div>
+            `;
+
+            document.querySelectorAll('.quiz-option').forEach(btn => {
+                btn.onclick = () => {
+                    const selected = btn.dataset.answer;
+                    const correct = selected === q.a;
+                    if (correct) correctAnswers++;
+
+                    btn.style.background = correct ? '#10b981' : '#ef4444';
+                    btn.style.color = 'white';
+                    document.querySelectorAll('.quiz-option').forEach(b => b.disabled = true);
+
+                    setTimeout(() => {
+                        currentQuestion++;
+                        showQuestion();
+                    }, 1500);
+                };
+            });
+        };
+
+        showQuestion();
+    }
+
+    async endQuiz(gameId, rewardCoins, correctAnswers) {
+        const won = correctAnswers >= 3;
+        const coins = Math.floor((correctAnswers / 5) * rewardCoins);
+        container.innerHTML = `
+            <div style="text-align: center;">
+                <div style="padding: 30px; background: ${won ? '#10b981' : '#ef4444'}; color: white; border-radius: 8px;">
+                    <strong style="font-size: 24px;">${won ? '🧠 Quiz Master!' : '📚 Good Try!'}</strong><br>
+                    <div style="margin: 20px 0; font-size: 20px;">
+                        Correct: ${correctAnswers} / 5
+                    </div>
+                    ${won ? `You earned ${coins} coins!` : 'Need 3+ correct to win.'}
+                </div>
+            </div>
+        `;
+        if (won) {
+            const result = await this.submitGameResult(gameId, true, correctAnswers * 20);
+            if (result.success) {
+                setTimeout(() => {
+                    alert(`🎉 You earned ${coins} coins!`);
+                    this.closeGameModal();
+                }, 3000);
+            }
+        } else {
+            setTimeout(() => {
+                this.closeGameModal();
+            }, 3000);
         }
     }
 }

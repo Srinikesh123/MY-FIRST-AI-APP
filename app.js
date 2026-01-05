@@ -263,6 +263,32 @@ class AIAssistant {
             console.log('👤 USER DATA:', data);
             console.log('👤 USER ERROR:', error);
 
+            // If user doesn't exist, create it via server API
+            if (error && (error.code === 'PGRST116' || error.message?.includes('0 rows'))) {
+                console.log('⚠️ User not found in database, creating user record...');
+                try {
+                    const { data: authUser } = await this.supabase.auth.getUser();
+                    if (authUser?.user) {
+                        const response = await fetch(`${this.apiUrl}/users/create`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                userId: this.userId,
+                                email: authUser.user.email
+                            })
+                        });
+                        if (response.ok) {
+                            console.log('✅ User record created, reloading...');
+                            // Retry loading user info
+                            return this.loadUserInfo();
+                        }
+                    }
+                } catch (createError) {
+                    console.error('❌ Failed to create user record:', createError);
+                }
+                return;
+            }
+
             if (error) {
                 console.error('❌ USER QUERY ERROR:', error);
                 return;
@@ -278,6 +304,7 @@ class AIAssistant {
                 // Update user profile widget and usage
                 this.updateUserProfile();
                 this.updateUsageCircle();
+                this.updateCoinCounter();
             } else {
                 console.warn('⚠️ User data not found in database');
             }
@@ -405,10 +432,10 @@ class AIAssistant {
                 return;
             }
             
-            // Define plan limits
+            // Define plan limits (updated: Free 50 messages, Pro 10x, Ultra infinite)
             const PLAN_LIMITS = {
-                free: { messages: 500, images: 5, codeGenerations: 5 },
-                pro: { messages: 5000, images: 50, codeGenerations: 50 },
+                free: { messages: 50, images: 5, codeGenerations: 5 },
+                pro: { messages: 500, images: 50, codeGenerations: 50 },
                 ultra: { messages: -1, images: -1, codeGenerations: -1 }
             };
             
@@ -446,13 +473,17 @@ class AIAssistant {
             
             // Calculate usage percentage (messages as primary metric)
             let used = usage.messages_used || 0;
-            let limit = limits.messages || 500;
+            let limit = limits.messages || 50;
+            const imagesUsed = usage.images_used || 0;
+            const imagesLimit = limits.images || 5;
             
             if (limit === -1) {
                 // Unlimited
                 this.usageText.textContent = '∞';
                 this.usageProgress.style.strokeDashoffset = '0';
                 this.usageProgress.style.stroke = '#10b981';
+                // Update title with full info
+                this.usageCircle.title = `Plan: ${user.plan.toUpperCase()}\nMessages: Unlimited\nImages: Unlimited`;
             } else {
                 const percentage = Math.min((used / limit) * 100, 100);
                 const circumference = 2 * Math.PI * 10; // radius 10
@@ -469,6 +500,10 @@ class AIAssistant {
                 } else {
                     this.usageProgress.style.stroke = '#667eea';
                 }
+                
+                // Update title with detailed plan info
+                const imagesText = imagesLimit === -1 ? 'Unlimited' : `${imagesUsed}/${imagesLimit}`;
+                this.usageCircle.title = `Plan: ${user.plan.toUpperCase()}\nMessages: ${used}/${limit}\nImages: ${imagesText}\n\nFree: 50 messages, 5 images\nPro: 500 messages, 50 images\nUltra: Unlimited`;
             }
         } catch (error) {
             console.error('Failed to update usage circle:', error);
@@ -800,6 +835,12 @@ class AIAssistant {
         }
         if (this.clearChatBtn) {
             this.clearChatBtn.addEventListener('click', () => this.clearCurrentChat());
+        }
+        
+        // Delete account button
+        const deleteAccountBtn = document.getElementById('deleteAccountBtn');
+        if (deleteAccountBtn) {
+            deleteAccountBtn.addEventListener('click', () => this.deleteAccount());
         }
         if (this.logoutBtn) {
             this.logoutBtn.addEventListener('click', () => this.handleLogout());
@@ -1528,6 +1569,37 @@ class AIAssistant {
         } catch (error) {
             console.error('❌ Failed to delete chat:', error);
             alert(`Failed to delete chat: ${error.message}`);
+        }
+    }
+
+    async deleteAccount() {
+        if (!confirm('⚠️ WARNING: This will permanently delete your account and ALL your data (chats, messages, coins, settings, etc.).\n\nThis action CANNOT be undone!\n\nAre you absolutely sure?')) {
+            return;
+        }
+        
+        if (!confirm('This is your LAST chance to cancel. Click OK to permanently delete your account.')) {
+            return;
+        }
+        
+        try {
+            const response = await fetch(`${this.apiUrl}/users/delete`, {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userId: this.userId })
+            });
+            
+            if (response.ok) {
+                alert('Account deleted successfully. You will be logged out now.');
+                // Sign out and redirect
+                await this.supabase.auth.signOut();
+                window.location.href = 'login.html';
+            } else {
+                const error = await response.json();
+                throw new Error(error.error || 'Failed to delete account');
+            }
+        } catch (error) {
+            console.error('Delete account error:', error);
+            alert(`Failed to delete account: ${error.message}`);
         }
     }
 
@@ -2745,6 +2817,24 @@ class AIAssistant {
 // Initialize the AI Assistant when the page loads
 document.addEventListener('DOMContentLoaded', async () => {
     console.log('🚀 APP INITIALIZING...');
+    
+    // Listen for coins updates from games
+    window.addEventListener('message', (event) => {
+        if (event.data && event.data.type === 'coinsUpdated') {
+            console.log('🪙 Coins updated from game, refreshing...');
+            if (window.aiAssistant) {
+                window.aiAssistant.loadUserInfo();
+            }
+        }
+    });
+    
+    // Also listen for custom events (same window)
+    window.addEventListener('coinsUpdated', (event) => {
+        console.log('🪙 Coins updated, refreshing...');
+        if (window.aiAssistant) {
+            window.aiAssistant.loadUserInfo();
+        }
+    });
     
     if (window.supabase && window.SUPABASE_URL && window.SUPABASE_ANON_KEY) {
         try {

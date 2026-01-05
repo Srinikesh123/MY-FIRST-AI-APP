@@ -499,13 +499,20 @@
             };
 
             try {
-                const { error } = await supabaseClient
-                    .from('users')
-                    .update(updates)
-                    .eq('id', editingUserId);
+                // Use server API to update user (bypasses RLS)
+                const response = await fetch('http://localhost:3000/api/admin/update-user', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        adminUserId: currentUserId,
+                        targetUserId: editingUserId,
+                        updates: updates
+                    })
+                });
 
-                if (error) {
-                    throw new Error(error.message || 'Failed to update user');
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Failed to update user');
                 }
 
                 showMessage('User updated successfully', 'success');

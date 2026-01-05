@@ -40,20 +40,20 @@ const supabase = process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY ? 
 const PLAN_LIMITS = {
     free: {
         tokens: 50,
-        messages: 500,
+        messages: 50,  // Changed from 500 to 50
         images: 5,
         codeGenerations: 5
     },
     pro: {
         tokens: 500,
-        messages: 5000,
-        images: 50,
+        messages: 500,  // 10x free (50 * 10)
+        images: 50,    // 10x free (5 * 10)
         codeGenerations: 50
     },
     ultra: {
         tokens: -1, // unlimited
-        messages: -1,
-        images: -1,
+        messages: -1, // unlimited
+        images: -1,   // unlimited
         codeGenerations: -1
     }
 };
@@ -404,31 +404,47 @@ app.post('/api/image', async (req, res) => {
             });
         }
 
-        // Check token usage if userId provided
+        // Check image usage limits if userId provided
         if (userId && supabase) {
             const { data: user, error: userError } = await supabase
                 .from('users')
-                .select('tokens_remaining, plan')
+                .select('plan')
                 .eq('id', userId)
                 .single();
 
             if (!userError && user) {
                 const limits = PLAN_LIMITS[user.plan || 'free'];
-                const tokenCost = 1; // 1 token per image
                 
-                if (limits.tokens !== -1 && (user.tokens_remaining || 0) < tokenCost) {
+                // Get current image usage
+                const { data: usage, error: usageError } = await supabase
+                    .from('usage_limits')
+                    .select('images_used')
+                    .eq('user_id', userId)
+                    .single();
+                
+                const imagesUsed = usage?.images_used || 0;
+                const imagesLimit = limits.images;
+                
+                // Check if user has reached image limit
+                if (imagesLimit !== -1 && imagesUsed >= imagesLimit) {
                     return res.status(403).json({
-                        error: 'Insufficient tokens. You need tokens to generate images.',
-                        tokensRemaining: user.tokens_remaining || 0
+                        error: `Image limit reached. Free plan: ${imagesLimit} images, Pro: ${imagesLimit * 10} images, Ultra: Unlimited.`,
+                        imagesUsed: imagesUsed,
+                        imagesLimit: imagesLimit
                     });
                 }
 
-                // Consume token
-                const newTokens = Math.max(0, (user.tokens_remaining || 0) - tokenCost);
+                // Increment image usage
+                const newImagesUsed = imagesUsed + 1;
                 await supabase
-                    .from('users')
-                    .update({ tokens_remaining: newTokens })
-                    .eq('id', userId);
+                    .from('usage_limits')
+                    .upsert({
+                        user_id: userId,
+                        images_used: newImagesUsed,
+                        updated_at: new Date().toISOString()
+                    }, {
+                        onConflict: 'user_id'
+                    });
             }
         }
 
@@ -794,6 +810,97 @@ app.post('/api/games/award-coins', async (req, res) => {
         res.json({ success: true, coins: newCoins, added: coins });
     } catch (error) {
         console.error('Award coins error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Create user record if missing
+app.post('/api/users/create', async (req, res) => {
+    try {
+        const { userId, email } = req.body;
+
+        if (!userId || !email || !supabase) {
+            return res.status(400).json({ error: 'Missing parameters' });
+        }
+
+        // Check if user exists
+        const { data: existingUser } = await supabase
+            .from('users')
+            .select('id')
+            .eq('id', userId)
+            .single();
+
+        if (existingUser) {
+            return res.json({ success: true, message: 'User already exists' });
+        }
+
+        // Create user record
+        const { data: newUser, error } = await supabase
+            .from('users')
+            .insert({
+                id: userId,
+                email: email,
+                username: email.split('@')[0],
+                plan: 'free',
+                coins: 0,
+                invites_count: 0,
+                is_admin: false
+            })
+            .select()
+            .single();
+
+        if (error) throw error;
+
+        res.json({ success: true, user: newUser });
+    } catch (error) {
+        console.error('Create user error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Delete user account
+app.delete('/api/users/delete', async (req, res) => {
+    try {
+        const { userId, password } = req.body;
+
+        if (!userId || !supabase) {
+            return res.status(400).json({ error: 'Missing parameters' });
+        }
+
+        // Verify user exists
+        const { data: user, error: userError } = await supabase
+            .from('users')
+            .select('id, email')
+            .eq('id', userId)
+            .single();
+
+        if (userError || !user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        // Delete from auth.users (this will cascade delete from public.users due to ON DELETE CASCADE)
+        // Note: This requires admin privileges, so we'll delete from public tables first
+        const tables = ['users', 'chats', 'messages', 'user_settings', 'usage_limits', 
+                       'game_results', 'memories', 'files', 'referral_codes'];
+        
+        for (const table of tables) {
+            const { error } = await supabase
+                .from(table)
+                .delete()
+                .eq('user_id', userId);
+            
+            // Also try 'id' for users table
+            if (table === 'users') {
+                const { error: idError } = await supabase
+                    .from('users')
+                    .delete()
+                    .eq('id', userId);
+            }
+        }
+
+        res.json({ success: true, message: 'Account deleted successfully' });
+    } catch (error) {
+        console.error('Delete user error:', error);
         res.status(500).json({ error: error.message });
     }
 });
