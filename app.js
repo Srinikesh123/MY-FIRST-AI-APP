@@ -83,6 +83,7 @@ class AIAssistant {
             ttsEnabled: false,
             ttsVoice: 'female',
             imageMode: false,
+            imageModeType: 'normal', // normal, emoji
             
             // Memory
             memoryEnabled: false
@@ -503,7 +504,13 @@ class AIAssistant {
                 
                 // Update title with detailed plan info
                 const imagesText = imagesLimit === -1 ? 'Unlimited' : `${imagesUsed}/${imagesLimit}`;
-                this.usageCircle.title = `Plan: ${user.plan.toUpperCase()}\nMessages: ${used}/${limit}\nImages: ${imagesText}\n\nFree: 50 messages, 5 images\nPro: 500 messages, 50 images\nUltra: Unlimited`;
+                this.usageCircle.title = `Plan: ${user.plan.toUpperCase()}
+Messages: ${used}/${limit}
+Images: ${imagesText}
+
+Free: 50 messages, 5 images
+Pro: 500 messages, 50 images
+Ultra: Unlimited`;
             }
         } catch (error) {
             console.error('Failed to update usage circle:', error);
@@ -513,6 +520,35 @@ class AIAssistant {
     showShopModal() {
         if (this.shopModal) {
             this.shopModal.classList.add('show');
+            
+            // Update button text based on user's current plan
+            this.updateShopButtons();
+        }
+    }
+    
+    updateShopButtons() {
+        // Get the buy buttons
+        const proButton = document.querySelector('.buy-plan-btn[data-plan="pro"]');
+        const ultraButton = document.querySelector('.buy-plan-btn[data-plan="ultra"]');
+        
+        if (!proButton || !ultraButton) {
+            console.warn('Shop buttons not found');
+            return;
+        }
+        
+        // Update button text based on current user plan
+        if (this.userPlan === 'pro') {
+            // If user has Pro plan, they can upgrade to Ultra or equip Pro
+            proButton.textContent = 'Equip Pro';
+            ultraButton.textContent = 'Buy Ultra';
+        } else if (this.userPlan === 'ultra') {
+            // If user has Ultra plan, they can equip either Pro or Ultra
+            proButton.textContent = 'Equip Pro';
+            ultraButton.textContent = 'Equip Ultra';
+        } else {
+            // Free user - can buy either plan
+            proButton.textContent = 'Buy Pro';
+            ultraButton.textContent = 'Buy Ultra';
         }
     }
     
@@ -523,23 +559,47 @@ class AIAssistant {
     }
     
     async buyPlan(plan, price) {
-        if (this.userCoins < price) {
-            alert(`Not enough coins! You need ${price} coins but only have ${this.userCoins}.`);
+        // Check if the user is trying to equip an existing plan
+        if (this.userPlan === plan) {
+            // User is trying to equip the same plan they already have
+            alert(`You already have the ${plan.toUpperCase()} plan equipped!`);
+            this.closeShopModal();
             return;
         }
         
-        if (!confirm(`Upgrade to ${plan.toUpperCase()} plan for ${price} coins?`)) {
+        // For "Buy" actions, check if user has enough coins
+        if (this.userPlan !== plan && price > 0) {
+            if (this.userCoins < price) {
+                alert(`Not enough coins! You need ${price} coins but only have ${this.userCoins}.`);
+                return;
+            }
+        }
+        
+        // Confirm the action
+        let actionText = this.userPlan === 'free' ? 'Upgrade to' : 'Switch to';
+        if (this.userPlan === plan) {
+            actionText = 'Equip';
+        }
+        
+        if (!confirm(`${actionText} ${plan.toUpperCase()} plan?` + (price > 0 && this.userPlan !== plan ? ` This will cost ${price} coins.` : ''))) {
             return;
         }
         
         try {
+            let updateData = { plan: plan };
+            
+            // Only deduct coins if user is upgrading (not equipping)
+            if (this.userPlan !== plan && price > 0) {
+                updateData.coins = this.userCoins - price;
+            } else {
+                // When equipping, keep the same coin balance
+                updateData.coins = this.userCoins;
+            }
+            
             // Update user plan via Supabase
             const { error } = await this.supabase
                 .from('users')
-                .update({ 
-                    plan: plan,
-                    coins: this.userCoins - price
-                })
+                .update(updateData)
                 .eq('id', this.userId);
             
             if (error) throw error;
@@ -551,10 +611,14 @@ class AIAssistant {
             this.updateUsageCircle();
             this.closeShopModal();
             
-            alert(`Successfully upgraded to ${plan.toUpperCase()} plan!`);
+            if (this.userPlan === plan) {
+                alert(`Successfully equipped ${plan.toUpperCase()} plan!`);
+            } else {
+                alert(`Successfully upgraded to ${plan.toUpperCase()} plan!`);
+            }
         } catch (error) {
-            console.error('Failed to buy plan:', error);
-            alert(`Failed to upgrade: ${error.message}`);
+            console.error('Failed to buy/equip plan:', error);
+            alert(`Failed to ${this.userPlan === plan ? 'equip' : 'upgrade'}: ${error.message}`);
         }
     }
 
@@ -1045,7 +1109,8 @@ class AIAssistant {
         const radioGroups = [
             { name: 'ttsVoice', key: 'ttsVoice' },
             { name: 'chatMode', key: 'chatMode' },
-            { name: 'mood', key: 'mood' }
+            { name: 'mood', key: 'mood' },
+            { name: 'imageModeType', key: 'imageModeType' }
         ];
 
         radioGroups.forEach(({ name, key }) => {
@@ -1095,6 +1160,53 @@ class AIAssistant {
 
     closeChatNameModal() {
         this.chatNameModal.classList.remove('show');
+    }
+
+    async createAutoNamedChat(firstMessage) {
+        // Create a chat name based on the first message (truncate if too long)
+        let chatName = firstMessage.substring(0, 30);
+        if (firstMessage.length > 30) {
+            chatName += '...';
+        }
+        
+        // Ensure the chat name is not empty
+        if (!chatName.trim()) {
+            chatName = 'New Chat';
+        }
+        
+        try {
+            const { data, error } = await this.supabase
+                .from('chats')
+                .insert({
+                    user_id: this.userId,
+                    name: chatName
+                })
+                .select()
+                .single();
+
+            if (error) throw error;
+
+            this.currentChatId = data.id;
+            this.currentChatName = data.name;
+            
+            // Reload the chats list to show the new chat
+            await this.loadChats();
+            
+            // Update the chat header to show the new chat name
+            if (this.chatHeader) {
+                this.chatHeader.style.display = 'flex';
+            }
+            
+            // Update the chat container title
+            this.updateChatContainerTitle();
+            
+            console.log('✅ Auto-created chat:', data.name);
+        } catch (error) {
+            console.error('Failed to auto-create chat:', error);
+            // Fallback to manual chat creation if auto-creation fails
+            this.showNewChatModal();
+            return;
+        }
     }
 
     async createNewChat() {
@@ -1705,8 +1817,8 @@ class AIAssistant {
 
         // ENFORCE: Must have a chat before sending
         if (!this.currentChatId) {
-            this.showNewChatModal();
-            return;
+            // Automatically create a new chat with the first message as the name
+            await this.createAutoNamedChat(message);
         }
 
         // Add user message to UI
@@ -1734,7 +1846,11 @@ class AIAssistant {
                 const response = await fetch(`${this.apiUrl}/image`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ prompt: message, userId: this.userId })
+                    body: JSON.stringify({ 
+                        prompt: message, 
+                        userId: this.userId,
+                        mode: this.settings.imageModeType || 'normal'
+                    })
                 });
 
                 if (typingId) this.hideTypingIndicator(typingId);
@@ -1747,14 +1863,16 @@ class AIAssistant {
                 const data = await response.json();
                 
                 // Add image to UI
-                const imageHtml = `<div class="message-image"><img src="${this.escapeHtml(data.imageUrl)}" alt="Generated image" style="max-width: 100%; border-radius: 8px;"></div>`;
+                // Don't escape SVG data URLs as they contain special characters
+                const escapedUrl = data.imageUrl.startsWith('data:image/svg+xml') ? data.imageUrl : this.escapeHtml(data.imageUrl);
+                const imageHtml = `<div class="message-image"><img src="${escapedUrl}" alt="Generated image" style="max-width: 100%; border-radius: 8px;"></div>`;
                 this.addMessageToUI(imageHtml, 'assistant', true);
                 
                 // Save image URL as message content
                 await this.saveMessageToSupabase(`[Image Generated] ${data.imageUrl}`, 'assistant');
                 
                 // Refresh user data to update tokens
-                await this.loadUserData();
+                await this.loadUserInfo();
                 this.updateUserProfile();
                 
                 this.playSound('receive');
@@ -2283,6 +2401,10 @@ class AIAssistant {
         document.querySelectorAll('input[name="mood"]').forEach(radio => {
                 radio.checked = (radio.value === this.settings.mood);
             });
+
+        document.querySelectorAll('input[name="imageModeType"]').forEach(radio => {
+            radio.checked = (radio.value === this.settings.imageModeType);
+        });
     }
 
     applySettings() {

@@ -393,10 +393,117 @@ app.post('/api/chat', async (req, res) => {
     }
 });
 
+// Helper function to convert text prompt to emoji representation
+function textToEmoji(prompt) {
+    const emojiMap = {
+        // Animals
+        'bird': '🐦', 'birds': '🐦', 'duck': '🦆', 'eagle': '🦅', 'owl': '🦉', 'parrot': '🦜',
+        'cat': '🐱', 'cats': '🐱', 'kitten': '🐱', 'lion': '🦁', 'tiger': '🐯', 'dog': '🐶',
+        'fish': '🐟', 'whale': '🐋', 'shark': '🦈', 'turtle': '🐢', 'frog': '🐸',
+        'horse': '🐴', 'cow': '🐮', 'pig': '🐷', 'sheep': '🐑', 'elephant': '🐘',
+        'monkey': '🐵', 'gorilla': '🦍', 'chimp': '🦧', 'zebra': '🦓', 'giraffe': '🦒',
+        // Nature
+        'tree': '🌳', 'flower': '🌸', 'rose': '🌹', 'sunflower': '🌻', 'tulip': '🌷',
+        'mountain': '⛰️', 'river': '🌊', 'lake': '💧', 'cloud': '☁️', 'rainbow': '🌈',
+        'sun': '☀️', 'moon': '🌙', 'star': '⭐', 'fire': '🔥', 'snow': '❄️',
+        // Objects
+        'house': '🏠', 'car': '🚗', 'boat': '🚤', 'plane': '✈️', 'train': '🚂',
+        'book': '📚', 'computer': '💻', 'phone': '📱', 'camera': '📷',
+        'food': '🍎', 'pizza': '🍕', 'cake': '🎂', 'coffee': '☕', 'wine': '🍷',
+        // People
+        'person': '👤', 'people': '👥', 'man': '👨', 'woman': '👩', 'child': '👶',
+        'family': '👪', 'couple': '💑', 'friend': '🤝', 'love': '❤️',
+        // Animals
+        'chicken': '🐔', 'rooster': '🐓', 'turkey': '🦃', 'duck': '🦆', 'eagle': '🦅', 'owl': '🦉', 'parrot': '🦜',
+        'cat': '🐱', 'cats': '🐱', 'kitten': '🐱', 'lion': '🦁', 'tiger': '🐯', 'dog': '🐶',
+        'fish': '🐟', 'whale': '🐋', 'shark': '🦈', 'turtle': '🐢', 'frog': '🐸',
+        'horse': '🐴', 'cow': '🐮', 'pig': '🐷', 'sheep': '🐑', 'elephant': '🐘',
+        'monkey': '🐵', 'gorilla': '🦍', 'chimp': '🦧', 'zebra': '🦓', 'giraffe': '🦒',
+        // Abstract concepts
+        'happy': '😊', 'sad': '😢', 'angry': '😠', 'surprised': '😲',
+        'love': '😍', 'cool': '😎', 'sleep': '😴', 'party': '🎉',
+        'music': '🎵', 'dance': '💃', 'sports': '⚽', 'art': '🎨',
+        'work': '💼', 'money': '💰', 'time': '⏰', 'home': '🏠',
+        'heart': '❤️', 'smile': '😊', 'laugh': '😂', 'cry': '😭',
+        // Emotions
+        'joy': '😄', 'funny': '🤣', 'wink': '😉', 'thinking': '🤔',
+        'confused': '😕', 'worried': '😟', 'shocked': '😱', 'tired': '😪',
+        'angry': '😠', 'mad': '😤', 'devil': '😈', 'angel': '😇',
+        'sick': '🤒', 'injured': '🤕', 'bandage': '🩹', 'pill': '💊',
+        // Activities
+        'running': '🏃', 'walking': '🚶', 'swimming': '🏊', 'dancing': '💃',
+        'playing': '🎮', 'reading': '📖', 'writing': '✍️', 'drawing': '🎨',
+        'cooking': '🍳', 'eating': '🍽️', 'drinking': '🥤', 'sleeping': '😴',
+        // Weather
+        'rain': '🌧️', 'storm': '⛈️', 'wind': '💨', 'fog': '🌫️',
+        'snowflake': '❄️', 'snowman': '⛄', 'lightning': '⚡',
+        'sunny': '☀️', 'partly sunny': '⛅', 'night': '🌙', 'day': '☀️'
+    };
+    
+    // Convert prompt to lowercase for matching
+    const lowerPrompt = prompt.toLowerCase();
+    
+    // Split the prompt into words
+    const words = lowerPrompt.split(/[\s,]+/);
+    
+    // Find relevant emojis
+    let emojis = [];
+    for (const word of words) {
+        if (emojiMap[word]) {
+            if (!emojis.includes(emojiMap[word])) { // Avoid duplicates
+                emojis.push(emojiMap[word]);
+            }
+        }
+    }
+    
+    // If no specific emojis found, use a generic art/picture emoji
+    if (emojis.length === 0) {
+        emojis = ['🎨'];
+    }
+    
+    // Limit to 10 emojis to avoid excessive length
+    emojis = emojis.slice(0, 10);
+    
+    // Create an artistic representation using emojis
+    const emojiRows = [];
+    
+    // First row: all emojis in a grid-like pattern
+    if (emojis.length > 0) {
+        emojiRows.push(emojis.join(' '));
+    }
+    
+    // Second row: if we have multiple emojis, arrange differently
+    if (emojis.length > 2) {
+        // Split emojis into two lines for better visual appearance
+        const midPoint = Math.ceil(emojis.length / 2);
+        const firstHalf = emojis.slice(0, midPoint);
+        const secondHalf = emojis.slice(midPoint);
+        
+        if (firstHalf.length > 0) {
+            emojiRows.push(firstHalf.join(' '));
+        }
+        if (secondHalf.length > 0) {
+            emojiRows.push(secondHalf.join(' '));
+        }
+    } else if (emojis.length === 2) {
+        // If only two emojis, put them in separate rows
+        emojiRows.push(emojis[0]);
+        emojiRows.push(emojis[1]);
+    }
+    
+    // Add a decorative separator
+    emojiRows.push('─────');
+    
+    // Add the original prompt at the bottom
+    emojiRows.push(prompt.substring(0, 25) + (prompt.length > 25 ? '...' : ''));
+    
+    return emojiRows.join('\n');
+}
+
 // API endpoint to generate images from text
 app.post('/api/image', async (req, res) => {
     try {
-        const { prompt, userId } = req.body;
+        const { prompt, userId, mode } = req.body;
 
         if (!prompt || !prompt.trim()) {
             return res.status(400).json({
@@ -447,8 +554,29 @@ app.post('/api/image', async (req, res) => {
                     });
             }
         }
-
-        // If OpenAI is available and you want to use it, do so.
+                
+        // Check if emoji mode is requested
+        if (mode === 'emoji') {
+            const emojiArt = textToEmoji(prompt);
+            // Create an SVG with the emoji art
+            const svgContent = `<svg xmlns='http://www.w3.org/2000/svg' width='512' height='512' style='background:white'>
+                <style>.emoji-art { font-family: monospace; font-size: 16px; white-space: pre-line; }</style>
+                <text x='10' y='30' class='emoji-art' fill='black'>${emojiArt.replace(/[<>&]/g, (char) => {
+                    switch(char) {
+                        case '<': return '&lt;';
+                        case '>': return '&gt;';
+                        case '&': return '&amp;';
+                        default: return char;
+                    }
+                })}</text>
+            </svg>`;
+            // Properly encode the SVG for data URL
+            const encodedSvg = encodeURIComponent(svgContent).replace(/'/g, '%27').replace(/"/g, '%22').replace(/\s+/g, ' ');
+            const emojiImageUrl = `data:image/svg+xml;utf8,${encodedSvg}`;
+            return res.json({ imageUrl: emojiImageUrl });
+        }
+                
+        // Try OpenAI if available and enabled
         if (openai && process.env.OPENAI_USE_FOR_IMAGES === 'true') {
             const result = await openai.images.generate({
                 model: 'dall-e-3',
@@ -456,22 +584,139 @@ app.post('/api/image', async (req, res) => {
                 size: '1024x1024',
                 n: 1
             });
-
+        
             const image = result.data && result.data[0];
             const imageUrl = image && image.url;
-
+        
             if (!imageUrl) {
                 throw new Error('Image generation failed: no URL returned.');
             }
-
+        
             return res.json({
                 imageUrl
             });
         }
-
+        
+        // Try Stability AI if available
+        if (process.env.STABILITY_API_KEY && process.env.STABILITY_USE_FOR_IMAGES === 'true') {
+            const stabilityResponse = await fetch('https://api.stability.ai/v1/generation/stable-diffusion-v1-6/text-to-image', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${process.env.STABILITY_API_KEY}`,
+                    'Accept': 'application/json'
+                },
+                body: JSON.stringify({
+                    text_prompts: [
+                        {
+                            text: prompt
+                        }
+                    ],
+                    cfg_scale: 7,
+                    height: 1024,
+                    width: 1024,
+                    samples: 1,
+                    steps: 30
+                })
+            });
+            
+            if (!stabilityResponse.ok) {
+                console.error('Stability AI error:', await stabilityResponse.text());
+            } else {
+                const stabilityData = await stabilityResponse.json();
+                if (stabilityData.artifacts && stabilityData.artifacts[0]) {
+                    // Stability AI returns base64 encoded images
+                    const imageUrl = `data:image/png;base64,${stabilityData.artifacts[0].base64}`;
+                    return res.json({ imageUrl });
+                }
+            }
+        }
+        
+        // Try Hugging Face if available
+        if (process.env.HUGGINGFACE_API_KEY && process.env.HUGGINGFACE_USE_FOR_IMAGES === 'true') {
+            try {
+                console.log('🔄 Attempting Hugging Face image generation for prompt:', prompt);
+                
+                const hfResponse = await fetch(
+                    `https://api-inference.huggingface.co/models/THUDM/cogview-2`,
+                    {
+                        headers: { 
+                            'Authorization': `Bearer ${process.env.HUGGINGFACE_API_KEY}`
+                        },
+                        method: 'POST',
+                        body: JSON.stringify({
+                            inputs: prompt,
+                        })
+                    }
+                );
+                
+                console.log('HF Response status:', hfResponse.status);
+                
+                if (hfResponse.ok) {
+                    const arrayBuffer = await hfResponse.arrayBuffer();
+                    
+                    // Check if the response is actually an image (PNG/JPG header)
+                    const uint8Array = new Uint8Array(arrayBuffer.slice(0, 8));
+                    const header = Array.from(uint8Array).map(b => b.toString(16)).join('');
+                    
+                    // PNG signature: 89 50 4e 47 0d 0a 1a 0a
+                    const isPng = header.startsWith('89504e470d0a1a0a');
+                    // JPEG signature: ff d8 ff
+                    const isJpeg = header.startsWith('ffd8ff');
+                    
+                    if (isPng || isJpeg) {
+                        const base64Image = Buffer.from(arrayBuffer).toString('base64');
+                        const imageUrl = `data:image/png;base64,${base64Image}`;
+                        console.log('✅ Hugging Face image generated successfully');
+                        return res.json({ imageUrl });
+                    } else {
+                        // The response might be JSON with error/informational message
+                        const textResponse = Buffer.from(arrayBuffer).toString('utf8');
+                        console.log('📝 Hugging Face response might be text:', textResponse.substring(0, 200));
+                        
+                        // Try to parse as JSON to see if it's an error message
+                        try {
+                            const jsonResponse = JSON.parse(textResponse);
+                            console.error('❌ Hugging Face API returned JSON error:', jsonResponse);
+                            
+                            // If it's a model loading message, we might need to handle retries
+                            if (jsonResponse.error && jsonResponse.time) {
+                                console.log(`⏳ Model loading, retry after ${jsonResponse.time}s`);
+                                // In a real implementation, we could implement retry logic here
+                            }
+                        } catch (e) {
+                            // Not JSON, might be HTML error page or plain text
+                            console.error('❌ Hugging Face response is not an image:', textResponse.substring(0, 200));
+                        }
+                    }
+                } else {
+                    const errorText = await hfResponse.text();
+                    console.error('❌ Hugging Face API error response:', errorText);
+                }
+            } catch (error) {
+                console.error('🚨 Hugging Face API error:', error.message);
+            }
+        }
+        
+        // Alternative: Use a free image generation service
+        // This is a simple service that generates images based on text
+        try {
+            console.log('🔄 Attempting free image generation for prompt:', prompt);
+            
+            // Using an alternative approach - generate an image from a text prompt using a free service
+            const encodedPrompt = encodeURIComponent(prompt);
+            const imageUrl = `https://api.dicebear.com/7.x/bottts-neutral/png?seed=${encodedPrompt}&size=512`;
+            
+            console.log('✅ Free image service used successfully');
+            return res.json({ imageUrl });
+            
+        } catch (error) {
+            console.error('🚨 Free image service error:', error.message);
+        }
+        
         // Fallback: placeholder image
-        const encodedPrompt = encodeURIComponent(prompt);
-        const imageUrl = `https://via.placeholder.com/512/667eea/ffffff?text=${encodedPrompt.substring(0, 20)}`;
+        const fallbackPrompt = encodeURIComponent(prompt);
+        const imageUrl = `https://via.placeholder.com/512/667eea/ffffff?text=${fallbackPrompt.substring(0, 20)}`;
 
         res.json({ imageUrl });
     } catch (error) {
@@ -622,7 +867,7 @@ async function isAdmin(userId) {
 
         // Allow if is_admin is true OR email matches admin email
         const isAdminFlag = !error && data && data.is_admin === true;
-        const isAdminEmail = !error && data && data.email === 'howtotutorialbysreenikesh@gmail.com';
+        const isAdminEmail = !error && data && data.email === 'howtotutorialbysrinikesh@gmail.com';
         
         return isAdminFlag || isAdminEmail;
     } catch (error) {
@@ -694,9 +939,34 @@ app.post('/api/admin/update-user', async (req, res) => {
             return res.status(400).json({ error: 'Missing parameters' });
         }
 
+        // Sanitize updates to prevent scientific notation issues
+        const sanitizedUpdates = { ...updates };
+        
+        if (sanitizedUpdates.coins !== undefined) {
+            // Convert scientific notation to regular number and ensure it's an integer
+            let coinValue = sanitizedUpdates.coins;
+            if (typeof coinValue === 'string') {
+                // Parse the string to a number
+                coinValue = parseFloat(coinValue);
+            }
+            
+            // Check if it's a valid number
+            if (isNaN(coinValue)) {
+                return res.status(400).json({ error: 'Invalid coin value' });
+            }
+            
+            // Limit to a reasonable range
+            coinValue = Math.max(0, Math.min(Math.floor(coinValue), 999999999));
+            sanitizedUpdates.coins = coinValue;
+        }
+
+        if (sanitizedUpdates.is_admin !== undefined) {
+            sanitizedUpdates.is_admin = Boolean(sanitizedUpdates.is_admin);
+        }
+
         const { error } = await supabase
             .from('users')
-            .update(updates)
+            .update(sanitizedUpdates)
             .eq('id', targetUserId);
 
         if (error) throw error;
@@ -705,6 +975,60 @@ app.post('/api/admin/update-user', async (req, res) => {
     } catch (error) {
         console.error('Admin update user error:', error);
         res.status(500).json({ error: error.message });
+    }
+});
+
+app.delete('/api/admin/delete-user', async (req, res) => {
+    try {
+        const { adminUserId, targetUserId } = req.body;
+
+        if (!await isAdmin(adminUserId)) {
+            return res.status(403).json({ error: 'Admin access required' });
+        }
+
+        if (!supabase || !targetUserId) {
+            return res.status(400).json({ error: 'Missing parameters' });
+        }
+
+        // Delete user from multiple related tables
+        const tables = ['chats', 'messages', 'user_settings', 'usage_limits', 
+                       'game_results', 'memories', 'files', 'referral_codes', 'users'];
+        
+        let deletedCount = 0;
+        
+        for (const table of tables) {
+            try {
+                let result;
+                if (table === 'users') {
+                    // For users table, use 'id' instead of 'user_id'
+                    result = await supabase
+                        .from('users')
+                        .delete()
+                        .eq('id', targetUserId);
+                } else {
+                    // For other tables, use 'user_id'
+                    result = await supabase
+                        .from(table)
+                        .delete()
+                        .eq('user_id', targetUserId);
+                }
+                
+                // Check if there was an error in the result
+                if (result.error) {
+                    console.error(`Error deleting from ${table}:`, result.error);
+                } else {
+                    deletedCount++;
+                }
+            } catch (tableError) {
+                console.error(`Exception deleting from ${table}:`, tableError);
+                // Continue with other tables even if one fails
+            }
+        }
+
+        res.json({ success: true, message: `User deleted successfully. Tables affected: ${deletedCount}` });
+    } catch (error) {
+        console.error('Admin delete user error:', error);
+        res.status(500).json({ error: error.message || 'Internal server error' });
     }
 });
 

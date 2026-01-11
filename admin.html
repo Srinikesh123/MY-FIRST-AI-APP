@@ -439,6 +439,7 @@
                                 <td>
                                     <div class="user-actions">
                                         <button class="btn btn-primary btn-small" onclick="editUser('${user.id}')">Edit</button>
+                                        <button class="btn btn-danger btn-small" onclick="deleteUser('${user.id}', '${escapeHtml(user.email || '')}')">Delete</button>
                                     </div>
                                 </td>
                             </tr>
@@ -523,6 +524,35 @@
                 showMessage('Error updating user: ' + error.message, 'error');
             }
         });
+
+        async function deleteUser(userId, userEmail) {
+            if (!confirm(`Are you sure you want to delete user ${userEmail}? This will permanently remove the account and all associated data.`)) {
+                return;
+            }
+
+            try {
+                // Use server API to delete user (bypasses RLS)
+                const response = await fetch('http://localhost:3000/api/admin/delete-user', {
+                    method: 'DELETE',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        adminUserId: currentUserId,
+                        targetUserId: userId
+                    })
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Failed to delete user');
+                }
+
+                showMessage('User deleted successfully', 'success');
+                // Reload users immediately to reflect changes
+                await loadUsers();
+            } catch (error) {
+                showMessage('Error deleting user: ' + error.message, 'error');
+            }
+        }
 
         function showMessage(message, type) {
             const msgDiv = document.getElementById('message');
