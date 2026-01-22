@@ -1,28 +1,51 @@
 # Copy this file to .env and add your configuration
 
-# MongoDB Connection
+# MongoDB Connection (optional)
 # Get your MongoDB URI from: https://www.mongodb.com/cloud/atlas
-# Format: mongodb+srv://username:password@cluster.mongodb.net/database-name
 MONGODB_URI=your_mongodb_connection_string_here
 
 # JWT Secret (change this to a random string in production)
 JWT_SECRET=your-super-secret-jwt-key-change-this-in-production
 
-# OpenAI API Configuration (Optional - will auto-fallback to Groq if quota exceeded)
-OPENAI_API_KEY=your_openai_api_key_here
+# ============================================
+# SUPABASE CONFIGURATION (REQUIRED for DB sync)
+# ============================================
+# Get these from: https://supabase.com/dashboard/project/YOUR_PROJECT/settings/api
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_ANON_KEY=your_supabase_anon_key_here
+SUPABASE_SERVICE_KEY=your_supabase_service_key_here
 
-# Optional: Specify which OpenAI model to use (default: gpt-3.5-turbo)
-# Options: gpt-3.5-turbo, gpt-4, gpt-4-turbo-preview
+# ============================================
+# AI CONFIGURATION
+# ============================================
+
+# OpenAI API Configuration (Optional - will auto-fallback to Groq if not set)
+OPENAI_API_KEY=
 OPENAI_MODEL=gpt-3.5-turbo
 
 # Groq API Configuration (FREE alternative using Llama models)
 # Get your free API key at: https://console.groq.com/keys
-# Groq is free, fast, and uses open-source Llama models
 GROQ_API_KEY=your_groq_api_key_here
-
-# Optional: Specify which Groq model to use (default: llama-3.1-8b-instant)
-# Options: llama-3.1-8b-instant, llama-3.1-70b-versatile, mixtral-8x7b-32768
 GROQ_MODEL=llama-3.1-8b-instant
+
+# ============================================
+# IMAGE GENERATION (Optional)
+# ============================================
+
+# Hugging Face (Recommended - free tier available)
+HUGGINGFACE_USE_FOR_IMAGES=true
+HUGGINGFACE_API_KEY=your_huggingface_api_key_here
+
+# OpenAI DALL-E (uses quota)
+OPENAI_USE_FOR_IMAGES=false
+
+# Stability AI
+STABILITY_USE_FOR_IMAGES=false
+STABILITY_API_KEY=
+
+# Replicate
+REPLICATE_USE_FOR_IMAGES=false
+REPLICATE_API_TOKEN=
 
 # Server Port (default: 3000)
 PORT=3000

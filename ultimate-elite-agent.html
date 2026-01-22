@@ -1,0 +1,1042 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ultimate Elite Agent</title>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #0f0f23, #1a1a2e);
+            color: #e0e0e0;
+            height: 100vh;
+            overflow: hidden;
+        }
+        
+        .container {
+            display: grid;
+            grid-template-columns: 250px 1fr 300px;
+            grid-template-rows: 70px 1fr;
+            height: 100vh;
+        }
+        
+        /* Header */
+        .header {
+            grid-column: 1 / -1;
+            background: linear-gradient(90deg, #16213e, #0f3460);
+            border-bottom: 2px solid #4361ee;
+            display: flex;
+            align-items: center;
+            padding: 0 25px;
+            justify-content: space-between;
+        }
+        
+        .logo {
+            font-size: 22px;
+            font-weight: bold;
+            background: linear-gradient(45deg, #4cc9f0, #4361ee);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            background: rgba(67, 97, 238, 0.1);
+            padding: 10px 20px;
+            border-radius: 25px;
+            border: 1px solid #4361ee;
+        }
+        
+        .user-avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #4cc9f0, #4361ee);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 16px;
+        }
+        
+        .user-details {
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .user-email {
+            font-weight: 600;
+            font-size: 14px;
+            color: #4cc9f0;
+        }
+        
+        .user-status {
+            font-size: 12px;
+            color: #66fcf1;
+        }
+        
+        /* Sidebar - Projects */
+        .projects-sidebar {
+            background: linear-gradient(180deg, #16213e, #1a1a2e);
+            border-right: 1px solid #4361ee;
+            padding: 25px;
+            overflow-y: auto;
+        }
+        
+        .projects-header {
+            margin-bottom: 25px;
+        }
+        
+        .projects-title {
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 15px;
+            color: #4cc9f0;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .project-item {
+            padding: 12px 15px;
+            border-radius: 8px;
+            margin-bottom: 8px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            transition: all 0.2s;
+            border: 1px solid transparent;
+        }
+        
+        .project-item:hover {
+            background: rgba(67, 97, 238, 0.1);
+            border-color: #4361ee;
+        }
+        
+        .project-item.active {
+            background: rgba(67, 97, 238, 0.2);
+            border-left: 4px solid #4361ee;
+        }
+        
+        .project-icon {
+            font-size: 16px;
+        }
+        
+        .project-name {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        
+        .project-actions {
+            display: flex;
+            gap: 5px;
+        }
+        
+        .project-delete {
+            background: rgba(220, 36, 51, 0.2);
+            color: #dc2433;
+            border: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .project-delete:hover {
+            background: rgba(220, 36, 51, 0.4);
+        }
+        
+        .new-project-btn {
+            width: 100%;
+            padding: 10px 15px;
+            background: linear-gradient(45deg, #4361ee, #3a0ca3);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            margin-top: 15px;
+        }
+        
+        /* Main Content - Chat */
+        .main-chat {
+            padding: 25px;
+            display: flex;
+            flex-direction: column;
+            background: linear-gradient(135deg, #0f0f0f, #16213e);
+        }
+        
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            padding: 20px;
+            background: rgba(0,0,0,0.3);
+            border-radius: 12px;
+            margin-bottom: 20px;
+        }
+        
+        .message {
+            max-width: 85%;
+            padding: 18px 22px;
+            border-radius: 15px;
+            line-height: 1.6;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+        
+        .user-message {
+            background: linear-gradient(135deg, #4361ee, #3a0ca3);
+            align-self: flex-end;
+            border-bottom-right-radius: 5px;
+        }
+        
+        .agent-message {
+            background: linear-gradient(135deg, #2a2a2a, #1a1a1a);
+            align-self: flex-start;
+            border-bottom-left-radius: 5px;
+            border-left: 3px solid #4cc9f0;
+        }
+        
+        .message-sender {
+            font-weight: 600;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .user-message .message-sender {
+            color: #66fcf1;
+        }
+        
+        .agent-message .message-sender {
+            color: #4cc9f0;
+        }
+        
+        .message-content {
+            font-size: 14px;
+            line-height: 1.6;
+        }
+        
+        .message-content pre {
+            background: rgba(0,0,0,0.3);
+            padding: 12px;
+            border-radius: 6px;
+            overflow-x: auto;
+            margin: 10px 0;
+            font-family: 'Consolas', monospace;
+            font-size: 12px;
+        }
+        
+        .message-content code {
+            background: rgba(0,0,0,0.2);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'Consolas', monospace;
+        }
+        
+        .input-area {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        
+        .command-hint {
+            text-align: center;
+            font-size: 12px;
+            color: #66fcf1;
+            margin-bottom: 5px;
+        }
+        
+        #userInput {
+            width: 100%;
+            background: #2a2a2a;
+            border: 2px solid #4361ee;
+            border-radius: 12px;
+            padding: 15px 20px;
+            color: #e0e0e0;
+            font-family: inherit;
+            font-size: 15px;
+            resize: vertical;
+            min-height: 100px;
+            outline: none;
+        }
+        
+        #userInput:focus {
+            border-color: #4cc9f0;
+            box-shadow: 0 0 15px rgba(67, 97, 238, 0.3);
+        }
+        
+        .send-container {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+        
+        #sendButton {
+            background: linear-gradient(45deg, #4cc9f0, #4361ee);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            padding: 12px 25px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        
+        #sendButton:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 20px rgba(76, 201, 240, 0.4);
+        }
+        
+        #sendButton:disabled {
+            background: #4a5568;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+        
+        .mode-indicator {
+            background: rgba(67, 97, 238, 0.1);
+            color: #4cc9f0;
+            padding: 5px 10px;
+            border-radius: 20px;
+            font-size: 12px;
+            border: 1px solid #4361ee;
+        }
+        
+        /* Right Sidebar - Quick Actions */
+        .actions-sidebar {
+            background: linear-gradient(180deg, #16213e, #0f0f0f);
+            border-left: 1px solid #4361ee;
+            padding: 25px;
+            overflow-y: auto;
+        }
+        
+        .actions-header {
+            margin-bottom: 25px;
+        }
+        
+        .actions-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #4cc9f0;
+            margin-bottom: 15px;
+        }
+        
+        .quick-actions {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        
+        .quick-action-btn {
+            background: rgba(67, 97, 238, 0.1);
+            color: #4cc9f0;
+            border: 1px solid #4361ee;
+            padding: 12px 15px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.2s;
+            text-align: left;
+        }
+        
+        .quick-action-btn:hover {
+            background: rgba(67, 97, 238, 0.3);
+            transform: translateX(3px);
+        }
+        
+        .status-bar {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: linear-gradient(90deg, #16213e, #0f3460);
+            color: #4cc9f0;
+            padding: 8px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 12px;
+            border-top: 1px solid #4361ee;
+        }
+        
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .status.warning { color: #f59e0b; }
+        .status.error { color: #ef4444; }
+        .status.success { color: #10b981; }
+        
+        .loading {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255,255,255,.3);
+            border-radius: 50%;
+            border-top-color: #4cc9f0;
+            animation: spin 1s ease-in-out infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <div class="logo">🚀 Ultimate Elite Agent</div>
+            <div class="user-info">
+                <div class="user-avatar" id="userAvatar">👤</div>
+                <div class="user-details">
+                    <div class="user-email" id="userEmail">Loading...</div>
+                    <div class="user-status" id="userStatus">Authenticating...</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Projects Sidebar -->
+        <div class="projects-sidebar">
+            <div class="projects-header">
+                <div class="projects-title">📁 My Projects</div>
+                <div style="font-size: 12px; color: #66fcf1; margin-bottom: 15px;">
+                    Click to continue coding sessions
+                </div>
+                <button class="new-project-btn" onclick="app.newProject()">+ New Project</button>
+            </div>
+            <div id="projectsList"></div>
+        </div>
+        
+        <!-- Main Chat Area -->
+        <div class="main-chat">
+            <div class="chat-messages" id="messages">
+                <div class="message agent-message">
+                    <div class="message-sender">🤖 Elite Agent</div>
+                    <div class="message-content">
+                        <h3>🚀 Welcome to Ultimate Elite Agent!</h3>
+                        <p>Use slash commands to switch modes:</p>
+                        <ul>
+                            <li><code>/agentmode</code> - Normal chat mode</li>
+                            <li><code>/codemode</code> - Elite coding mode</li>
+                            <li><code>/picturemode</code> - Image generation mode</li>
+                        </ul>
+                        <p>Start a new project or continue an existing one from the left sidebar.</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="input-area">
+                <div class="command-hint">Use /commands to switch modes (e.g., /codemode, /agentmode, /picturemode)</div>
+                <textarea id="userInput" placeholder="Type your message or command (e.g., /codemode then describe what you want to build)..."></textarea>
+                <div class="send-container">
+                    <div class="mode-indicator" id="modeIndicator">Mode: Agent</div>
+                    <button id="sendButton" onclick="app.sendMessage()">Send</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Actions Sidebar -->
+        <div class="actions-sidebar">
+            <div class="actions-header">
+                <div class="actions-title">⚡ Quick Actions</div>
+            </div>
+            <div class="quick-actions">
+                <button class="quick-action-btn" onclick="app.quickAction('/codemode Build a full-stack app')">🚀 Full-Stack App</button>
+                <button class="quick-action-btn" onclick="app.quickAction('/codemode Create a dashboard')">📊 Dashboard</button>
+                <button class="quick-action-btn" onclick="app.quickAction('/codemode Make a portfolio')">💼 Portfolio</button>
+                <button class="quick-action-btn" onclick="app.quickAction('/codemode Build a todo app')">✅ Todo App</button>
+                <button class="quick-action-btn" onclick="app.quickAction('/codemode Create a landing page')">🎯 Landing Page</button>
+                <button class="quick-action-btn" onclick="app.quickAction('/picturemode Generate a logo')">🎨 Logo Design</button>
+                <button class="quick-action-btn" onclick="app.quickAction('/agentmode Explain quantum computing')">🧠 Complex Topic</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Status Bar -->
+    <div class="status-bar">
+        <div class="status" id="statusIndicator">🚀 Initializing...</div>
+        <div>Ultimate Elite Agent v3.0</div>
+    </div>
+
+    <script>
+        class UltimateEliteAgent {
+            constructor() {
+                this.state = {
+                    currentProject: null,
+                    projects: [],
+                    currentMode: 'agent', // 'agent', 'code', 'picture'
+                    isProcessing: false,
+                    supabase: null,
+                    userId: null,
+                    userEmail: null,
+                    conversation: []
+                };
+                
+                this.init();
+            }
+            
+            async init() {
+                try {
+                    this.updateStatus('INITIALIZING', 'warning');
+                    
+                    // Get config from server
+                    const config = await this.fetchConfig();
+                    this.state.supabase = window.supabase.createClient(
+                        config.supabaseUrl, 
+                        config.supabaseAnonKey
+                    );
+                    
+                    // Enhanced authentication
+                    const { data: { session }, error: sessionError } = await this.state.supabase.auth.getSession();
+                    
+                    if (session?.user) {
+                        this.state.userId = session.user.id;
+                        this.state.userEmail = session.user.email;
+                        this.updateUserInfo(this.state.userEmail, 'Connected', '#4cc9f0');
+                        console.log('✅ Authenticated user:', this.state.userEmail);
+                        await this.loadProjects();
+                    } else {
+                        // Try direct user check as fallback
+                        const { data: { user }, error: userError } = await this.state.supabase.auth.getUser();
+                        if (user) {
+                            this.state.userId = user.id;
+                            this.state.userEmail = user.email;
+                            this.updateUserInfo(this.state.userEmail, 'Connected', '#4cc9f0');
+                            console.log('✅ Authenticated user (direct):', this.state.userEmail);
+                            await this.loadProjects();
+                        } else {
+                            this.updateUserInfo('Guest', 'Offline', '#ef4444');
+                            this.updateStatus('LOGIN_REQUIRED', 'error');
+                        }
+                    }
+                    
+                    this.setupEventListeners();
+                    this.updateStatus('READY');
+                    console.log('✅ Ultimate Elite Agent initialized');
+                    
+                } catch (error) {
+                    console.error('❌ Initialization failed:', error);
+                    this.updateStatus('ERROR', 'error');
+                    this.addMessage('agent', `❌ <strong>Startup Error:</strong> ${error.message}`);
+                }
+            }
+            
+            async fetchConfig() {
+                const response = await fetch('/api/config');
+                if (!response.ok) {
+                    throw new Error(`Config fetch failed: ${response.status}`);
+                }
+                return await response.json();
+            }
+            
+            updateUserInfo(email, status, color) {
+                const emailEl = document.getElementById('userEmail');
+                const statusEl = document.getElementById('userStatus');
+                
+                if (emailEl) emailEl.textContent = email;
+                if (statusEl) {
+                    statusEl.textContent = status;
+                    statusEl.style.color = color;
+                }
+                
+                // Update avatar initials
+                if (email && email !== 'Guest' && email !== 'Loading...') {
+                    const initials = email.charAt(0).toUpperCase();
+                    const avatarEl = document.getElementById('userAvatar');
+                    if (avatarEl) avatarEl.textContent = initials;
+                }
+            }
+            
+            setupEventListeners() {
+                const input = document.getElementById('userInput');
+                const sendButton = document.getElementById('sendButton');
+                
+                if (input) {
+                    input.addEventListener('keydown', (e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault();
+                            this.sendMessage();
+                        }
+                    });
+                    
+                    input.addEventListener('input', () => {
+                        if (sendButton) {
+                            sendButton.disabled = !input.value.trim();
+                        }
+                    });
+                }
+            }
+            
+            async loadProjects() {
+                if (!this.state.userId || !this.state.supabase) return;
+                
+                try {
+                    const { data, error } = await this.state.supabase
+                        .from('coding_projects')
+                        .select('*')
+                        .eq('user_id', this.state.userId)
+                        .order('updated_at', { ascending: false });
+                    
+                    if (error) throw error;
+                    
+                    this.state.projects = data || [];
+                    this.updateProjectsList();
+                    console.log('✅ Loaded', this.state.projects.length, 'projects');
+                    
+                } catch (error) {
+                    console.log('No projects found');
+                    this.state.projects = [];
+                    this.updateProjectsList();
+                }
+            }
+            
+            updateProjectsList() {
+                const projectsList = document.getElementById('projectsList');
+                if (!projectsList) return;
+                
+                if (this.state.projects.length === 0) {
+                    projectsList.innerHTML = `
+                        <div style="color:#66fcf1;text-align:center;padding:40px;font-size:14px;">
+                            <div style="font-size:24px;margin-bottom:10px;">📁</div>
+                            <div>No projects yet</div>
+                            <div style="font-size:12px;margin-top:5px;color:#4361ee;">Start a new project!</div>
+                        </div>
+                    `;
+                    return;
+                }
+                
+                projectsList.innerHTML = this.state.projects.map(project => `
+                    <div class="project-item ${this.state.currentProject?.id === project.id ? 'active' : ''}" 
+                         onclick="app.selectProject('${project.id}', '${project.name}')">
+                        <span class="project-icon">📦</span>
+                        <span class="project-name">${project.name}</span>
+                        <div class="project-actions">
+                            <button class="project-delete" onclick="event.stopPropagation(); app.deleteProject('${project.id}', '${project.name}')">×</button>
+                        </div>
+                    </div>
+                `).join('');
+            }
+            
+            async selectProject(projectId, projectName) {
+                if (!this.state.supabase) return;
+                
+                try {
+                    const { data, error } = await this.state.supabase
+                        .from('coding_projects')
+                        .select('*')
+                        .eq('id', projectId)
+                        .single();
+                    
+                    if (error) throw error;
+                    
+                    this.state.currentProject = data;
+                    this.addMessage('agent', `✅ <strong>Selected project:</strong> ${projectName}<br>Now in coding mode. Describe what you want to build or improve.`);
+                    this.state.currentMode = 'code';
+                    this.updateModeIndicator();
+                    
+                } catch (error) {
+                    console.error('Failed to load project:', error);
+                    this.addMessage('agent', `❌ <strong>Error:</strong> ${error.message}`);
+                }
+            }
+            
+            newProject() {
+                const name = prompt('Enter project name:');
+                if (name && name.trim()) {
+                    this.state.currentProject = {
+                        id: crypto.randomUUID(),
+                        user_id: this.state.userId,
+                        name: name.trim(),
+                        files: {},
+                        conversation: [],
+                        created_at: new Date().toISOString(),
+                        updated_at: new Date().toISOString()
+                    };
+                    this.addMessage('agent', `✅ <strong>New project created:</strong> ${name.trim()}`);
+                    this.state.currentMode = 'code';
+                    this.updateModeIndicator();
+                    this.updateProjectsList();
+                }
+            }
+            
+            updateModeIndicator() {
+                const modeEl = document.getElementById('modeIndicator');
+                if (modeEl) {
+                    modeEl.textContent = `Mode: ${this.state.currentMode.charAt(0).toUpperCase() + this.state.currentMode.slice(1)}`;
+                }
+            }
+            
+            async sendMessage() {
+                const input = document.getElementById('userInput');
+                const message = input.value.trim();
+                
+                if (!message || this.state.isProcessing) return;
+                
+                // Check for slash commands
+                if (message.startsWith('/')) {
+                    this.handleSlashCommand(message);
+                    input.value = '';
+                    return;
+                }
+                
+                this.state.isProcessing = true;
+                input.value = '';
+                
+                const sendButton = document.getElementById('sendButton');
+                if (sendButton) sendButton.disabled = true;
+                
+                // Add user message
+                this.addMessage('user', message);
+                
+                // Show typing indicator
+                const typingId = this.showTyping();
+                
+                try {
+                    // Handle different modes
+                    if (this.state.currentMode === 'code') {
+                        await this.handleCodingRequest(message);
+                    } else if (this.state.currentMode === 'picture') {
+                        await this.handlePictureRequest(message);
+                    } else {
+                        await this.handleAgentRequest(message);
+                    }
+                    
+                } catch (error) {
+                    console.error('API Error:', error);
+                    this.hideTyping(typingId);
+                    this.addMessage('agent', `❌ <strong>Error:</strong> ${error.message}`);
+                    this.updateStatus('ERROR', 'error');
+                }
+                
+                this.state.isProcessing = false;
+                if (sendButton) sendButton.disabled = false;
+            }
+            
+            async handleSlashCommand(command) {
+                const cmd = command.toLowerCase().trim();
+                
+                if (cmd === '/agentmode') {
+                    this.state.currentMode = 'agent';
+                    this.updateModeIndicator();
+                    this.addMessage('agent', '✅ Switched to <strong>Agent Mode</strong>. Ready for general conversation.');
+                } else if (cmd === '/codemode') {
+                    this.state.currentMode = 'code';
+                    this.updateModeIndicator();
+                    if (!this.state.currentProject) {
+                        this.addMessage('agent', '📦 Enter project name to create a new coding project, or select an existing one from the sidebar.');
+                    } else {
+                        this.addMessage('agent', `✅ Switched to <strong>Coding Mode</strong>. Working on project: ${this.state.currentProject.name}`);
+                    }
+                } else if (cmd === '/picturemode') {
+                    this.state.currentMode = 'picture';
+                    this.updateModeIndicator();
+                    this.addMessage('agent', '🎨 Switched to <strong>Picture Mode</strong>. Describe what image you want to generate.');
+                } else {
+                    this.addMessage('agent', `❓ Unknown command: ${command}. Use /agentmode, /codemode, or /picturemode.`);
+                }
+            }
+            
+            async handleCodingRequest(message) {
+                const typingId = this.showTyping();
+                
+                // Prepare current project data
+                const currentProject = this.state.currentProject || {
+                    id: null,
+                    name: 'New Project',
+                    files: {},
+                    conversation: []
+                };
+                
+                try {
+                    // Call coding API
+                    const response = await fetch('/api/coding-agent', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            prompt: message,
+                            currentProject: currentProject,
+                            history: currentProject.conversation.slice(-5)
+                        })
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (!response.ok) {
+                        throw new Error(data.error || `HTTP ${response.status}: ${response.statusText}`);
+                    }
+                    
+                    // Update project with new files and conversation
+                    if (data.files) {
+                        Object.entries(data.files).forEach(([filename, content]) => {
+                            if (!this.state.currentProject) {
+                                this.state.currentProject = {
+                                    id: crypto.randomUUID(),
+                                    user_id: this.state.userId,
+                                    name: 'New Project',
+                                    files: {},
+                                    conversation: [],
+                                    created_at: new Date().toISOString(),
+                                    updated_at: new Date().toISOString()
+                                };
+                            }
+                            this.state.currentProject.files[filename] = content;
+                        });
+                    }
+                    
+                    // Add to conversation history
+                    if (!this.state.currentProject) {
+                        this.state.currentProject = {
+                            id: crypto.randomUUID(),
+                            user_id: this.state.userId,
+                            name: 'New Project',
+                            files: {},
+                            conversation: [],
+                            created_at: new Date().toISOString(),
+                            updated_at: new Date().toISOString()
+                        };
+                    }
+                    
+                    this.state.currentProject.conversation.push({ role: 'user', content: message });
+                    this.state.currentProject.conversation.push({ role: 'assistant', content: data.response });
+                    
+                    // Save project if user is logged in
+                    if (this.state.userId && this.state.currentProject) {
+                        await this.saveProject();
+                    }
+                    
+                    // Hide typing and show response
+                    this.hideTyping(typingId);
+                    this.addMessage('agent', data.response || 'Here\'s what I built for you!');
+                    
+                    // Update projects list
+                    await this.loadProjects();
+                    
+                } catch (error) {
+                    this.hideTyping(typingId);
+                    throw error;
+                }
+            }
+            
+            async handlePictureRequest(message) {
+                const typingId = this.showTyping();
+                
+                try {
+                    // Simulate picture generation
+                    setTimeout(() => {
+                        this.hideTyping(typingId);
+                        this.addMessage('agent', `🎨 Generated image based on: "${message}"<br>Image generation would happen here in the real implementation.`);
+                        
+                        // Switch back to agent mode after picture generation
+                        this.state.currentMode = 'agent';
+                        this.updateModeIndicator();
+                    }, 2000);
+                    
+                } catch (error) {
+                    this.hideTyping(typingId);
+                    throw error;
+                }
+            }
+            
+            async handleAgentRequest(message) {
+                const typingId = this.showTyping();
+                
+                try {
+                    // Call regular chat API
+                    const response = await fetch('/api/chat', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            message: message,
+                            history: this.state.conversation.slice(-10),
+                            mode: 'detailed'
+                        })
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (!response.ok) {
+                        throw new Error(data.error || `HTTP ${response.status}: ${response.statusText}`);
+                    }
+                    
+                    // Add to general conversation
+                    this.state.conversation.push({ role: 'user', content: message });
+                    this.state.conversation.push({ role: 'assistant', content: data.response });
+                    
+                    this.hideTyping(typingId);
+                    this.addMessage('agent', data.response);
+                    
+                } catch (error) {
+                    this.hideTyping(typingId);
+                    throw error;
+                }
+            }
+            
+            async saveProject() {
+                if (!this.state.userId || !this.state.currentProject || !this.state.supabase) return;
+                
+                try {
+                    const projectData = {
+                        user_id: this.state.userId,
+                        name: this.state.currentProject.name,
+                        files: this.state.currentProject.files,
+                        conversation: this.state.currentProject.conversation,
+                        updated_at: new Date().toISOString()
+                    };
+                    
+                    let result;
+                    if (this.state.currentProject.id) {
+                        // Update existing project
+                        result = await this.state.supabase
+                            .from('coding_projects')
+                            .update(projectData)
+                            .eq('id', this.state.currentProject.id)
+                            .eq('user_id', this.state.userId)
+                            .select()
+                            .single();
+                    } else {
+                        // Create new project
+                        result = await this.state.supabase
+                            .from('coding_projects')
+                            .insert(projectData)
+                            .select()
+                            .single();
+                        
+                        if (result.data) {
+                            this.state.currentProject.id = result.data.id;
+                        }
+                    }
+                    
+                    if (result.error) throw result.error;
+                    
+                    // Refresh projects list
+                    await this.loadProjects();
+                    
+                } catch (error) {
+                    console.error('Save project failed:', error);
+                    this.addMessage('agent', `⚠️ <strong>Warning:</strong> Could not save project: ${error.message}`);
+                }
+            }
+            
+            async deleteProject(projectId, projectName) {
+                if (!confirm(`Delete project "${projectName}"? This cannot be undone.`)) {
+                    return;
+                }
+                
+                try {
+                    if (!this.state.supabase) {
+                        throw new Error('Database not initialized');
+                    }
+                    
+                    const { error } = await this.state.supabase
+                        .from('coding_projects')
+                        .delete()
+                        .eq('id', projectId)
+                        .eq('user_id', this.state.userId);
+                    
+                    if (error) throw error;
+                    
+                    // If we're deleting the current project, clear it
+                    if (this.state.currentProject && this.state.currentProject.id === projectId) {
+                        this.state.currentProject = null;
+                    }
+                    
+                    // Reload projects list
+                    await this.loadProjects();
+                    
+                    this.addMessage('agent', `🗑️ Project "${projectName}" deleted successfully.`);
+                    
+                } catch (error) {
+                    console.error('Delete project failed:', error);
+                    this.addMessage('agent', `❌ <strong>Error:</strong> Could not delete project: ${error.message}`);
+                }
+            }
+            
+            addMessage(sender, content) {
+                const messages = document.getElementById('messages');
+                if (!messages) return;
+                
+                const messageDiv = document.createElement('div');
+                messageDiv.className = `message ${sender}-message`;
+                messageDiv.innerHTML = `
+                    <div class="message-sender">${sender === 'user' ? '👤 You' : '🤖 Elite Agent'}</div>
+                    <div class="message-content">${content}</div>
+                `;
+                messages.appendChild(messageDiv);
+                messages.scrollTop = messages.scrollHeight;
+            }
+            
+            showTyping() {
+                const messages = document.getElementById('messages');
+                if (!messages) return null;
+                
+                const typingDiv = document.createElement('div');
+                typingDiv.className = 'message agent-message';
+                typingDiv.id = 'typingIndicator';
+                typingDiv.innerHTML = `
+                    <div class="message-sender">🤖 Elite Agent</div>
+                    <div class="typing-indicator">
+                        <div class="loading"></div> Processing elite-level request...
+                    </div>
+                `;
+                messages.appendChild(typingDiv);
+                messages.scrollTop = messages.scrollHeight;
+                return typingDiv;
+            }
+            
+            hideTyping(element) {
+                if (element && element.parentNode) {
+                    element.remove();
+                }
+            }
+            
+            updateStatus(text, type = '') {
+                const statusEl = document.getElementById('statusIndicator');
+                if (statusEl) {
+                    statusEl.textContent = text;
+                    statusEl.className = 'status' + (type ? ` ${type}` : '');
+                }
+            }
+            
+            quickAction(action) {
+                const input = document.getElementById('userInput');
+                if (input) {
+                    input.value = action;
+                    input.focus();
+                }
+            }
+        }
+        
+        // Initialize app when DOM is loaded
+        document.addEventListener('DOMContentLoaded', () => {
+            window.app = new UltimateEliteAgent();
+        });
+    </script>
+</body>
+</html>
