@@ -144,7 +144,6 @@ class AIAssistant {
         this.saveSettingsBtn = document.getElementById('saveSettingsBtn');
         this.settingsMessage = document.getElementById('settingsMessage');
         this.clearMemoryBtn = document.getElementById('clearMemoryBtn');
-        this.clearAllChatsBtn = document.getElementById('clearAllChatsBtn'); // New button
         
         // Chat header
         this.chatHeader = document.getElementById('chatHeader');
@@ -912,7 +911,6 @@ Ultra: Unlimited`;
         }
         if (this.clearMemoryBtn) {
             this.clearMemoryBtn.addEventListener('click', () => this.clearMemory());
-            this.clearAllChatsBtn?.addEventListener('click', () => this.clearAllChats());
         }
         
         // Games button
@@ -1842,13 +1840,6 @@ Ultra: Unlimited`;
         }
 
         try {
-            // Check if coding agent mode is selected
-            if (this.settings.chatMode === 'coding') {
-                // Open legendary coding studio
-                window.location.href = 'legendary-coding-studio.html';
-                return;
-            }
-            
             // Check if image mode is enabled
             if (this.settings.imageMode) {
                 // Generate image instead of text response
@@ -2534,57 +2525,6 @@ Ultra: Unlimited`;
         }
     }
 
-    // Clear ALL chats and coding projects
-    async clearAllChats() {
-        if (!confirm('⚠️ DELETE ALL CHATS & PROJECTS?\n\nThis will permanently delete:\n• All regular chats\n• All coding agent projects\n• All messages\n\nTHIS CANNOT BE UNDONE!')) {
-            return;
-        }
-
-        try {
-            // Delete all regular chats and messages
-            const { error: chatsError } = await this.supabase
-                .from('chats')
-                .delete()
-                .eq('user_id', this.userId);
-
-            if (chatsError) throw new Error(`Failed to delete chats: ${chatsError.message}`);
-
-            // Delete all coding projects (handle missing table gracefully)
-            try {
-                const { error: projectsError } = await this.supabase
-                    .from('coding_projects')
-                    .delete()
-                    .eq('user_id', this.userId);
-
-                if (projectsError && !projectsError.message.includes('could not find the table')) {
-                    throw new Error(`Failed to delete projects: ${projectsError.message}`);
-                }
-                // If table doesn't exist, silently continue
-            } catch (projectsError) {
-                if (!projectsError.message.includes('could not find the table')) {
-                    throw new Error(`Failed to delete projects: ${projectsError.message}`);
-                }
-                // Table doesn't exist, that's fine
-                console.log('Coding projects table not found - continuing...');
-            }
-
-            // Reset local state
-            this.chats = [];
-            this.currentChatId = null;
-            this.currentChatName = null;
-            
-            // Update UI
-            this.updateChatsList();
-            this.clearChatContainer();
-            
-            alert('✅ All chats and projects deleted successfully!');
-            
-        } catch (error) {
-            console.error('Failed to clear all chats:', error);
-            alert(`Failed to clear chats: ${error.message}`);
-        }
-    }
-
     // ============================================
     // REALTIME SUBSCRIPTIONS (FIXED: Chat-specific)
     // ============================================
@@ -3060,4 +3000,3 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     new AIAssistant();
 });
-
