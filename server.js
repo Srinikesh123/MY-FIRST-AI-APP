@@ -198,6 +198,10 @@ app.post('/api/chat', async (req, res) => {
             systemPrompt += '\nIMPORTANT: The user is in coding mode. Prefer concise, correct code examples, focus on implementation, and return code blocks where helpful.';
         } else if (mode === 'detailed') {
             systemPrompt += '\nIMPORTANT: The user is in detailed mode. Provide more in-depth explanations and longer, more complete answers.';
+        } else if (mode === 'picture') {
+            systemPrompt += '\nIMPORTANT: The user is in picture mode. Respond with visual descriptions and image-related content.';
+        } else if (mode === 'code') {
+            systemPrompt += '\nIMPORTANT: The user is in code mode. Use GPT Codex for coding assistance, provide detailed code examples, and focus on programming solutions.';
         } else if (mode === 'fast') {
             systemPrompt += '\nIMPORTANT: The user is in fast mode. Prioritize short, direct answers over long explanations.';
         }

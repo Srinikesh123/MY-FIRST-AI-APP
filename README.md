@@ -11,6 +11,26 @@ A modern web-based AI assistant that connects to ChatGPT/OpenAI API to provide i
 - ✅ Modern, beautiful UI
 - ✅ Error handling with clear messages
 - ✅ Session-based conversation history
+- ✅ **NEW: Advanced Mode System** - Switch between different AI behaviors
+  - **Normal Mode** - Standard chat experience
+  - **Detailed Mode** - Long, comprehensive responses
+  - **Picture Mode** - Image-focused responses
+  - **Code Mode** - GPT Codex for coding assistance
+
+## Mode System Usage
+
+The application includes an advanced mode system that allows you to switch between different AI behaviors:
+
+1. Type `/` in the chat input field
+2. A dropdown menu will appear with mode options
+3. Select a mode using mouse click or arrow keys + Enter
+4. The AI will adjust its responses based on the selected mode
+
+Available commands:
+- `/normal` - Standard chat mode
+- `/detailed` - Long, detailed responses  
+- `/picture` - Image-focused responses
+- `/code` - GPT Codex for coding help
 
 ## Setup Instructions
 
@@ -68,13 +88,18 @@ Open `index.html` in your web browser, or serve it through the server.
 2. Open `index.html` in your browser
 3. Type your message and press Enter or click Send
 4. Toggle "Simple Language" for easier-to-understand responses
-5. The AI will respond with the exact answer from ChatGPT
+5. Use the mode system by typing `/` to switch between different AI behaviors
+6. The AI will respond with the exact answer from ChatGPT
 
 ## API Endpoints
 
 - `POST /api/chat` - Send a message to the AI
-  - Body: `{ message: string, sessionId: string, simpleLanguage: boolean }`
-  - Returns: `{ response: string, sessionId: string }`
+  - Body: `{ message: string, history: array, simpleLanguage: boolean, mode: string, mood: string, errorFreeMode: boolean }`
+  - Returns: `{ response: string }`
+
+- `POST /api/image` - Generate an image
+  - Body: `{ prompt: string, userId: string, mode: string }`
+  - Returns: `{ imageUrl: string }`
 
 - `GET /api/health` - Check if server is running
   - Returns: `{ status: string, message: string }`
@@ -102,7 +127,10 @@ You can change the OpenAI model in `.env`:
 - Check the server URL in `app.js` matches your server port
 - Check browser console for CORS errors
 
+**Mode system not working:**
+- Make sure you've applied the patch instruction in PATCH_INSTRUCTIONS.md
+- The mode system requires the `this.currentMode` integration in app.js
+
 ## License
 
 MIT
-
