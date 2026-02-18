@@ -1,5 +1,5 @@
 services:
-  - name: ai-assistant-backend
+  - name: ai-assistant-fullstack
     type: web
     env: node
     buildCommand: npm install
@@ -19,3 +19,5 @@ services:
         sync: false
       - key: HUGGINGFACE_API_KEY
         sync: false
+      - key: PORT
+        value: 10000

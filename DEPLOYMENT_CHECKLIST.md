@@ -30,7 +30,7 @@
 - [ ] Check all JavaScript files load without errors
 - [ ] Validate form submissions work properly
 
-## Deployment to Render (Backend)
+## Deployment to Render (Full-Stack)
 
 ### Repository Preparation
 - [ ] Push all code to GitHub repository
@@ -53,38 +53,17 @@
 - [ ] `SUPABASE_SERVICE_KEY`: Your Supabase service role key
 - [ ] `JWT_SECRET`: A strong random secret for JWT tokens
 - [ ] `HUGGINGFACE_API_KEY`: Your Hugging Face API key (for image generation)
+- [ ] `PORT`: Port for the server (typically 10000 on Render)
 
-### Backend Verification
+### Full-Stack Verification
 - [ ] Confirm backend deploys without errors
 - [ ] Verify health check endpoint works (`/health`)
 - [ ] Test API endpoints with deployed URL
+- [ ] Confirm static files (HTML, CSS, JS) are served properly
+- [ ] Test frontend loads correctly at root URL
 - [ ] Confirm database connectivity
 - [ ] Validate all modes work on deployed backend
-
-## Deployment to Vercel (Frontend)
-
-### Repository Preparation
-- [ ] Ensure repository is pushed to GitHub
-- [ ] Verify vercel.json exists in root directory
-- [ ] Confirm all frontend assets are committed
-
-### Vercel Setup
-- [ ] Create Vercel account
-- [ ] Import GitHub repository
-- [ ] Select AI Assistant repository
-- [ ] Set root directory to project root
-
-### Frontend Configuration
-- [ ] Verify build completes successfully
-- [ ] Check CORS headers are properly set
-- [ ] Confirm static file serving works
-
-### Frontend Verification
-- [ ] Access frontend at Vercel URL
-- [ ] Verify all pages load correctly
-- [ ] Test mode system dropdown functionality
-- [ ] Confirm connection to deployed backend
-- [ ] Validate all UI elements work properly
+- [ ] Test complete application functionality end-to-end
 
 ## Post-Deployment Testing
 
@@ -167,9 +146,8 @@
 
 ---
 
-**Deployed URLs:**
-- Backend (Render): ________________
-- Frontend (Vercel): ________________
+**Deployed URL:**
+- Application (Render): ________________
 
 **API Endpoint:**
 - Backend URL: ________________

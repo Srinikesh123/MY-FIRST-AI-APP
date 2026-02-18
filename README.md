@@ -65,7 +65,24 @@ cp .env.example .env
 
 Then edit `.env` and add your API key.
 
-### 4. Start the Server
+### 4. Update Frontend for Production (Critical Step)
+
+Before deploying, you need to update the API URL in `app.js` to work correctly in production:
+
+1. Open `app.js`
+2. Find line 5: `this.apiUrl = 'http://localhost:3000/api';`
+3. Replace with the dynamic version:
+
+```javascript
+// Use dynamic API URL for production deployment
+this.apiUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
+    ? 'http://localhost:3000/api' 
+    : `${window.location.origin}/api`;
+```
+
+This ensures the app connects to the correct API endpoint in both development and production.
+
+### 5. Start the Server
 
 ```bash
 npm start
@@ -78,7 +95,7 @@ npm run dev
 
 The server will start on `http://localhost:3000`
 
-### 5. Open the Frontend
+### 6. Open the Frontend
 
 Open `index.html` in your web browser, or serve it through the server.
 
@@ -111,6 +128,41 @@ You can change the OpenAI model in `.env`:
 - `gpt-4` (more capable, slower, more expensive)
 - `gpt-4-turbo-preview` (latest GPT-4)
 
+## Deployment
+
+This application is designed as a monolithic application where the Express server serves both the API and static files:
+
+1. Push your code to a GitHub repository
+2. Deploy to Vercel or Render
+3. Add the required environment variables
+4. The application will be served from the same domain with all functionality available
+
+### Monolithic Architecture Benefits:
+- Single domain for all functionality (no CORS issues)
+- Unified deployment and scaling
+- Simpler configuration and maintenance
+- API and UI served from the same origin
+
+### Supabase Configuration for Production:
+After deployment, you need to update your Supabase project settings:
+1. Go to your Supabase dashboard
+2. Navigate to Authentication > URL Configuration
+3. Add your deployment domain (e.g., `https://my-first-ai-app-2026.vercel.app`) to:
+   - **Redirect URLs**: `https://my-first-ai-app-2026.vercel.app/*`
+   - **Additional URLs**: Add your domain to the list
+4. Add your domain to **Site URL** field
+5. Save the changes
+
+### Environment Variables for Deployment
+- `NODE_ENV`: `production`
+- `GROQ_API_KEY`: Your GROQ API key
+- `OPENAI_API_KEY`: Your OpenAI API key (optional)
+- `SUPABASE_URL`: Your Supabase project URL
+- `SUPABASE_SERVICE_KEY`: Your Supabase service role key
+- `JWT_SECRET`: A strong random secret for JWT tokens
+- `HUGGINGFACE_API_KEY`: Your Hugging Face API key (for image generation)
+- `PORT`: Port number for the server (provided by hosting platform)
+
 ## Troubleshooting
 
 **Server won't start:**
@@ -125,11 +177,18 @@ You can change the OpenAI model in `.env`:
 **Frontend can't connect:**
 - Make sure the backend server is running
 - Check the server URL in `app.js` matches your server port
-- Check browser console for CORS errors
+- Check browser console for errors
 
 **Mode system not working:**
 - Make sure you've applied the patch instruction in PATCH_INSTRUCTIONS.md
 - The mode system requires the `this.currentMode` integration in app.js
+
+**Deployment issues:**
+- Ensure the server is configured to serve static files
+- Check that all required environment variables are set
+- Verify the build process completes successfully
+- **Supabase authentication errors**: Update your Supabase project settings with your deployment domain
+- **CORS errors**: Make sure you updated the API URL in `app.js` for production deployment
 
 ## License
 

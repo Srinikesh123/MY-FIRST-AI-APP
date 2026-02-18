@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const OpenAI = require('openai');
 const { createClient } = require('@supabase/supabase-js');
+const path = require('path');
 require('dotenv').config();
 
 const app = express();
@@ -1231,6 +1232,11 @@ app.delete('/api/users/delete', async (req, res) => {
         console.error('Delete user error:', error);
         res.status(500).json({ error: error.message });
     }
+});
+
+// Catch-all route for SPA (must be placed before app.listen)
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 // Start server
