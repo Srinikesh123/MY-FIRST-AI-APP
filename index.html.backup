@@ -3,14 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>voidzenzi - AI Assistant</title>
+    <title>voidzen ai - AI Assistant</title>
     <link rel="stylesheet" href="styles.css">
+    <!-- Stripe.js -->
+    <script src="https://js.stripe.com/v3/"></script>
 </head>
 <body>
     <!-- Sidebar for Chats -->
     <div class="sidebar" id="sidebar">
         <div class="sidebar-header">
-            <h3>voidzenzi</h3>
+            <h3>voidzen ai</h3>
             <button id="closeSidebarBtn" class="icon-btn-small" title="Close">×</button>
         </div>
         <div class="chats-list" id="chatsList">
@@ -31,6 +33,49 @@
             </div>
         </div>
     </div>
+    
+    <!-- Shop Modal -->
+    <div class="modal" id="shopModal">
+        <div class="modal-content shop-modal">
+            <h2>Upgrade Your Plan</h2>
+            <div class="current-plan-info">
+                <p id="currentPlanDisplay">Current Plan: FREE</p>
+                <p id="currentCoinsDisplay">Coins: 0</p>
+            </div>
+            
+            <div class="plans-container">
+                <div class="plan-card">
+                    <h3>Pro Plan</h3>
+                    <div class="price">$5.00<span class="period">/month</span></div>
+                    <ul class="features">
+                        <li>500 messages per month</li>
+                        <li>50 image generations</li>
+                        <li>50 code generations</li>
+                        <li>Priority support</li>
+                    </ul>
+                    <button id="purchaseProBtn" class="btn-primary">Upgrade to Pro</button>
+                </div>
+                
+                <div class="plan-card popular">
+                    <div class="popular-badge">POPULAR</div>
+                    <h3>Ultra Plan</h3>
+                    <div class="price">$10.00<span class="period">/month</span></div>
+                    <ul class="features">
+                        <li>Unlimited messages</li>
+                        <li>Unlimited image generations</li>
+                        <li>Unlimited code generations</li>
+                        <li>Priority support</li>
+                        <li>Early access to new features</li>
+                    </ul>
+                    <button id="purchaseUltraBtn" class="btn-primary">Upgrade to Ultra</button>
+                </div>
+            </div>
+            
+            <div class="modal-actions">
+                <button id="closeShopBtn" class="btn-secondary">Close</button>
+            </div>
+        </div>
+    </div>
 
     <!-- Admin Password Modal -->
     <div class="modal" id="adminPasswordModal">
@@ -45,43 +90,7 @@
             </div>
         </div>
     </div>
-        
-    <!-- Confirmation Modal -->
-    <div class="modal" id="confirmModal">
-        <div class="modal-content">
-            <h2 id="confirmTitle">Confirm Action</h2>
-            <p id="confirmMessage">Are you sure you want to proceed?</p>
-            <div class="modal-actions">
-                <button id="confirmCancelBtn" class="btn-secondary">Cancel</button>
-                <button id="confirmProceedBtn" class="btn-primary">Proceed</button>
-            </div>
-        </div>
-    </div>
-    
-    <!-- Input Modal -->
-    <div class="modal" id="inputModal">
-        <div class="modal-content">
-            <h2 id="inputTitle">Enter Information</h2>
-            <p id="inputMessage">Please enter the required information:</p>
-            <input type="text" id="inputField" placeholder="Enter text here...">
-            <div class="modal-actions">
-                <button id="inputCancelBtn" class="btn-secondary">Cancel</button>
-                <button id="inputConfirmBtn" class="btn-primary">OK</button>
-            </div>
-        </div>
-    </div>
-    
-    <!-- Notification Modal -->
-    <div class="modal" id="notificationModal">
-        <div class="modal-content">
-            <h2 id="notificationTitle">Notification</h2>
-            <p id="notificationMessage"></p>
-            <div class="modal-actions">
-                <button id="notificationCloseBtn" class="btn-primary">Close</button>
-            </div>
-        </div>
-    </div>
-        
+
     <!-- Mini-Games Modal -->
     <div class="modal" id="gamesModal">
         <div class="modal-content games-modal">
@@ -131,6 +140,18 @@
         </div>
     </div>
 
+    <!-- Confirmation Modal -->
+    <div class="modal" id="confirmModal">
+        <div class="modal-content">
+            <h2 id="confirmTitle">Confirm Action</h2>
+            <p id="confirmMessage">Are you sure you want to proceed?</p>
+            <div class="modal-actions">
+                <button id="confirmCancelBtn" class="btn-secondary">Cancel</button>
+                <button id="confirmProceedBtn" class="btn-primary">Proceed</button>
+            </div>
+        </div>
+    </div>
+
     <div class="container">
         <header>
             <div class="header-left">
@@ -141,7 +162,7 @@
                         <line x1="3" y1="18" x2="21" y2="18"></line>
                     </svg>
                 </button>
-                <h1>voidzenzi</h1>
+                <h1>voidzen ai</h1>
                 <button id="newChatBtn" class="icon-btn" title="New Chat">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <line x1="12" y1="5" x2="12" y2="19"></line>
@@ -162,6 +183,13 @@
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <rect x="2" y="2" width="20" height="20" rx="5" ry="5"></rect>
                         <path d="M12 8v8M8 12h8"></path>
+                    </svg>
+                </button>
+                <button id="shopBtn" class="icon-btn" title="Upgrade Plan">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"></path>
+                        <line x1="3" y1="6" x2="21" y2="6"></line>
+                        <path d="M16 10a4 4 0 0 1-8 0"></path>
                     </svg>
                 </button>
                 <button id="settingsBtn" class="icon-btn" title="Settings">
@@ -192,7 +220,10 @@
         <div id="chatView" class="view active">
             <div class="chat-header" id="chatHeader" style="display: none;">
                 <div class="chat-header-info">
-                    <h3 id="currentChatTitle">Chat</h3>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <h3 id="currentChatTitle">Chat</h3>
+                        <button id="editChatNameBtn" class="btn-secondary btn-small" title="Edit Chat Name">✏️</button>
+                    </div>
                     <span class="chat-memory-status" id="chatMemoryStatus"></span>
                 </div>
                 <div class="chat-header-actions">
@@ -201,7 +232,7 @@
             </div>
             <div class="chat-container" id="chatContainer">
                 <div class="welcome-message">
-                    <p>Hello! I'm your voidzenzi AI assistant. I'm here to help with clear, honest answers.</p>
+                    <p>Hello! I'm your voidzen ai assistant. I'm here to help with clear, honest answers.</p>
                     <p>Click "New Chat" to start a conversation, or select an existing chat from the sidebar.</p>
                 </div>
             </div>
@@ -464,29 +495,9 @@
                         <small>Get responses in simpler, easier-to-understand language</small>
                     </div>
 
-                    <div class="setting-item">
-                        <label class="toggle-switch">
-                            <input type="checkbox" id="ttsEnabled">
-                            <span class="slider"></span>
-                            <span class="label-text">Read Responses Aloud</span>
-                        </label>
-                        <small>Use a professional AI-style voice to speak answers</small>
-                    </div>
 
-                    <div class="setting-item">
-                        <label>Voice</label>
-                        <div class="radio-group">
-                            <label class="radio-option">
-                                <input type="radio" name="ttsVoice" value="female" id="ttsVoiceFemale">
-                                <span>Female</span>
-                            </label>
-                            <label class="radio-option">
-                                <input type="radio" name="ttsVoice" value="male" id="ttsVoiceMale">
-                                <span>Male</span>
-                            </label>
-                        </div>
-                        <small>Choose between a male or female professional voice</small>
-                    </div>
+
+
 
                     <div class="setting-item">
                         <label class="toggle-switch">
@@ -576,17 +587,11 @@
                 <!-- Memory Settings -->
                 <div class="settings-section">
                     <h3>🧠 Memory</h3>
+                    <p>Memory is automatically stored for all conversations to help the AI provide better context-aware responses.</p>
                     
                     <div class="setting-item">
-                        <label class="toggle-switch">
-                            <input type="checkbox" id="memoryEnabled">
-                            <span class="slider"></span>
-                            <span class="label-text">Store memory for this chat</span>
-                        </label>
-                        <small>When ON: AI remembers context. When OFF: No memory stored.</small>
-                        <div class="memory-status" id="memoryStatus" style="margin-top: 10px; padding: 8px; border-radius: 4px; background: #f0f0f0;">
-                            <strong>Status:</strong> <span id="memoryStatusText">OFF - No memory stored</span>
-                        </div>
+                        <button id="clearMemoryBtn" class="btn-danger">Clear All Memory</button>
+                        <small>Delete all stored memory data from Supabase</small>
                     </div>
                 </div>
 
@@ -621,9 +626,9 @@
                 <!-- Actions -->
                 <div class="settings-section">
                     <h3>Actions</h3>
-                    <button id="clearChatBtn" class="btn-danger">Clear Current Chat</button>
-                    <button id="deleteAllChatsBtn" class="btn-danger" style="margin-top: 10px;">🗑️ Delete All Chats</button>
-                    <button id="deleteAccountBtn" class="btn-danger" style="margin-top: 10px;">🗑️ Delete Account</button>
+                    <button id="clearAllChatsBtn" class="btn-danger">Clear All Chats</button>
+                    <small style="display: block; margin-top: 5px; color: #ef4444;">Warning: This will permanently delete all your chats and messages.</small>
+                    <button id="deleteAccountBtn" class="btn-danger" style="margin-top: 15px;">🗑️ Delete Account</button>
                     <small style="display: block; margin-top: 5px; color: #ef4444;">Warning: This will permanently delete your account and all data.</small>
                 </div>
 

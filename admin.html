@@ -218,6 +218,50 @@
             margin-bottom: 20px;
         }
     </style>
+<style>
+        /* Modal Styles */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 2000;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            max-width: 500px;
+            width: 90%;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        }
+
+        .modal-content h2 {
+            margin-bottom: 15px;
+            color: #333;
+        }
+
+        .modal-content p {
+            margin-bottom: 20px;
+            color: #666;
+        }
+
+        .modal-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+        }
+        </style>
 </head>
 <body>
     <div class="container">
@@ -272,6 +316,29 @@
                     <button type="submit" class="btn btn-primary">Save Changes</button>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <!-- Confirmation Modal -->
+    <div id="confirmModal" class="modal">
+        <div class="modal-content">
+            <h2 id="confirmTitle">Confirm Action</h2>
+            <p id="confirmMessage">Are you sure you want to proceed?</p>
+            <div class="modal-actions">
+                <button id="confirmCancelBtn" class="btn btn-secondary">Cancel</button>
+                <button id="confirmProceedBtn" class="btn btn-primary">Proceed</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Notification Modal -->
+    <div id="notificationModal" class="modal">
+        <div class="modal-content">
+            <h2 id="notificationTitle">Notification</h2>
+            <p id="notificationMessage"></p>
+            <div class="modal-actions">
+                <button id="notificationCloseBtn" class="btn btn-primary">Close</button>
+            </div>
         </div>
     </div>
 
@@ -526,7 +593,8 @@
         });
 
         async function deleteUser(userId, userEmail) {
-            if (!confirm(`Are you sure you want to delete user ${userEmail}? This will permanently remove the account and all associated data.`)) {
+            const confirmed = await showConfirmDialog('Delete User?', `Are you sure you want to delete user ${userEmail}? This will permanently remove the account and all associated data.`);
+            if (!confirmed) {
                 return;
             }
 
@@ -606,6 +674,62 @@
                 }
             }
         })();
+
+        // Modal Helper Functions
+        let confirmCallback = null;
+        let notificationResolve = null;
+
+        function showModal(modalId) {
+            const modal = document.getElementById(modalId);
+            if (modal) {
+                modal.classList.add('active');
+                document.body.style.overflow = 'hidden';
+            }
+        }
+
+        function hideModal(modalId) {
+            const modal = document.getElementById(modalId);
+            if (modal) {
+                modal.classList.remove('active');
+                document.body.style.overflow = '';
+            }
+        }
+
+        function showConfirmDialog(title, message) {
+            return new Promise((resolve) => {
+                document.getElementById('confirmTitle').textContent = title;
+                document.getElementById('confirmMessage').textContent = message;
+                confirmCallback = resolve;
+                showModal('confirmModal');
+            });
+        }
+
+        function showNotification(title, message) {
+            document.getElementById('notificationTitle').textContent = title;
+            document.getElementById('notificationMessage').textContent = message;
+            showModal('notificationModal');
+        }
+
+        // Modal event listeners
+        document.getElementById('confirmCancelBtn').addEventListener('click', () => {
+            hideModal('confirmModal');
+            if (confirmCallback) {
+                confirmCallback(false);
+                confirmCallback = null;
+            }
+        });
+
+        document.getElementById('confirmProceedBtn').addEventListener('click', () => {
+            hideModal('confirmModal');
+            if (confirmCallback) {
+                confirmCallback(true);
+                confirmCallback = null;
+            }
+        });
+
+        document.getElementById('notificationCloseBtn').addEventListener('click', () => {
+            hideModal('notificationModal');
+        });
     </script>
 </body>
 </html>

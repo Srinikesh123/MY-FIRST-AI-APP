@@ -1,8 +1,15 @@
-// voidzenzi AI Assistant Application - Frontend
+// voidzen ai AI Assistant Application - Frontend
 // STRICT SUPABASE PERSISTENCE - NO localStorage FOR REAL DATA
 class AIAssistant {
     constructor() {
-        this.apiUrl = 'http://localhost:3000/api';
+       // Use dynamic API URL for production deployment
+// Use dynamic API URL based on current deployment environment
+this.apiUrl = `${window.location.origin}/api`;
+// Fallback for development environments
+if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+    const port = window.location.port || '3001';
+    this.apiUrl = `http://localhost:${port}/api`;
+}
         this.supabase = window.__supabaseClient || null;
         this.user = window.__currentUser || null;
         this.userId = this.user ? this.user.id : null;
@@ -16,7 +23,6 @@ class AIAssistant {
         this.settings = this.getDefaultSettings();
         
         // Memory
-        this.memoryEnabled = false;
         this.userPlan = 'free';
         this.userCoins = 0;
         this.gamesCache = []; // Cache games for instant display
@@ -37,6 +43,19 @@ class AIAssistant {
         // Realtime subscriptions
         this.chatsSubscription = null;
         this.messagesSubscription = null;
+        
+        // Confirmation modal elements and state
+        this.confirmModal = null;
+        this.confirmTitle = null;
+        this.confirmMessage = null;
+        
+        // Stripe payment
+        this.stripe = null;
+        this.stripeElements = null;
+        this.confirmCancelBtn = null;
+        this.confirmProceedBtn = null;
+        this.confirmResolve = null;
+        this.confirmReject = null;
         
         if (!this.supabase || !this.userId) {
             console.error('Supabase not connected or user not logged in');
@@ -80,20 +99,17 @@ class AIAssistant {
             typingEffect: true,
             mood: 'friendly', // friendly, serious, funny, calm
             errorFreeMode: true,
-            ttsEnabled: false,
-            ttsVoice: 'female',
             imageMode: false,
             imageModeType: 'normal', // normal, emoji
             
-            // Memory
-            memoryEnabled: false
+            // Memory - Always enabled
         };
     }
 
     // ONLY for temporary UI state (modal open/close, loading flags)
     loadUIState() {
         try {
-            const saved = localStorage.getItem('voidzenzi_ui_state');
+            const saved = localStorage.getItem('voidzen_ai_ui_state');
             return saved ? JSON.parse(saved) : { sidebarOpen: true };
         } catch {
             return { sidebarOpen: true };
@@ -102,7 +118,7 @@ class AIAssistant {
 
     saveUIState() {
         try {
-            localStorage.setItem('voidzenzi_ui_state', JSON.stringify(this.uiState));
+            localStorage.setItem('voidzen_ai_ui_state', JSON.stringify(this.uiState));
         } catch (e) {
             console.warn('Failed to save UI state:', e);
         }
@@ -137,19 +153,20 @@ class AIAssistant {
         this.newChatBtn = document.getElementById('newChatBtn');
         this.settingsBtn = document.getElementById('settingsBtn');
         this.backToChatBtn = document.getElementById('backToChatBtn');
-        this.clearChatBtn = document.getElementById('clearChatBtn');
         this.logoutBtn = document.getElementById('logoutBtn');
         
         // Settings elements
         this.saveSettingsBtn = document.getElementById('saveSettingsBtn');
         this.settingsMessage = document.getElementById('settingsMessage');
         this.clearMemoryBtn = document.getElementById('clearMemoryBtn');
+        this.clearAllChatsBtn = document.getElementById('clearAllChatsBtn');
         
         // Chat header
         this.chatHeader = document.getElementById('chatHeader');
         this.currentChatTitle = document.getElementById('currentChatTitle');
         this.chatMemoryStatus = document.getElementById('chatMemoryStatus');
         this.deleteChatBtn = document.getElementById('deleteChatBtn');
+        this.editChatNameBtn = document.getElementById('editChatNameBtn');
         
         // Coin counter
         this.coinCounter = document.getElementById('coinCounter');
@@ -185,8 +202,155 @@ class AIAssistant {
         this.inviteStatus = document.getElementById('inviteStatus');
         this.currentPlanDisplay = document.getElementById('currentPlanDisplay');
         this.memoryStatusText = document.getElementById('memoryStatusText');
+        
+        // Initialize confirmation modal elements
+        this.confirmModal = document.getElementById('confirmModal');
+        this.confirmTitle = document.getElementById('confirmTitle');
+        this.confirmMessage = document.getElementById('confirmMessage');
+        this.confirmCancelBtn = document.getElementById('confirmCancelBtn');
+        this.confirmProceedBtn = document.getElementById('confirmProceedBtn');
+        
+        // Setup confirmation modal event listeners
+        if (this.confirmCancelBtn) {
+            this.confirmCancelBtn.addEventListener('click', () => this.hideConfirmModal());
+        }
+        if (this.confirmProceedBtn) {
+            this.confirmProceedBtn.addEventListener('click', () => this.confirmAction());
+        }
+        
+        // Initialize Stripe
+        this.initializeStripe();
+    }
+    
+    initializeStripe() {
+        // Load Stripe.js if not already loaded
+        if (!window.Stripe) {
+            console.warn('Stripe.js not loaded. Please include Stripe.js in your HTML.');
+            return;
+        }
+        
+        const publishableKey = process.env.STRIPE_PUBLISHABLE_KEY || 'pk_test_your_publishable_key_here';
+        this.stripe = window.Stripe(publishableKey);
+    }
+    
+    async showShop() {
+        try {
+            if (!this.shopModal) {
+                console.error('Shop modal not found');
+                return;
+            }
+            
+            // Fetch user's current plan
+            if (this.userId) {
+                const response = await fetch(`${this.apiUrl}/user/subscription/${this.userId}`);
+                if (response.ok) {
+                    const data = await response.json();
+                    document.getElementById('currentPlanDisplay').textContent = `Current Plan: ${data.plan.toUpperCase()}`;
+                    document.getElementById('currentCoinsDisplay').textContent = `Coins: ${data.coins}`;
+                }
+            }
+            
+            this.shopModal.style.display = 'block';
+        } catch (error) {
+            console.error('Error showing shop:', error);
+        }
+    }
+    
+    closeShopModal() {
+        if (this.shopModal) {
+            this.shopModal.style.display = 'none';
+        }
+    }
+    
+    async purchasePlan(plan) {
+        try {
+            if (!this.userId || !this.user?.email) {
+                throw new Error('User not authenticated');
+            }
+            
+            // Create payment intent
+            const response = await fetch(`${this.apiUrl}/create-payment-intent`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    userId: this.userId,
+                    plan: plan,
+                    email: this.user.email,
+                }),
+            });
+            
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.error || 'Failed to create payment intent');
+            }
+            
+            const { clientSecret } = await response.json();
+            
+            // Confirm payment
+            const { error: stripeError } = await this.stripe.confirmCardPayment(clientSecret);
+            
+            if (stripeError) {
+                console.error('Stripe error:', stripeError);
+                throw new Error(stripeError.message);
+            }
+            
+            // Refresh user data
+            await this.loadUserInfo();
+            
+            this.showMessage('success', `Thank you! You've successfully upgraded to the ${plan.toUpperCase()} plan!`);
+            
+        } catch (error) {
+            console.error('Purchase error:', error);
+            this.showMessage('error', `Purchase failed: ${error.message}`);
+        }
     }
 
+    // Confirmation modal methods
+    showConfirmModal(title, message) {
+        return new Promise((resolve, reject) => {
+            if (!this.confirmModal) {
+                // Fallback to native confirm if modal not available
+                const result = confirm(message);
+                return result ? resolve() : reject();
+            }
+            
+            // Store resolve/reject for later use
+            this.confirmResolve = resolve;
+            this.confirmReject = reject;
+            
+            // Set modal content
+            if (this.confirmTitle) this.confirmTitle.textContent = title;
+            if (this.confirmMessage) this.confirmMessage.textContent = message;
+            
+            // Show modal
+            this.confirmModal.classList.add('show');
+        });
+    }
+    
+    hideConfirmModal() {
+        if (this.confirmModal) {
+            this.confirmModal.classList.remove('show');
+        }
+        if (this.confirmReject) {
+            this.confirmReject();
+            this.confirmResolve = null;
+            this.confirmReject = null;
+        }
+    }
+    
+    confirmAction() {
+        if (this.confirmModal) {
+            this.confirmModal.classList.remove('show');
+        }
+        if (this.confirmResolve) {
+            this.confirmResolve();
+            this.confirmResolve = null;
+            this.confirmReject = null;
+        }
+    }
+    
     async initializeApp() {
         console.log('🚀 INITIALIZING APP...');
         console.log('🔐 USER ID:', this.userId);
@@ -194,7 +358,7 @@ class AIAssistant {
         
         if (!this.userId || !this.supabase) {
             console.error('❌ CRITICAL: Missing userId or supabase client');
-            this.showNotification('Authentication Error', 'Please log in again.');
+            this.showErrorMessage('Authentication required. Please log in to continue.');
             window.location.href = 'login.html';
             return;
         }
@@ -207,7 +371,9 @@ class AIAssistant {
         this.updateCoinCounter();
         
         // Load settings from Supabase
+        console.log('🔧 LOADING SETTINGS FROM SUPABASE');
         await this.loadSettingsFromSupabase();
+        console.log('🔧 SETTINGS LOADED:', JSON.stringify(this.settings, null, 2));
         this.applySettings();
         this.updateMemoryStatus();
         
@@ -562,7 +728,7 @@ Ultra: Unlimited`;
         // Check if the user is trying to equip an existing plan
         if (this.userPlan === plan) {
             // User is trying to equip the same plan they already have
-            this.showNotification('Info', `You already have the ${plan.toUpperCase()} plan equipped!`);
+            this.showErrorMessage(`You already have the ${plan.toUpperCase()} plan equipped.`);
             this.closeShopModal();
             return;
         }
@@ -570,7 +736,7 @@ Ultra: Unlimited`;
         // For "Buy" actions, check if user has enough coins
         if (this.userPlan !== plan && price > 0) {
             if (this.userCoins < price) {
-                this.showNotification('Insufficient Funds', `Not enough coins! You need ${price} coins but only have ${this.userCoins}.`);
+                this.showErrorMessage(`Insufficient coins. Required: ${price} coins. Available: ${this.userCoins} coins.`);
                 return;
             }
         }
@@ -581,9 +747,11 @@ Ultra: Unlimited`;
             actionText = 'Equip';
         }
         
-        const confirmed = await this.showConfirmDialog(`${actionText} ${plan.toUpperCase()} plan?`, `${actionText} ${plan.toUpperCase()} plan?${price > 0 && this.userPlan !== plan ? ` This will cost ${price} coins.` : ''}`);
-        if (!confirmed) {
-            return;
+                try {
+            const costMessage = price > 0 && this.userPlan !== plan ? ` This will cost ${price} coins.` : '';
+            await this.showConfirmModal('Confirm Purchase', `${actionText} ${plan.toUpperCase()} plan?${costMessage}`);
+        } catch (error) {
+            return; // User cancelled
         }
         
         try {
@@ -613,13 +781,13 @@ Ultra: Unlimited`;
             this.closeShopModal();
             
             if (this.userPlan === plan) {
-                this.showNotification('Success', `Successfully equipped ${plan.toUpperCase()} plan!`);
+                this.showSuccessMessage(`Successfully equipped ${plan.toUpperCase()} plan.`);
             } else {
-                this.showNotification('Success', `Successfully upgraded to ${plan.toUpperCase()} plan!`);
+                this.showSuccessMessage(`Successfully upgraded to ${plan.toUpperCase()} plan.`);
             }
         } catch (error) {
             console.error('Failed to buy/equip plan:', error);
-            this.showNotification('Error', `Failed to ${this.userPlan === plan ? 'equip' : 'upgrade'}: ${error.message}`);
+            this.showErrorMessage(`Failed to ${this.userPlan === plan ? 'equip' : 'upgrade'}: ${error.message}`);
         }
     }
 
@@ -679,7 +847,7 @@ Ultra: Unlimited`;
         if (!this.referralCodeDisplay) return;
         this.referralCodeDisplay.select();
         document.execCommand('copy');
-        this.showNotification('Success', 'Referral code copied to clipboard!');
+        this.showSuccessMessage('Referral code copied to clipboard.');
     }
 
     async loadGames() {
@@ -838,8 +1006,6 @@ Ultra: Unlimited`;
     }
 
     setupEventListeners() {
-        this.initModalEventListeners();
-        
         // Sidebar
         if (this.toggleSidebarBtn) {
             this.toggleSidebarBtn.addEventListener('click', () => this.toggleSidebar());
@@ -895,20 +1061,15 @@ Ultra: Unlimited`;
             this.newChatBtn.addEventListener('click', () => this.showNewChatModal());
         }
         if (this.settingsBtn) {
-            this.settingsBtn.addEventListener('click', () => this.showSettings());
+            this.settingsBtn.addEventListener('click', () => {
+                console.log('🔧 SETTINGS BUTTON CLICKED');
+                this.showSettings();
+            });
         }
         if (this.backToChatBtn) {
             this.backToChatBtn.addEventListener('click', () => this.showChat());
         }
-        if (this.clearChatBtn) {
-            this.clearChatBtn.addEventListener('click', () => this.clearCurrentChat());
-        }
-        
-        // Delete all chats button
-        const deleteAllChatsBtn = document.getElementById('deleteAllChatsBtn');
-        if (deleteAllChatsBtn) {
-            deleteAllChatsBtn.addEventListener('click', () => this.deleteAllChats());
-        }
+
         
         // Delete account button
         const deleteAccountBtn = document.getElementById('deleteAccountBtn');
@@ -918,7 +1079,13 @@ Ultra: Unlimited`;
         if (this.logoutBtn) {
             this.logoutBtn.addEventListener('click', () => this.handleLogout());
         }
-
+        if (this.clearMemoryBtn) {
+            this.clearMemoryBtn.addEventListener('click', () => this.clearMemory());
+        }
+        
+        if (this.clearAllChatsBtn) {
+            this.clearAllChatsBtn.addEventListener('click', () => this.clearAllChats());
+        }
         
         // Games button
         if (this.gamesBtn) {
@@ -938,21 +1105,22 @@ Ultra: Unlimited`;
         
         // Shop button
         if (this.shopBtn) {
-            this.shopBtn.addEventListener('click', () => this.showShopModal());
+            this.shopBtn.addEventListener('click', () => this.showShop());
         }
         if (this.closeShopBtn) {
             this.closeShopBtn.addEventListener('click', () => this.closeShopModal());
         }
         
-        // Buy plan buttons (event delegation for dynamically added buttons)
-        if (this.shopModal) {
-            this.shopModal.addEventListener('click', (e) => {
-                if (e.target.classList.contains('buy-plan-btn')) {
-                    const plan = e.target.dataset.plan;
-                    const price = parseInt(e.target.dataset.price);
-                    this.buyPlan(plan, price);
-                }
-            });
+        // Purchase plan buttons
+        const purchaseProBtn = document.getElementById('purchaseProBtn');
+        const purchaseUltraBtn = document.getElementById('purchaseUltraBtn');
+        
+        if (purchaseProBtn) {
+            purchaseProBtn.addEventListener('click', () => this.purchasePlan('pro'));
+        }
+        
+        if (purchaseUltraBtn) {
+            purchaseUltraBtn.addEventListener('click', () => this.purchasePlan('ultra'));
         }
         
         // User profile widget click (show in sidebar)
@@ -968,6 +1136,11 @@ Ultra: Unlimited`;
                 console.log('🗑️ DELETE CHAT BUTTON CLICKED');
                 this.deleteChat(this.currentChatId);
             });
+        }
+        
+        // Edit chat name button
+        if (this.editChatNameBtn) {
+            this.editChatNameBtn.addEventListener('click', () => this.editChatName());
         }
         
         // Admin button
@@ -1083,7 +1256,6 @@ Ultra: Unlimited`;
             { id: 'animations', key: 'animations' },
             { id: 'compactMode', key: 'compactMode' },
             { id: 'settingsSimpleLanguage', key: 'simpleLanguage' },
-            { id: 'ttsEnabled', key: 'ttsEnabled' },
             { id: 'imageMode', key: 'imageMode' },
             { id: 'typingEffect', key: 'typingEffect' },
             { id: 'errorFreeMode', key: 'errorFreeMode' },
@@ -1103,29 +1275,6 @@ Ultra: Unlimited`;
                     if (special && id === 'memoryEnabled') {
                         console.log('🧠 MEMORY TOGGLE CHANGED:', newValue);
                         this.settings.memoryEnabled = newValue;
-                        
-                        // If enabling memory, check usage limits
-                        if (newValue) {
-                            const usageCheck = await this.checkMemoryUsage();
-                            if (!usageCheck.success) {
-                                if (usageCheck.limitExceeded) {
-                                    // Disable the toggle if limit is exceeded
-                                    e.target.checked = false;
-                                    this.settings.memoryEnabled = false;
-                                    return;
-                                }
-                            } else {
-                                // Track memory usage when enabling
-                                const tracked = await this.trackMemoryUsage();
-                                if (!tracked) {
-                                    // Disable the toggle if tracking fails
-                                    e.target.checked = false;
-                                    this.settings.memoryEnabled = false;
-                                    return;
-                                }
-                            }
-                        }
-                        
                         this.updateMemoryStatus();
                     }
                     
@@ -1137,7 +1286,6 @@ Ultra: Unlimited`;
 
         // Radio groups
         const radioGroups = [
-            { name: 'ttsVoice', key: 'ttsVoice' },
             { name: 'chatMode', key: 'chatMode' },
             { name: 'mood', key: 'mood' },
             { name: 'imageModeType', key: 'imageModeType' }
@@ -1242,7 +1390,7 @@ Ultra: Unlimited`;
     async createNewChat() {
         const chatName = this.chatNameInput.value.trim();
         if (!chatName) {
-            this.showNotification('Invalid Input', 'Please enter a chat name');
+            this.showErrorMessage('Please enter a chat name.');
             return;
         }
 
@@ -1266,7 +1414,7 @@ Ultra: Unlimited`;
             this.updateChatContainerTitle();
         } catch (error) {
             console.error('Failed to create chat:', error);
-            this.showNotification('Error', 'Failed to create chat. Please try again.');
+            this.showErrorMessage('Failed to create chat. Please try again.');
         }
     }
 
@@ -1275,6 +1423,8 @@ Ultra: Unlimited`;
         
         if (!this.supabase || !this.userId) {
             console.error('❌ Cannot load chats: missing supabase or userId');
+            console.log('🔍 SUPABASE CLIENT:', this.supabase);
+            console.log('🔍 USER ID:', this.userId);
             if (this.chatsList) {
                 this.chatsList.innerHTML = '<div class="loading-chats">Error: Not authenticated</div>';
             }
@@ -1452,7 +1602,7 @@ Ultra: Unlimited`;
             this.updateDebugPanel();
         } catch (error) {
             console.error('❌ Failed to load chat:', error);
-            this.showNotification('Error', `Failed to load chat: ${error.message}`);
+            this.showErrorMessage(`Failed to load chat: ${error.message}`);
         }
     }
 
@@ -1533,7 +1683,7 @@ Ultra: Unlimited`;
                     const errorMsg = `Permission Error: Row Level Security (RLS) is blocking message access.\n\n` +
                         `Error: ${error.message}\n\n` +
                         `Please check RLS policies for the messages table in Supabase Dashboard.`;
-                    this.showNotification('Permission Error', errorMsg);
+                    alert(errorMsg);
                     if (this.chatContainer) {
                         this.chatContainer.innerHTML = `<div class="welcome-message" style="color: red;"><p>Error: Permission denied. Check RLS policies.</p><p>${error.message}</p></div>`;
                     }
@@ -1598,6 +1748,140 @@ Ultra: Unlimited`;
         }
     }
 
+    async editChatName() {
+        if (!this.currentChatId) {
+            this.showErrorMessage('No chat selected to rename.');
+            return;
+        }
+        
+        try {
+            const { data: messages, error } = await this.supabase
+                .from('messages')
+                .select('content, role')
+                .eq('chat_id', this.currentChatId)
+                .eq('user_id', this.userId)
+                .order('created_at', { ascending: true })
+                .limit(5);
+            
+            if (error) {
+                console.error('Failed to fetch messages:', error);
+                const newName = prompt('Enter new chat name:', this.currentChatName || '');
+                if (newName !== null && newName.trim() !== '') {
+                    await this.updateChatName(newName.trim());
+                }
+                return;
+            }
+            
+            if (!messages || messages.length === 0) {
+                const newName = prompt('Enter new chat name:', this.currentChatName || '');
+                if (newName !== null && newName.trim() !== '') {
+                    await this.updateChatName(newName.trim());
+                }
+                return;
+            }
+            
+            const aiGeneratedName = await this.generateChatName(messages);
+            
+            const userChoice = await this.showConfirmModal(
+                'Rename Chat',
+                `AI Suggested Name: "${aiGeneratedName}"\n\nClick "Use AI Name" to accept or "Custom Name" to enter your own.`,
+                'Use AI Name',
+                'Custom Name'
+            );
+            
+            if (userChoice === 'proceed') {
+                await this.updateChatName(aiGeneratedName);
+            } else {
+                const newName = prompt('Enter custom chat name:', aiGeneratedName);
+                if (newName !== null && newName.trim() !== '') {
+                    await this.updateChatName(newName.trim());
+                }
+            }
+            
+        } catch (error) {
+            console.error('Error editing chat name:', error);
+            this.showErrorMessage('Failed to edit chat name.');
+        }
+    }
+    
+    async generateChatName(messages) {
+        try {
+            const conversationText = messages
+                .map(msg => `${msg.role === 'user' ? 'User' : 'AI'}: ${msg.content}`)
+                .join('\n');
+            
+            const prompt = `Based on this conversation, suggest a short, descriptive name (3-5 words max) for this chat:\n\n${conversationText}\n\nName: `;
+            
+            const response = await fetch(`${this.apiUrl}/chat`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    message: prompt,
+                    userId: this.userId,
+                    userName: this.userName,
+                    chatId: this.currentChatId,
+                    model: 'llama3-8b-8192'
+                })
+            });
+            
+            if (!response.ok) {
+                throw new Error(`API error: ${response.status}`);
+            }
+            
+            const data = await response.json();
+            let name = data.response || 'New Chat';
+            
+            name = name
+                .replace(/^[\s"'\(\[]+|[\s"'\)\]]+$/g, '')
+                .replace(/\n/g, ' ')
+                .trim()
+                .substring(0, 50);
+            
+            return name || 'New Chat';
+            
+        } catch (error) {
+            console.error('Failed to generate chat name:', error);
+            const firstUserMessage = messages.find(msg => msg.role === 'user');
+            if (firstUserMessage) {
+                const firstWords = firstUserMessage.content.split(' ').slice(0, 3).join(' ');
+                return firstWords.length > 30 ? firstWords.substring(0, 30) + '...' : firstWords;
+            }
+            return 'New Chat';
+        }
+    }
+    
+    async updateChatName(newName) {
+        try {
+            const { error } = await this.supabase
+                .from('chats')
+                .update({ name: newName })
+                .eq('id', this.currentChatId)
+                .eq('user_id', this.userId);
+            
+            if (error) {
+                throw new Error(error.message);
+            }
+            
+            this.currentChatName = newName;
+            
+            if (this.currentChatTitle) {
+                this.currentChatTitle.textContent = newName;
+            }
+            
+            const chatElement = document.querySelector(`[data-chat-id="${this.currentChatId}"] .chat-name`);
+            if (chatElement) {
+                chatElement.textContent = newName;
+            }
+            
+            this.showSuccessMessage(`Chat renamed to: ${newName}`);
+            this.updateDebugPanel();
+            
+        } catch (error) {
+            console.error('Failed to update chat name:', error);
+            this.showErrorMessage(`Failed to rename chat: ${error.message}`);
+        }
+    }
+    
     async deleteChat(chatId) {
         console.log('🗑️ DELETE CHAT CALLED - chatId:', chatId, 'userId:', this.userId);
         
@@ -1611,13 +1895,14 @@ Ultra: Unlimited`;
 
         if (!this.userId || !this.supabase) {
             console.error('❌ Cannot delete chat: missing userId or supabase');
-            this.showNotification('Error', 'Not authenticated');
+            alert('Error: Not authenticated');
             return;
         }
 
-        const confirmed = await this.showConfirmDialog('Delete Chat?', 'Are you sure you want to delete this chat? All messages will be permanently deleted.');
-        if (!confirmed) {
-            return;
+        try {
+            await this.showConfirmModal('Delete Chat', 'Are you sure you want to delete this chat? All messages will be permanently deleted.');
+        } catch (error) {
+            return; // User cancelled
         }
 
         try {
@@ -1694,7 +1979,7 @@ Ultra: Unlimited`;
                 if (this.chatContainer) {
                     this.chatContainer.innerHTML = `
                         <div class="welcome-message">
-                            <p>Hello! I'm your voidzenzi AI assistant.</p>
+                            <p>Hello! I'm your voidzen ai assistant.</p>
                             <p>Click "New Chat" to start a conversation.</p>
                         </div>
                     `;
@@ -1711,30 +1996,34 @@ Ultra: Unlimited`;
             }
         } catch (error) {
             console.error('❌ Failed to delete chat:', error);
-            this.showNotification('Error', `Failed to delete chat: ${error.message}`);
+            this.showErrorMessage(`Failed to delete chat: ${error.message}`);
         }
     }
 
     async deleteAccount() {
-        const confirmed1 = await this.showConfirmDialog('⚠️ Warning: Account Deletion', 'This will permanently delete your account and ALL your data (chats, messages, coins, settings, etc.).\n\nThis action CANNOT be undone!\n\nAre you absolutely sure?');
-        if (!confirmed1) {
-            return;
-        }
-        
-        const confirmed2 = await this.showConfirmDialog('Final Confirmation', 'This is your LAST chance to cancel. Click OK to permanently delete your account.');
-        if (!confirmed2) {
-            return;
+        try {
+            await this.showConfirmModal('Delete Account', '⚠️ WARNING: This will permanently delete your account and ALL your data (chats, messages, coins, settings, etc.).\n\nThis action CANNOT be undone!\n\nAre you absolutely sure?');
+        } catch (error) {
+            return; // User cancelled
         }
         
         try {
+            await this.showConfirmModal('Final Confirmation', 'This is your LAST chance to cancel. Proceed to permanently delete your account?');
+        } catch (error) {
+            return; // User cancelled
+        }
+        
+        try {
+            console.log('🗑️ DELETE ACCOUNT REQUEST - apiUrl:', this.apiUrl, 'userId:', this.userId);
             const response = await fetch(`${this.apiUrl}/users/delete`, {
                 method: 'DELETE',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ userId: this.userId })
             });
+            console.log('🗑️ DELETE ACCOUNT RESPONSE:', response);
             
             if (response.ok) {
-                this.showNotification('Account Deleted', 'Account deleted successfully. You will be logged out now.');
+                this.showSuccessMessage('Account deleted successfully. You will be logged out now.');
                 // Sign out and redirect
                 await this.supabase.auth.signOut();
                 window.location.href = 'login.html';
@@ -1744,7 +2033,7 @@ Ultra: Unlimited`;
             }
         } catch (error) {
             console.error('Delete account error:', error);
-            this.showNotification('Error', `Failed to delete account: ${error.message}`);
+            this.showErrorMessage(`Failed to delete account: ${error.message}`);
         }
     }
 
@@ -1754,9 +2043,10 @@ Ultra: Unlimited`;
             return;
         }
 
-        const confirmed = await this.showConfirmDialog('Clear Chat?', 'Are you sure you want to clear all messages in this chat? This cannot be undone.');
-        if (!confirmed) {
-            return;
+        try {
+            await this.showConfirmModal('Clear Chat', 'Are you sure you want to clear all messages in this chat? This cannot be undone.');
+        } catch (error) {
+            return; // User cancelled
         }
 
         try {
@@ -1819,7 +2109,7 @@ Ultra: Unlimited`;
             this.updateDebugPanel();
         } catch (error) {
             console.error('❌ Failed to clear chat:', error);
-            this.showNotification('Error', `Failed to clear chat: ${error.message}`);
+            alert(`Failed to clear chat: ${error.message}`);
         }
     }
 
@@ -1834,7 +2124,7 @@ Ultra: Unlimited`;
         
         this.chatContainer.innerHTML = `
             <div class="welcome-message">
-                <p>Hello! I'm your voidzenzi AI assistant.</p>
+                <p>Hello! I'm your voidzen ai assistant.</p>
                 <p>Click "New Chat" to start a conversation.</p>
             </div>
         `;
@@ -1914,13 +2204,16 @@ Ultra: Unlimited`;
                 // Get conversation history from Supabase
                 const history = await this.getConversationHistory();
 
-                // Call AI API
+                // Call AI API with user context
                 const response = await fetch(`${this.apiUrl}/chat`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         message: message,
                         history: history,
+                        userId: this.userId,
+                        userName: this.userName,
+                        userPlan: this.userPlan,
                         simpleLanguage: this.settings.simpleLanguage,
                         mode: this.settings.chatMode || 'fast',
                         mood: this.settings.mood || 'friendly',
@@ -2050,14 +2343,14 @@ Ultra: Unlimited`;
                         `Error: ${error.message}\n\n` +
                         `Please run the SQL from FIX_MESSAGES_TABLE.sql in Supabase SQL Editor.\n\n` +
                         `Go to: Supabase Dashboard → SQL Editor → New Query → Paste SQL → Run`;
-                    this.showNotification('Database Error', errorMsg);
+                    alert(errorMsg);
                     this.showErrorMessage(`Messages table not found: ${error.message}`);
                 } else if (error.message && (error.message.includes('permission denied') || error.message.includes('policy'))) {
                     const errorMsg = `Permission Error: Row Level Security (RLS) is blocking message saves.\n\n` +
                         `Error: ${error.message}\n\n` +
                         `Please check RLS policies for the messages table in Supabase Dashboard.\n\n` +
                         `The policy should allow users to INSERT their own messages.`;
-                    this.showNotification('Permission Error', errorMsg);
+                    alert(errorMsg);
                     this.showErrorMessage(`Permission denied: ${error.message}`);
                 } else {
                     console.error('❌ SAVE MESSAGE ERROR DETAILS:', JSON.stringify(error, null, 2));
@@ -2109,26 +2402,6 @@ Ultra: Unlimited`;
     async saveMemory(content) {
         if (!this.settings.memoryEnabled || !this.currentChatId || !this.userId) {
             console.log('🧠 Memory save skipped - enabled:', this.settings.memoryEnabled, 'chatId:', this.currentChatId, 'userId:', this.userId);
-            return;
-        }
-        
-        // Check memory usage before saving
-        const usageCheck = await this.checkMemoryUsage();
-        if (!usageCheck.success) {
-            if (usageCheck.limitExceeded) {
-                // Disable memory if limit exceeded
-                this.settings.memoryEnabled = false;
-                const memoryToggle = document.getElementById('memoryEnabled');
-                if (memoryToggle) memoryToggle.checked = false;
-                this.updateMemoryStatus();
-                return;
-            }
-        }
-        
-        // Track memory usage
-        const tracked = await this.trackMemoryUsage();
-        if (!tracked) {
-            console.error('Failed to track memory usage');
             return;
         }
 
@@ -2188,9 +2461,7 @@ Ultra: Unlimited`;
             contentDiv.innerHTML = formattedText;
         }
 
-        if (sender === 'assistant' && this.settings.ttsEnabled) {
-            this.speakText(text);
-        }
+
         
         if (this.settings.showTimestamps) {
             const timestamp = document.createElement('div');
@@ -2213,6 +2484,7 @@ Ultra: Unlimited`;
     // ============================================
     async loadSettingsFromSupabase() {
         console.log('⚙️ LOADING SETTINGS - userId:', this.userId);
+        console.log('⚙️ SUPABASE CLIENT:', this.supabase ? 'EXISTS' : 'MISSING');
         
         // CRITICAL: Must have userId
         if (!this.supabase || !this.userId) {
@@ -2270,8 +2542,9 @@ Ultra: Unlimited`;
             // Update UI toggles
             if (this.simpleLanguageToggle) {
                 this.simpleLanguageToggle.checked = this.settings.simpleLanguage;
+                console.log('🔧 SIMPLE LANGUAGE TOGGLE:', this.simpleLanguageToggle.checked);
             }
-            
+                    
             // Update memory toggle - CRITICAL: Sync UI with settings
             const memoryToggle = document.getElementById('memoryEnabled');
             if (memoryToggle) {
@@ -2279,10 +2552,12 @@ Ultra: Unlimited`;
                 memoryToggle.checked = memoryEnabled;
                 console.log('🧠 MEMORY TOGGLE SYNCED - UI:', memoryEnabled, 'Settings:', this.settings.memoryEnabled);
             }
-            
+                    
             // Update memory status AFTER toggle is synced
             this.updateMemoryStatus();
             this.updateDebugPanel();
+                    
+            console.log('✅ SETTINGS LOADED FROM SUPABASE');
         } catch (error) {
             console.error('❌ Error loading settings:', error);
             // Use default settings on error
@@ -2395,32 +2670,42 @@ Ultra: Unlimited`;
     }
 
     loadSettingsToForm() {
+        console.log('🔄 LOADING SETTINGS TO FORM');
+        console.log('🔄 SETTINGS DATA:', JSON.stringify(this.settings, null, 2));
+        
         // Theme
         const themeEl = document.getElementById(`theme${this.settings.theme.charAt(0).toUpperCase() + this.settings.theme.slice(1)}`);
+        console.log('🔄 THEME ELEMENT:', themeEl ? themeEl.id : 'NOT FOUND');
         if (themeEl) themeEl.checked = true;
         
         // Accent Color
         const accentEl = document.getElementById(`accent${this.settings.accentColor.charAt(0).toUpperCase() + this.settings.accentColor.slice(1)}`);
+        console.log('🔄 ACCENT ELEMENT:', accentEl ? accentEl.id : 'NOT FOUND');
         if (accentEl) accentEl.checked = true;
         
         // Font Size
         const fontSizeEl = document.getElementById(`font${this.settings.fontSize.charAt(0).toUpperCase() + this.settings.fontSize.slice(1)}`);
+        console.log('🔄 FONT SIZE ELEMENT:', fontSizeEl ? fontSizeEl.id : 'NOT FOUND');
         if (fontSizeEl) fontSizeEl.checked = true;
         
         // Font Style
         const fontStyleEl = document.getElementById('fontStyle');
+        console.log('🔄 FONT STYLE ELEMENT:', fontStyleEl ? fontStyleEl.id : 'NOT FOUND');
         if (fontStyleEl) fontStyleEl.value = this.settings.fontStyle;
         
         // Bubble Style
         const bubbleEl = document.getElementById(`bubble${this.settings.bubbleStyle.charAt(0).toUpperCase() + this.settings.bubbleStyle.slice(1)}`);
+        console.log('🔄 BUBBLE ELEMENT:', bubbleEl ? bubbleEl.id : 'NOT FOUND');
         if (bubbleEl) bubbleEl.checked = true;
         
         // Message Alignment
         const alignEl = document.getElementById(`align${this.settings.messageAlignment.charAt(0).toUpperCase() + this.settings.messageAlignment.slice(1)}`);
+        console.log('🔄 ALIGN ELEMENT:', alignEl ? alignEl.id : 'NOT FOUND');
         if (alignEl) alignEl.checked = true;
         
         // Send Button Style
         const sendBtnEl = document.getElementById(`send${this.settings.sendButtonStyle.charAt(0).toUpperCase() + this.settings.sendButtonStyle.slice(1)}`);
+        console.log('🔄 SEND BUTTON ELEMENT:', sendBtnEl ? sendBtnEl.id : 'NOT FOUND');
         if (sendBtnEl) sendBtnEl.checked = true;
         
         // Toggles
@@ -2441,24 +2726,28 @@ Ultra: Unlimited`;
 
         Object.entries(toggles).forEach(([id, value]) => {
             const el = document.getElementById(id);
+            console.log(`🔄 TOGGLE ${id}:`, el ? 'FOUND' : 'NOT FOUND', 'VALUE:', value);
             if (el) el.checked = value;
         });
 
-        // Radio groups
-        const ttsVoiceEl = document.getElementById(`ttsVoice${this.settings.ttsVoice.charAt(0).toUpperCase() + this.settings.ttsVoice.slice(1)}`);
-        if (ttsVoiceEl) ttsVoiceEl.checked = true;
 
+        // Fixed: Properly iterate through radio groups
         document.querySelectorAll('input[name="chatMode"]').forEach(radio => {
-                radio.checked = (radio.value === this.settings.chatMode);
-            });
+            radio.checked = (radio.value === this.settings.chatMode);
+            console.log('🔄 CHAT MODE RADIO:', radio.id, 'CHECKED:', radio.checked);
+        });
 
         document.querySelectorAll('input[name="mood"]').forEach(radio => {
-                radio.checked = (radio.value === this.settings.mood);
-            });
+            radio.checked = (radio.value === this.settings.mood);
+            console.log('🔄 MOOD RADIO:', radio.id, 'CHECKED:', radio.checked);
+        });
 
         document.querySelectorAll('input[name="imageModeType"]').forEach(radio => {
             radio.checked = (radio.value === this.settings.imageModeType);
+            console.log('🔄 IMAGE MODE TYPE RADIO:', radio.id, 'CHECKED:', radio.checked);
         });
+        
+        console.log('✅ SETTINGS LOADED TO FORM');
     }
 
     applySettings() {
@@ -2546,80 +2835,180 @@ Ultra: Unlimited`;
     }
 
     showChat() {
+        // Ensure chat view exists before showing
+        if (!this.chatView) {
+            console.error('❌ Chat view not found in DOM');
+            return;
+        }
+        
+        // Show chat view and hide settings view
         this.chatView.classList.add('active');
-        this.settingsView.classList.remove('active');
-        if (this.userInput) this.userInput.focus();
+        if (this.settingsView) {
+            this.settingsView.classList.remove('active');
+        }
+        
+        // Focus on user input if available
+        if (this.userInput) {
+            this.userInput.focus();
+        }
     }
 
     showSettings() {
-        this.chatView.classList.remove('active');
+        console.log('🔧 SHOWING SETTINGS');
+        
+        // Ensure all settings elements exist before showing
+        if (!this.settingsView) {
+            console.error('❌ Settings view not found in DOM');
+            return;
+        }
+        
+        console.log('🔧 SETTINGS VIEW:', this.settingsView);
+        
+        // Hide chat view and show settings view
+        if (this.chatView) {
+            this.chatView.classList.remove('active');
+        }
         this.settingsView.classList.add('active');
-        this.loadSettingsToForm();
+        
+        // Log the current settings
+        console.log('🔧 CURRENT SETTINGS:', JSON.stringify(this.settings, null, 2));
+        
+        // Load settings to form - this may fail silently if DOM elements aren't ready yet
+        try {
+            this.loadSettingsToForm();
+        } catch (error) {
+            console.error('❌ Error loading settings to form:', error);
+        }
     }
 
     // ============================================
-    // CHAT MANAGEMENT (STRICT SUPABASE)
+    // MEMORY MANAGEMENT (STRICT SUPABASE)
     // ============================================
-    async deleteAllChats() {
-        const confirmed = await this.showConfirmDialog('Delete All Chats?', 'Are you sure you want to delete ALL your chats and messages? This cannot be undone.');
-        if (!confirmed) {
-            return;
-        }
-
+    async clearAllChats() {
         try {
-            // Delete all messages for the user
+            await this.showConfirmModal('Clear All Chats', '⚠️ WARNING: This will permanently delete ALL your chats and messages. This cannot be undone!\n\nAre you sure you want to proceed?');
+        } catch (error) {
+            return; // User cancelled
+        }
+        
+        try {
+            console.log('🗑️ CLEARING ALL CHATS - userId:', this.userId);
+            
+            // Get all chats for this user
+            const { data: chats, error: chatsError } = await this.supabase
+                .from('chats')
+                .select('id')
+                .eq('user_id', this.userId);
+            
+            if (chatsError) {
+                throw new Error(`Failed to fetch chats: ${chatsError.message}`);
+            }
+            
+            if (!chats || chats.length === 0) {
+                this.showSuccessMessage('No chats to delete.');
+                return;
+            }
+            
+            // Delete all messages for all chats
+            const chatIds = chats.map(chat => chat.id);
             const { error: messagesError } = await this.supabase
                 .from('messages')
                 .delete()
+                .in('chat_id', chatIds)
                 .eq('user_id', this.userId);
-
+            
             if (messagesError) {
-                console.error('Failed to delete messages:', messagesError);
-                throw messagesError;
+                throw new Error(`Failed to delete messages: ${messagesError.message}`);
             }
-
-            // Delete all chats for the user
-            const { error: chatsError } = await this.supabase
-                .from('chats')
-                .delete()
-                .eq('user_id', this.userId);
-
-            if (chatsError) {
-                console.error('Failed to delete chats:', chatsError);
-                throw chatsError;
-            }
-
-            // Delete all memories for the user
+            
+            // Delete all memories for all chats
             const { error: memoriesError } = await this.supabase
                 .from('memories')
                 .delete()
+                .in('chat_id', chatIds)
                 .eq('user_id', this.userId);
-
+            
             if (memoriesError) {
-                console.error('Failed to delete memories:', memoriesError);
-                throw memoriesError;
+                console.warn('⚠️ Failed to clear memories (non-critical):', memoriesError);
             }
-
-            this.showNotification('Success', 'All chats and messages have been deleted successfully.');
             
-            // Refresh the chat list
-            await this.loadChats();
+            // Delete all chats
+            const { error: chatsDeleteError } = await this.supabase
+                .from('chats')
+                .delete()
+                .in('id', chatIds)
+                .eq('user_id', this.userId);
             
-            // Reset current chat
+            if (chatsDeleteError) {
+                throw new Error(`Failed to delete chats: ${chatsDeleteError.message}`);
+            }
+            
+            // Reset current chat state
             this.currentChatId = null;
             this.currentChatName = null;
+            this.chats = [];
+            
+            // Clear UI
             if (this.chatContainer) {
                 this.chatContainer.innerHTML = `
                     <div class="welcome-message">
-                        <p>Hello! I'm your voidzenzi AI assistant. I'm here to help with clear, honest answers.</p>
-                        <p>Click "New Chat" to start a conversation, or select an existing chat from the sidebar.</p>
+                        <p>All chats have been cleared.</p>
+                        <p>Click "New Chat" to start a conversation.</p>
                     </div>
                 `;
             }
             
+            // Update chats list
+            if (this.chatsList) {
+                this.chatsList.innerHTML = '<div class="loading-chats">No chats found</div>';
+            }
+            
+            // Hide chat header
+            if (this.chatHeader) {
+                this.chatHeader.style.display = 'none';
+            }
+            
+            // Reload chats from database to ensure UI is synced
+            console.log('🔄 REFRESHING CHATS LIST AFTER CLEAR');
+            await this.loadChats();
+            
+            // Force refresh of chats list display
+            if (this.chatsList) {
+                console.log('🔄 CHATS LIST ELEMENT FOUND, CURRENT CONTENT LENGTH:', this.chatsList.children.length);
+                // Clear and rebuild
+                this.chatsList.innerHTML = '<div class="loading-chats">Loading chats...</div>';
+                setTimeout(() => {
+                    this.renderChatsList();
+                }, 100);
+            }
+            
+            this.showSuccessMessage(`Successfully cleared ${chats.length} chat(s).`);
+            this.updateDebugPanel();
+            
         } catch (error) {
-            console.error('Failed to delete all chats:', error);
-            this.showNotification('Error', `Failed to delete all chats: ${error.message}`);
+            console.error('❌ Failed to clear all chats:', error);
+            this.showErrorMessage(`Failed to clear all chats: ${error.message}`);
+        }
+    }
+    
+    async clearMemory() {
+        try {
+            await this.showConfirmModal('Clear Memory', 'Are you sure you want to clear all memory? This cannot be undone.');
+        } catch (error) {
+            return; // User cancelled
+        }
+
+        try {
+            const { error } = await this.supabase
+                .from('memories')
+                .delete()
+                .eq('user_id', this.userId);
+
+            if (error) throw error;
+            alert('Memory cleared successfully');
+        } catch (error) {
+            console.error('Failed to clear memory:', error);
+            alert('Failed to clear memory');
         }
     }
 
@@ -2714,13 +3103,9 @@ Ultra: Unlimited`;
         const voices = this.ttsVoices && this.ttsVoices.length ? this.ttsVoices : window.speechSynthesis.getVoices();
         if (!voices || !voices.length) return null;
 
-        const preferredGender = this.settings.ttsVoice || 'female';
-        const lowerGender = preferredGender.toLowerCase();
         const englishVoices = voices.filter(v => (v.lang || '').toLowerCase().startsWith('en'));
 
-        const femalePreferredNames = ['female', 'samantha', 'google uk english female', 'zira', 'aria', 'jenny'];
-        const malePreferredNames = ['male', 'google uk english male', 'david', 'guy', 'ryan'];
-        const preferredList = lowerGender === 'female' ? femalePreferredNames : malePreferredNames;
+        const preferredList = ['samantha', 'google uk english female', 'zira', 'aria', 'jenny', 'female'];
 
         const matchByName = (list) => {
             const lowerList = list.map(n => n.toLowerCase());
@@ -2742,7 +3127,7 @@ Ultra: Unlimited`;
     }
 
     speakText(text) {
-        if (!this.ttsSupported || !this.settings.ttsEnabled) return;
+        if (!this.ttsSupported) return;
         if (!text) return;
 
         window.speechSynthesis.cancel();
@@ -2816,7 +3201,7 @@ Ultra: Unlimited`;
 
     toggleDictation() {
         if (!this.recognition) {
-            this.showNotification('Feature Not Supported', 'Voice input not supported');
+            alert('Voice input not supported');
             return;
         }
 
@@ -2916,6 +3301,27 @@ Ultra: Unlimited`;
         oscillator.stop(audioContext.currentTime + 0.2);
     }
 
+    showSuccessMessage(message) {
+        const messageDiv = document.createElement('div');
+        messageDiv.className = 'message ai';
+        
+        const avatarDiv = document.createElement('div');
+        avatarDiv.className = 'message-avatar';
+        avatarDiv.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"></path><path d="M2 17l10 5 10-5"></path><path d="M2 12l10 5 10-5"></path></svg>';
+        
+        const contentDiv = document.createElement('div');
+        contentDiv.className = 'message-content success';
+        contentDiv.textContent = message;
+        
+        messageDiv.appendChild(avatarDiv);
+        messageDiv.appendChild(contentDiv);
+        this.chatContainer.appendChild(messageDiv);
+        
+        if (this.settings.autoScroll) {
+            this.chatContainer.scrollTop = this.chatContainer.scrollHeight;
+        }
+    }
+    
     showErrorMessage(message) {
         const messageDiv = document.createElement('div');
         messageDiv.className = 'message ai';
@@ -2949,8 +3355,11 @@ Ultra: Unlimited`;
     }
 
     async handleLogout() {
-        const confirmed = await this.showConfirmDialog('Logout?', 'Are you sure you want to logout?');
-        if (!confirmed) return;
+        try {
+            await this.showConfirmModal('Logout', 'Are you sure you want to logout?');
+        } catch (error) {
+            return; // User cancelled
+        }
 
         try {
             if (this.supabase) {
@@ -3065,18 +3474,46 @@ document.addEventListener('DOMContentLoaded', async () => {
             const { data: { user }, error: userError } = await supabaseClient.auth.getUser();
             console.log('🔐 AUTH USER:', user);
             console.log('🔐 AUTH ERROR:', userError);
-            
+                
             if (userError || !user) {
-                console.error('❌ AUTH FAILED - No user found');
-                window.location.href = 'login.html';
-                return;
+                // Try to get user from localStorage (legacy support)
+                const storedUser = localStorage.getItem('supabaseUser');
+                if (storedUser) {
+                    try {
+                        const parsedUser = JSON.parse(storedUser);
+                        console.log('🔐 USING STORED USER:', parsedUser);
+                            
+                        // Verify the stored user is still valid
+                        const { data: sessionData, error: sessionError } = await supabaseClient.auth.getSession();
+                        if (sessionData && sessionData.session) {
+                            console.log('✅ SESSION VALID - Using stored user');
+                            window.__currentUser = parsedUser;
+                        } else {
+                            console.error('❌ SESSION INVALID - Redirecting to login');
+                            window.location.href = 'login.html';
+                            return;
+                        }
+                    } catch (parseError) {
+                        console.error('❌ Failed to parse stored user:', parseError);
+                        window.location.href = 'login.html';
+                        return;
+                    }
+                } else {
+                    console.error('❌ AUTH FAILED - No user found and no stored user');
+                    window.location.href = 'login.html';
+                    return;
+                }
+            } else {
+                // User authenticated via session
+                console.log('✅ AUTH VERIFIED - User:', user.email, 'ID:', user.id);
+                window.__currentUser = user;
             }
-            
+                
             // Also check session
             const { data: sessionData, error: sessionError } = await supabaseClient.auth.getSession();
             console.log('🔐 SESSION DATA:', sessionData);
             console.log('🔐 SESSION ERROR:', sessionError);
-            
+                
             if (sessionError || !sessionData || !sessionData.session) {
                 console.error('❌ SESSION FAILED - No active session');
                 window.location.href = 'login.html';
@@ -3099,137 +3536,3 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     new AIAssistant();
 });
-
-// Modal Helper Functions
-AIAssistant.prototype.initModalEventListeners = function() {
-    // Confirm modal event listeners
-    const confirmCancelBtn = document.getElementById('confirmCancelBtn');
-    const confirmProceedBtn = document.getElementById('confirmProceedBtn');
-    if (confirmCancelBtn) confirmCancelBtn.addEventListener('click', () => this.hideModal('confirmModal'));
-    if (confirmProceedBtn) confirmProceedBtn.addEventListener('click', () => {
-        if (this.confirmCallback) this.confirmCallback(true);
-        this.hideModal('confirmModal');
-    });
-
-    // Input modal event listeners
-    const inputCancelBtn = document.getElementById('inputCancelBtn');
-    const inputConfirmBtn = document.getElementById('inputConfirmBtn');
-    const inputField = document.getElementById('inputField');
-    if (inputCancelBtn) inputCancelBtn.addEventListener('click', () => this.hideModal('inputModal'));
-    if (inputConfirmBtn) inputConfirmBtn.addEventListener('click', () => {
-        if (this.inputCallback) this.inputCallback(inputField.value);
-        this.hideModal('inputModal');
-    });
-    if (inputField) {
-        inputField.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                if (this.inputCallback) this.inputCallback(inputField.value);
-                this.hideModal('inputModal');
-            }
-        });
-    }
-
-    // Notification modal event listeners
-    const notificationCloseBtn = document.getElementById('notificationCloseBtn');
-    if (notificationCloseBtn) notificationCloseBtn.addEventListener('click', () => this.hideModal('notificationModal'));
-};
-
-AIAssistant.prototype.showModal = function(modalId) {
-    const modal = document.getElementById(modalId);
-    if (modal) {
-        modal.classList.add('show');
-        document.body.style.overflow = 'hidden';
-    }
-};
-
-AIAssistant.prototype.hideModal = function(modalId) {
-    const modal = document.getElementById(modalId);
-    if (modal) {
-        modal.classList.remove('show');
-        document.body.style.overflow = '';
-    }
-};
-
-AIAssistant.prototype.showConfirmDialog = function(title, message) {
-    return new Promise((resolve) => {
-        document.getElementById('confirmTitle').textContent = title;
-        document.getElementById('confirmMessage').textContent = message;
-        this.confirmCallback = resolve;
-        this.showModal('confirmModal');
-    });
-};
-
-AIAssistant.prototype.showInputDialog = function(title, message, defaultValue = '') {
-    return new Promise((resolve) => {
-        document.getElementById('inputTitle').textContent = title;
-        document.getElementById('inputMessage').textContent = message;
-        const inputField = document.getElementById('inputField');
-        if (inputField) {
-            inputField.value = defaultValue;
-            inputField.focus();
-        }
-        this.inputCallback = resolve;
-        this.showModal('inputModal');
-    });
-};
-
-AIAssistant.prototype.showNotification = function(title, message) {
-    document.getElementById('notificationTitle').textContent = title;
-    document.getElementById('notificationMessage').textContent = message;
-    this.showModal('notificationModal');
-};
-
-AIAssistant.prototype.checkMemoryUsage = async function() {
-    try {
-        const response = await fetch(`${this.apiUrl}/usage/limits?userId=${this.userId}`);
-        const data = await response.json();
-        
-        if (!response.ok) {
-            console.error('Failed to get usage limits:', data.error);
-            return { success: false, error: data.error };
-        }
-        
-        const { limits, usage } = data;
-        const memoriesUsed = usage.memories_used || 0;
-        const memoriesLimit = limits.memories;
-        
-        // Check if user has exceeded memory limit
-        if (memoriesLimit !== -1 && memoriesUsed >= memoriesLimit) {
-            this.showNotification('Memory Limit Exceeded', `You have reached your memory limit (${memoriesUsed}/${memoriesLimit}). Please upgrade your plan to continue using memory features.`);
-            return { success: false, limitExceeded: true };
-        }
-        
-        return { success: true, memoriesUsed, memoriesLimit };
-        
-    } catch (error) {
-        console.error('Error checking memory usage:', error);
-        return { success: false, error: error.message };
-    }
-};
-
-AIAssistant.prototype.trackMemoryUsage = async function() {
-    try {
-        const response = await fetch(`${this.apiUrl}/usage/track`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ userId: this.userId, type: 'memory' })
-        });
-        
-        const data = await response.json();
-        
-        if (!response.ok) {
-            if (response.status === 403) {
-                this.showNotification('Memory Limit Exceeded', 'You have reached your memory limit. Please upgrade your plan.');
-                return false;
-            }
-            throw new Error(data.error || 'Failed to track memory usage');
-        }
-        
-        return true;
-        
-    } catch (error) {
-        console.error('Error tracking memory usage:', error);
-        this.showNotification('Error', `Failed to track memory usage: ${error.message}`);
-        return false;
-    }
-};

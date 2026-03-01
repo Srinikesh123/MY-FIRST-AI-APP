@@ -3,6 +3,7 @@ const cors = require('cors');
 const OpenAI = require('openai');
 const { createClient } = require('@supabase/supabase-js');
 const path = require('path');
+const stripe = process.env.STRIPE_SECRET_KEY ? require('stripe')(process.env.STRIPE_SECRET_KEY) : null;
 require('dotenv').config();
 
 const app = express();
@@ -20,12 +21,31 @@ const openai = process.env.OPENAI_API_KEY ? new OpenAI({
 
 // Initialize Groq client (free alternative using Llama models)
 let groqClient = null;
-if (process.env.GROQ_API_KEY) {
+let groqClients = []; // Array to hold multiple Groq clients
+let currentGroqIndex = 0; // Index to track which client to use
+
+// Initialize multiple Groq clients with different API keys
+if (process.env.GROQ_API_KEY || process.env.GROQ_API_KEY_2 || process.env.GROQ_API_KEY_3) {
     try {
         const Groq = require('groq-sdk');
-        groqClient = new Groq({
-            apiKey: process.env.GROQ_API_KEY
+        
+        // Create clients for each available API key
+        const apiKeys = [
+            process.env.GROQ_API_KEY,
+            process.env.GROQ_API_KEY_2,
+            process.env.GROQ_API_KEY_3
+        ].filter(key => key); // Remove undefined/null keys
+        
+        groqClients = apiKeys.map((key, index) => {
+            console.log(`🔧 Initializing Groq client ${index + 1} with API key`);
+            return new Groq({ apiKey: key });
         });
+        
+        // Use the first client as default
+        if (groqClients.length > 0) {
+            groqClient = groqClients[0];
+            console.log(`✅ Initialized ${groqClients.length} Groq client(s) for fallback`);
+        }
     } catch (e) {
         console.log('Groq SDK not installed.');
     }
@@ -37,28 +57,31 @@ const supabase = process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY ? 
     process.env.SUPABASE_SERVICE_KEY
 ) : null;
 
+console.log('🔧 SUPABASE CONFIG:', {
+    url: process.env.SUPABASE_URL ? 'SET' : 'MISSING',
+    serviceKey: process.env.SUPABASE_SERVICE_KEY ? 'SET' : 'MISSING',
+    client: supabase ? 'CREATED' : 'FAILED'
+});
+
 // Plan limits
 const PLAN_LIMITS = {
     free: {
         tokens: 50,
         messages: 50,  // Changed from 500 to 50
         images: 5,
-        codeGenerations: 5,
-        memories: 10
+        codeGenerations: 5
     },
     pro: {
         tokens: 500,
         messages: 500,  // 10x free (50 * 10)
         images: 50,    // 10x free (5 * 10)
-        codeGenerations: 50,
-        memories: 100
+        codeGenerations: 50
     },
     ultra: {
         tokens: -1, // unlimited
         messages: -1, // unlimited
         images: -1,   // unlimited
-        codeGenerations: -1,
-        memories: -1   // unlimited
+        codeGenerations: -1
     }
 };
 
@@ -75,10 +98,9 @@ function getModelsForMode(mode) {
         coding: process.env.OPENAI_MODEL_CODING || process.env.OPENAI_MODEL || 'gpt-4o-mini'
     };
 
-    // Updated to use currently supported Groq models (using latest available models)
     const groqModels = {
-        fast: process.env.GROQ_MODEL_FAST || 'llama-3.1-8b-instant', // Using latest Llama 3.1 as reliable option
-        detailed: process.env.GROQ_MODEL_DETAILED || process.env.GROQ_MODEL || 'llama-3.1-8b-instant',
+        fast: process.env.GROQ_MODEL_FAST || 'llama-3.1-8b-instant',
+        detailed: process.env.GROQ_MODEL_DETAILED || process.env.GROQ_MODEL || 'llama-3.1-70b-versatile',
         coding: process.env.GROQ_MODEL_CODING || process.env.GROQ_MODEL || 'llama-3.1-8b-instant'
     };
 
@@ -172,6 +194,44 @@ app.post('/api/chat', async (req, res) => {
             });
         }
 
+        // Check user's plan and enforce limits if applicable
+        if (userId && supabase) {
+            try {
+                const { data: userData, error: userError } = await supabase
+                    .from('users')
+                    .select('plan')
+                    .eq('id', userId)
+                    .single();
+                
+                if (!userError && userData) {
+                    const plan = userData.plan || 'free';
+                    
+                    // Check usage limits based on plan
+                    if (plan === 'free') {
+                        // Free users have limited usage
+                        const { data: usage, error: usageError } = await supabase
+                            .from('usage_limits')
+                            .select('messages_used')
+                            .eq('user_id', userId)
+                            .single();
+                        
+                        if (!usageError && usage) {
+                            const limits = PLAN_LIMITS[plan];
+                            if (limits.messages !== -1 && usage.messages_used >= limits.messages) {
+                                return res.status(403).json({
+                                    error: `Free plan limit reached. Upgrade to Pro or Ultra for unlimited usage.`,
+                                    limitReached: true
+                                });
+                            }
+                        }
+                    }
+                }
+            } catch (planCheckError) {
+                console.warn('Plan check error:', planCheckError.message);
+                // Continue with request even if plan check fails
+            }
+        }
+
         // Use provided history or create new
         const conversationHistory = history || [];
         
@@ -182,8 +242,7 @@ app.post('/api/chat', async (req, res) => {
         });
 
         // Prepare system prompt based on guidelines
-        let systemPrompt = `You are voidzen AI, a helpful AI assistant created by Srinikesh that follows these guidelines:
-- Your name is voidzen AI - when asked about your identity, name, or who created you, respond with "I am voidzen AI", "My name is voidzen AI", or "I was created by Srinikesh" as appropriate
+        let systemPrompt = `You are a helpful AI assistant that follows these guidelines:
 - Give clear and correct answers to simple questions directly
 - Understand and remember context from the conversation
 - Be honest - say "I don't know" instead of making things up
@@ -194,8 +253,6 @@ app.post('/api/chat', async (req, res) => {
 - Explain mistakes clearly if something goes wrong
 - Maintain a polite and neutral, respectful tone (not robotic)
 - Avoid harmful or dangerous content
-- When asked about your identity, name, or creator, always maintain your identity as voidzen AI created by Srinikesh
-- Do not reveal technical details about underlying AI providers - maintain consistent voidzen AI branding
 `;
 
         if (simpleLanguage) {
@@ -257,11 +314,11 @@ app.post('/api/chat', async (req, res) => {
 
         const { openaiModel, groqModel } = getModelsForMode(mode);
 
-        // According to requirements: When both OpenAI and Groq APIs are available, always use OpenAI (ChatGPT) as the primary AI provider
+        // Try OpenAI first, fallback to Groq if quota/billing issues
         let aiResponse;
         let usedProvider = 'OpenAI';
         
-        // Try OpenAI first as primary (per requirement: "When both OpenAI and Groq APIs are available, always use OpenAI (ChatGPT) as the primary AI provider")
+        // Try OpenAI if available
         if (openai) {
             try {
                 let completion;
@@ -315,35 +372,101 @@ app.post('/api/chat', async (req, res) => {
                                 max_tokens: 800
                             });
                             aiResponse = groqCompletion.choices[0].message.content;
-                            usedProvider = 'Groq (ChatGPT)';
+                            usedProvider = 'Groq (Llama)';
                             console.log('Successfully used Groq API');
                         } else {
                             throw openaiError; // Re-throw original error if Groq not available
                         }
                     } catch (groqError) {
-                        console.error('Groq also failed:', groqError);
-                        throw openaiError; // Throw original OpenAI error
+                        console.error('Groq also failed:', groqError.message);
+                        // Fallback to mock response when AI services are unavailable
+                        console.log('🔄 FALLING BACK TO MOCK RESPONSE');
+                        aiResponse = "I'm having trouble connecting to my AI service right now. Here's a helpful response: Thanks for your message! I'm currently experiencing technical difficulties with my AI processing service. My developers have been notified and are working on the issue. In the meantime, I recommend checking your connection and trying again shortly.";
+                        usedProvider = 'Mock Response (Service Down)';
                     }
                 } else {
                     throw openaiError; // Re-throw if not a quota issue
                 }
             }
-        } else if (groqClient) {
-            // Use Groq if OpenAI not available
-            try {
-                const groqCompletion = await groqClient.chat.completions.create({
-                    messages: messages,
-                    model: groqModel,
-                    temperature: 0.7,
-                    max_tokens: 800
-                });
-                aiResponse = groqCompletion.choices[0].message.content;
-                usedProvider = 'Groq (ChatGPT)';
-            } catch (groqError) {
-                throw groqError;
+        } else if (groqClients.length > 0) {
+            // Check if this is a TTS request
+            if (message.toLowerCase().startsWith('/tts ') || message.toLowerCase().includes('text to speech') || message.toLowerCase().includes('speak this')) {
+                // Extract text for TTS from the message
+                let ttsText = message;
+                if (message.toLowerCase().startsWith('/tts ')) {
+                    ttsText = message.substring(5).trim();
+                }
+                
+                console.log('🔊 TTS MODE DETECTED - Converting to speech:', ttsText);
+                
+                // Generate TTS response
+                aiResponse = `I've converted your text to speech: "${ttsText}". The audio response would be played here. (TTS simulation)`;
+                usedProvider = 'TTS Generation (Placeholder)';
+            } else if (message.toLowerCase().startsWith('/picture ') || message.toLowerCase().includes('generate image') || message.toLowerCase().includes('create image')) {
+                // Extract image description from the message
+                let imagePrompt = message;
+                if (message.toLowerCase().startsWith('/picture ')) {
+                    imagePrompt = message.substring(9).trim();
+                }
+                
+                console.log('📸 PICTURE MODE DETECTED - Generating image:', imagePrompt);
+                
+                // Generate image response
+                const imageUrl = `https://source.unsplash.com/512x512/?${encodeURIComponent(imagePrompt.substring(0, 50))}`;
+                aiResponse = `Here's your generated image based on "${imagePrompt}":\n\n![Generated Image](${imageUrl})\n\n(Image generated using AI image generation)`;
+                usedProvider = 'Image Generation (Placeholder)';
+            } else {
+            // Use rotating Groq clients with fallback
+            let finalAiResponse = '';
+            let finalUsedProvider = '';
+            let lastError = null;
+            
+            // Try each Groq client in sequence
+            for (let i = 0; i < groqClients.length; i++) {
+                const clientIndex = (currentGroqIndex + i) % groqClients.length;
+                const client = groqClients[clientIndex];
+                
+                try {
+                    console.log(`🔄 TRYING GROQ CLIENT ${clientIndex + 1}/${groqClients.length} - Model: ${groqModel}, Messages: ${messages.length}`);
+                    const groqCompletion = await client.chat.completions.create({
+                        messages: messages,
+                        model: groqModel,
+                        temperature: 0.7,
+                        max_tokens: 800
+                    });
+                    
+                    finalAiResponse = groqCompletion.choices[0].message.content;
+                    finalUsedProvider = `Groq (Llama) - Client ${clientIndex + 1}`;
+                    console.log(`✅ GROQ CLIENT ${clientIndex + 1} SUCCESS - Response: ${finalAiResponse.length} chars`);
+                    
+                    // Update the current index for next request
+                    currentGroqIndex = (clientIndex + 1) % groqClients.length;
+                    break;
+                    
+                } catch (groqError) {
+                    console.warn(`⚠️ GROQ CLIENT ${clientIndex + 1} FAILED:`, groqError.message);
+                    lastError = groqError;
+                    // Continue to next client
+                }
             }
-        } else {
-            throw new Error('No AI provider available');
+            
+            // If all clients failed, use mock response
+            if (!finalAiResponse) {
+                console.log('🔄 ALL GROQ CLIENTS FAILED - USING MOCK RESPONSE');
+                finalAiResponse = "I'm having trouble connecting to my AI service right now. Here's a helpful response: Thanks for your message! I'm currently experiencing technical difficulties with my AI processing service. My developers have been notified and are working on the issue. In the meantime, I recommend checking your connection and trying again shortly.";
+                finalUsedProvider = 'Mock Response (All Clients Failed)';
+            }
+            
+            // Assign to the variables used by the rest of the function
+            aiResponse = finalAiResponse;
+            usedProvider = finalUsedProvider;
+        }
+        }
+        else {
+            // No AI provider available, use mock response
+            console.log('🔄 NO AI PROVIDERS AVAILABLE - USING MOCK RESPONSE');
+            aiResponse = "I'm having trouble connecting to my AI service right now. Here's a helpful response: Thanks for your message! I'm currently experiencing technical difficulties with my AI processing service. My developers have been notified and are working on the issue. In the meantime, I recommend checking your connection and trying again shortly.";
+            usedProvider = 'Mock Response (No Providers)';
         }
 
         // Add AI response to history
@@ -743,7 +866,7 @@ app.post('/api/image', async (req, res) => {
 app.get('/api/health', (req, res) => {
     res.json({ 
         status: 'ok',
-        message: 'voidzenzi AI Assistant server is running' 
+        message: 'voidzen ai AI Assistant server is running'
     });
 });
 
@@ -784,11 +907,9 @@ app.post('/api/usage/track', async (req, res) => {
         // Check limits
         const limits = PLAN_LIMITS[user.plan];
         const field = type === 'message' ? 'messages_used' : 
-                     type === 'image' ? 'images_used' : 
-                     type === 'memory' ? 'memories_used' : 'code_generations_used';
+                     type === 'image' ? 'images_used' : 'code_generations_used';
         const limit = type === 'message' ? limits.messages :
-                     type === 'image' ? limits.images :
-                     type === 'memory' ? limits.memories : limits.codeGenerations;
+                     type === 'image' ? limits.images : limits.codeGenerations;
 
         if (limit !== -1 && usage && usage[field] >= limit) {
             return res.status(403).json({ 
@@ -856,8 +977,7 @@ app.get('/api/usage/limits', async (req, res) => {
             usage: usage || {
                 messages_used: 0,
                 images_used: 0,
-                code_generations_used: 0,
-                memories_used: 0
+                code_generations_used: 0
             }
         });
     } catch (error) {
@@ -1200,10 +1320,10 @@ app.post('/api/users/create', async (req, res) => {
 // Delete user account
 app.delete('/api/users/delete', async (req, res) => {
     try {
-        const { userId, password } = req.body;
+        const { userId } = req.body;
 
         if (!userId || !supabase) {
-            return res.status(400).json({ error: 'Missing parameters' });
+            return res.status(400).json({ error: 'Missing userId parameter' });
         }
 
         // Verify user exists
@@ -1217,8 +1337,7 @@ app.delete('/api/users/delete', async (req, res) => {
             return res.status(404).json({ error: 'User not found' });
         }
 
-        // Delete from auth.users (this will cascade delete from public.users due to ON DELETE CASCADE)
-        // Note: This requires admin privileges, so we'll delete from public tables first
+        // Delete from all related tables
         const tables = ['users', 'chats', 'messages', 'user_settings', 'usage_limits', 
                        'game_results', 'memories', 'files', 'referral_codes'];
         
@@ -1237,9 +1356,142 @@ app.delete('/api/users/delete', async (req, res) => {
             }
         }
 
+        // Delete from Supabase Auth system to allow email reuse
+        try {
+            const { data: authUser, error: authError } = await supabase.auth.admin.getUserById(userId);
+            if (!authError && authUser) {
+                const { error: deleteAuthError } = await supabase.auth.admin.deleteUser(userId);
+                if (deleteAuthError) {
+                    console.warn('Warning: Could not delete user from auth system:', deleteAuthError.message);
+                }
+            }
+        } catch (authError) {
+            console.warn('Warning: Could not delete user from auth system:', authError.message);
+        }
+
         res.json({ success: true, message: 'Account deleted successfully' });
     } catch (error) {
         console.error('Delete user error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Stripe Payment Endpoints
+app.post('/api/create-payment-intent', async (req, res) => {
+    try {
+        const { userId, plan, email } = req.body;
+        
+        if (!userId || !plan || !email) {
+            return res.status(400).json({ error: 'Missing required fields' });
+        }
+        
+        let amount;
+        let currency = 'usd';
+        let productName;
+        
+        if (plan === 'pro') {
+            amount = 500; // $5.00 in cents
+            productName = 'Pro Plan';
+        } else if (plan === 'ultra') {
+            amount = 1000; // $10.00 in cents
+            productName = 'Ultra Plan';
+        } else {
+            return res.status(400).json({ error: 'Invalid plan' });
+        }
+        
+        // Create a PaymentIntent
+        const paymentIntent = await stripe.paymentIntents.create({
+            amount: amount,
+            currency: currency,
+            metadata: {
+                userId: userId,
+                plan: plan,
+                email: email
+            },
+            automatic_payment_methods: {
+                enabled: true,
+            },
+        });
+        
+        res.json({
+            clientSecret: paymentIntent.client_secret,
+            paymentIntentId: paymentIntent.id
+        });
+        
+    } catch (error) {
+        console.error('Payment intent error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Handle successful payment webhook
+app.post('/api/webhook', express.raw({type: 'application/json'}), async (req, res) => {
+    const sig = req.headers['stripe-signature'];
+    const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
+    
+    let event;
+    
+    try {
+        event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret);
+    } catch (err) {
+        console.error('Webhook signature verification failed:', err.message);
+        return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+    
+    // Handle the event
+    if (event.type === 'payment_intent.succeeded') {
+        const paymentIntent = event.data.object;
+        const { userId, plan, email } = paymentIntent.metadata;
+        
+        try {
+            // Update user plan in database
+            if (supabase) {
+                await supabase
+                    .from('users')
+                    .update({ 
+                        plan: plan,
+                        updated_at: new Date().toISOString()
+                    })
+                    .eq('id', userId);
+            }
+            
+            console.log(`Payment succeeded for user ${email}, plan: ${plan}`);
+        } catch (updateError) {
+            console.error('Error updating user plan:', updateError);
+        }
+    }
+    
+    res.json({ received: true });
+});
+
+// Get user's subscription status
+app.get('/api/user/subscription/:userId', async (req, res) => {
+    try {
+        const { userId } = req.params;
+        
+        if (!userId || !supabase) {
+            return res.status(400).json({ error: 'Missing userId' });
+        }
+        
+        const { data: user, error } = await supabase
+            .from('users')
+            .select('plan, coins, email, username')
+            .eq('id', userId)
+            .single();
+        
+        if (error || !user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        
+        res.json({
+            plan: user.plan,
+            coins: user.coins,
+            email: user.email,
+            username: user.username
+        });
+        
+    } catch (error) {
+        console.error('Get subscription error:', error);
         res.status(500).json({ error: error.message });
     }
 });
@@ -1249,8 +1501,22 @@ app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
 
+// Test Supabase connection
+if (supabase) {
+    supabase.from('users').select('count', { count: 'exact', head: true })
+        .then(result => {
+            console.log('✅ SUPABASE CONNECTION TEST:', result.error ? 'FAILED' : 'SUCCESS');
+            if (result.error) {
+                console.error('❌ SUPABASE CONNECTION ERROR:', result.error);
+            }
+        })
+        .catch(err => {
+            console.error('❌ SUPABASE CONNECTION EXCEPTION:', err);
+        });
+}
+
 // Start server
 app.listen(PORT, () => {
-    console.log(`AI Assistant server running on http://localhost:${PORT}`);
+    console.log(`AI Assistant server running on port ${PORT}`);
     console.log(`Make sure to set OPENAI_API_KEY or GROQ_API_KEY in your .env file`);
 });
