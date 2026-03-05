@@ -2,7 +2,8 @@
 // STRICT SUPABASE PERSISTENCE - NO localStorage FOR REAL DATA
 class AIAssistant {
     constructor() {
-        this.apiUrl = 'http://localhost:3000/api';
+       // Use dynamic API URL for production deployment
+this.apiUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? 'http://localhost:3000/api' : `${window.location.origin}/api`;
         this.supabase = window.__supabaseClient || null;
         this.user = window.__currentUser || null;
         this.userId = this.user ? this.user.id : null;
