@@ -22,6 +22,7 @@ this.apiUrl = window.location.hostname === 'localhost' || window.location.hostna
         this.userCoins = 0;
         this.gamesCache = []; // Cache games for instant display
         this.userName = null;
+        this.userContext = null; // User context and identity information
         
         // UI state (ONLY temporary UI state in localStorage)
         this.uiState = this.loadUIState(); // Only for modal open/close, loading flags
@@ -204,6 +205,9 @@ this.apiUrl = window.location.hostname === 'localhost' || window.location.hostna
         await this.loadUserInfo();
         await this.loadReferralInfo();
         
+        // Load user context and identity
+        await this.loadUserContext();
+        
         // Update coin counter
         this.updateCoinCounter();
         
@@ -335,6 +339,265 @@ this.apiUrl = window.location.hostname === 'localhost' || window.location.hostna
         } catch (error) {
             console.error('Failed to load referral info:', error);
         }
+    }
+
+    // ============================================
+    // USER CONTEXT AND IDENTITY MANAGEMENT
+    // ============================================
+
+    async loadUserContext() {
+        console.log('🧠 LOADING USER CONTEXT - userId:', this.userId);
+        
+        if (!this.supabase || !this.userId) {
+            console.warn('❌ Cannot load user context: missing supabase or userId');
+            return null;
+        }
+
+        try {
+            // Use the get_or_create_user_context function
+            const { data, error } = await this.supabase
+                .rpc('get_or_create_user_context', {
+                    p_user_id: this.userId
+                });
+
+            console.log('🧠 USER CONTEXT DATA:', data);
+            console.log('🧠 USER CONTEXT ERROR:', error);
+
+            if (error) {
+                console.error('❌ USER CONTEXT QUERY ERROR:', error);
+                return null;
+            }
+
+            if (data && data.length > 0) {
+                const context = data[0];
+                this.userContext = {
+                    id: context.id,
+                    displayName: context.display_name,
+                    bio: context.bio,
+                    responseStyle: context.response_style,
+                    personalityTraits: context.personality_traits || [],
+                    interests: context.interests || [],
+                    profession: context.profession,
+                    expertiseLevel: context.expertise_level,
+                    preferredTopics: context.preferred_topics || [],
+                    aiPersonalityPreference: context.ai_personality_preference,
+                    communicationStyle: context.communication_style
+                };
+                
+                console.log('✅ USER CONTEXT LOADED:', this.userContext);
+                return this.userContext;
+            } else {
+                console.warn('⚠️ User context not found');
+                return null;
+            }
+        } catch (error) {
+            console.error('❌ Failed to load user context:', error);
+            return null;
+        }
+    }
+
+    async updateUserContext(updates) {
+        console.log('🧠 UPDATING USER CONTEXT:', updates);
+        
+        if (!this.supabase || !this.userId) {
+            console.warn('❌ Cannot update user context: missing supabase or userId');
+            return false;
+        }
+
+        try {
+            // First ensure context exists
+            await this.loadUserContext();
+
+            // Prepare update object
+            const updateData = {};
+            
+            if (updates.displayName !== undefined) updateData.display_name = updates.displayName;
+            if (updates.bio !== undefined) updateData.bio = updates.bio;
+            if (updates.responseStyle !== undefined) updateData.response_style = updates.responseStyle;
+            if (updates.personalityTraits !== undefined) updateData.personality_traits = updates.personalityTraits;
+            if (updates.interests !== undefined) updateData.interests = updates.interests;
+            if (updates.profession !== undefined) updateData.profession = updates.profession;
+            if (updates.expertiseLevel !== undefined) updateData.expertise_level = updates.expertiseLevel;
+            if (updates.preferredTopics !== undefined) updateData.preferred_topics = updates.preferredTopics;
+            if (updates.aiPersonalityPreference !== undefined) updateData.ai_personality_preference = updates.aiPersonalityPreference;
+            if (updates.communicationStyle !== undefined) updateData.communication_style = updates.communicationStyle;
+
+            const { data, error } = await this.supabase
+                .from('user_context')
+                .upsert({
+                    user_id: this.userId,
+                    ...updateData
+                })
+                .select()
+                .single();
+
+            console.log('🧠 CONTEXT UPDATE RESULT:', data);
+            console.log('🧠 CONTEXT UPDATE ERROR:', error);
+
+            if (error) {
+                console.error('❌ USER CONTEXT UPDATE ERROR:', error);
+                return false;
+            }
+
+            if (data) {
+                // Update local context
+                this.userContext = {
+                    id: data.id,
+                    displayName: data.display_name,
+                    bio: data.bio,
+                    responseStyle: data.response_style,
+                    personalityTraits: data.personality_traits || [],
+                    interests: data.interests || [],
+                    profession: data.profession,
+                    expertiseLevel: data.expertise_level,
+                    preferredTopics: data.preferred_topics || [],
+                    aiPersonalityPreference: data.ai_personality_preference,
+                    communicationStyle: data.communication_style
+                };
+                
+                console.log('✅ USER CONTEXT UPDATED:', this.userContext);
+                return true;
+            }
+            
+            return false;
+        } catch (error) {
+            console.error('❌ Failed to update user context:', error);
+            return false;
+        }
+    }
+
+    extractIdentityFromMessage(message) {
+        // Extract identity information from user messages
+        const text = message.toLowerCase().trim();
+        
+        const identityPatterns = {
+            // Name patterns
+            name: [
+                /i am (\w+)/i,
+                /my name is (\w+)/i,
+                /call me (\w+)/i,
+                /i'm (\w+)/i
+            ],
+            
+            // Bio/identity patterns
+            bio: [
+                /i'm a (.+?)(?:\.|$)/i,
+                /i am a (.+?)(?:\.|$)/i,
+                /i'm an? (.+?)(?:\.|$)/i,
+                /i work as a (.+?)(?:\.|$)/i
+            ],
+            
+            // Interest patterns
+            interests: [
+                /i like (.+?)(?:\.|$)/i,
+                /i love (.+?)(?:\.|$)/i,
+                /i enjoy (.+?)(?:\.|$)/i,
+                /i'm into (.+?)(?:\.|$)/i
+            ]
+        };
+
+        const extracted = {};
+
+        // Check for name
+        for (const pattern of identityPatterns.name) {
+            const match = text.match(pattern);
+            if (match) {
+                extracted.displayName = match[1].charAt(0).toUpperCase() + match[1].slice(1);
+                break;
+            }
+        }
+
+        // Check for bio/identity
+        for (const pattern of identityPatterns.bio) {
+            const match = text.match(pattern);
+            if (match) {
+                extracted.bio = match[1].trim();
+                break;
+            }
+        }
+
+        // Check for interests
+        for (const pattern of identityPatterns.interests) {
+            const match = text.match(pattern);
+            if (match) {
+                const interests = match[1].split(',').map(i => i.trim().toLowerCase());
+                extracted.interests = interests;
+                break;
+            }
+        }
+
+        // Special handling for "gamer" identity
+        if (text.includes('gamer')) {
+            extracted.personalityTraits = ['gamer'];
+            extracted.responseStyle = 'gamer';
+        }
+
+        return extracted;
+    }
+
+    async processIdentityMessage(message) {
+        const extracted = this.extractIdentityFromMessage(message);
+        
+        if (Object.keys(extracted).length > 0) {
+            console.log('🧠 IDENTITY EXTRACTED:', extracted);
+            
+            // Update user context with extracted information
+            const success = await this.updateUserContext(extracted);
+            
+            if (success) {
+                console.log('✅ IDENTITY SAVED TO CONTEXT');
+                return true;
+            }
+        }
+        
+        return false;
+    }
+
+    getPersonalizedSystemPrompt() {
+        if (!this.userContext) {
+            return "You are voidzen AI, created by Srinikesh. You are a helpful AI assistant.";
+        }
+
+        let prompt = "You are voidzen AI, created by Srinikesh. You are a helpful AI assistant.";
+        
+        // Add user name if available
+        if (this.userContext.displayName) {
+            prompt += ` The user's name is ${this.userContext.displayName}.`;
+        }
+        
+        // Add user bio/identity if available
+        if (this.userContext.bio) {
+            prompt += ` The user identifies as: ${this.userContext.bio}.`;
+        }
+        
+        // Add personality traits
+        if (this.userContext.personalityTraits && this.userContext.personalityTraits.length > 0) {
+            const traits = this.userContext.personalityTraits.join(', ');
+            prompt += ` The user has these traits: ${traits}.`;
+        }
+        
+        // Add interests
+        if (this.userContext.interests && this.userContext.interests.length > 0) {
+            const interests = this.userContext.interests.join(', ');
+            prompt += ` The user is interested in: ${interests}.`;
+        }
+        
+        // Add response style preference
+        if (this.userContext.responseStyle && this.userContext.responseStyle !== 'balanced') {
+            prompt += ` Adapt your response style to be ${this.userContext.responseStyle}.`;
+        }
+        
+        // Add AI personality preference
+        if (this.userContext.aiPersonalityPreference) {
+            prompt += ` Use a ${this.userContext.aiPersonalityPreference} personality in your responses.`;
+        }
+        
+        // Add communication style
+        if (this.userContext.communicationStyle && this.userContext.communicationStyle !== 'adaptive') {
+            prompt += ` Use a ${this.userContext.communicationStyle} communication style.`;
+        }
+        
+        return prompt;
     }
 
     updateDebugPanel() {
@@ -1864,6 +2127,9 @@ Ultra: Unlimited`;
         // Save user message to Supabase
         await this.saveMessageToSupabase(message, 'user');
 
+        // Process identity information from user message
+        await this.processIdentityMessage(message);
+
         // Remove welcome message
         const welcomeMsg = this.chatContainer.querySelector('.welcome-message');
         if (welcomeMsg) welcomeMsg.remove();
@@ -1925,7 +2191,8 @@ Ultra: Unlimited`;
                         simpleLanguage: this.settings.simpleLanguage,
                         mode: this.settings.chatMode || 'fast',
                         mood: this.settings.mood || 'friendly',
-                        errorFreeMode: this.settings.errorFreeMode
+                        errorFreeMode: this.settings.errorFreeMode,
+                        systemPrompt: this.getPersonalizedSystemPrompt()
                     })
                 });
 
