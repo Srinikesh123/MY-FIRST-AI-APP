@@ -187,6 +187,11 @@ this.apiUrl = window.location.hostname === 'localhost' || window.location.hostna
         this.inviteStatus = document.getElementById('inviteStatus');
         this.currentPlanDisplay = document.getElementById('currentPlanDisplay');
         this.memoryStatusText = document.getElementById('memoryStatusText');
+        
+        // Image upload
+        this.imageUploadBtn = document.getElementById('imageUploadBtn');
+        this.imageInput = document.getElementById('imageInput');
+        this.uploadedImageData = null;
     }
 
     async initializeApp() {
@@ -1154,6 +1159,16 @@ Ultra: Unlimited`;
             this.voiceInputBtn.addEventListener('click', () => this.toggleDictation());
         }
 
+        // Image upload
+        if (this.imageUploadBtn) {
+            this.imageUploadBtn.addEventListener('click', () => {
+                this.imageInput.click();
+            });
+        }
+        if (this.imageInput) {
+            this.imageInput.addEventListener('change', (e) => this.handleImageUpload(e));
+        }
+
         // Navigation
         if (this.newChatBtn) {
             this.newChatBtn.addEventListener('click', () => this.showNewChatModal());
@@ -2111,24 +2126,64 @@ Ultra: Unlimited`;
     async handleSend() {
         if (!this.userInput) return;
         const message = this.userInput.value.trim();
-        if (!message) return;
+        if (!message && !this.uploadedImageData) return;
 
         // ENFORCE: Must have a chat before sending
         if (!this.currentChatId) {
             // Automatically create a new chat with the first message as the name
-            await this.createAutoNamedChat(message);
+            await this.createAutoNamedChat(message || 'Image Analysis');
+        }
+
+        console.log('🚀 handleSend called');
+        console.log('📝 Message:', message);
+        console.log('📷 uploadedImageData exists:', !!this.uploadedImageData);
+        console.log('📷 uploadedImageData length:', this.uploadedImageData?.length || 0);
+
+        // Handle image upload
+        let messageContent = message;
+        let hasImage = false;
+        let imageDataToSave = null;
+        
+        if (this.uploadedImageData) {
+            hasImage = true;
+            imageDataToSave = this.uploadedImageData;
+            console.log('📷 Image data detected, length:', this.uploadedImageData.length);
+            console.log('📷 Image data type:', typeof this.uploadedImageData);
+            console.log('📷 Image data prefix:', this.uploadedImageData.substring(0, 50));
+            // Add image to UI
+            this.addImageToUI(this.uploadedImageData, 'user');
+            
+            // If no text message, create a default one
+            if (!message) {
+                messageContent = "Please analyze this image";
+            }
         }
 
         // Add user message to UI
-        this.addMessageToUI(message, 'user', true);
+        if (message) {
+            this.addMessageToUI(message, 'user', true);
+        }
         this.userInput.value = '';
         if (this.sendButton) this.sendButton.disabled = true;
 
-        // Save user message to Supabase
-        await this.saveMessageToSupabase(message, 'user');
+        // Save user message to Supabase (try without image data first to avoid column issues)
+        try {
+            await this.saveMessageToSupabase(messageContent, 'user', imageDataToSave);
+        } catch (dbError) {
+            console.warn('⚠️ Could not save image to database, but continuing...', dbError);
+            // Try to save without image data as fallback
+            await this.saveMessageToSupabase(messageContent, 'user', null);
+        }
+
+        // Clear image preview after saving
+        if (hasImage) {
+            this.removeImagePreview();
+        }
 
         // Process identity information from user message
-        await this.processIdentityMessage(message);
+        if (message) {
+            await this.processIdentityMessage(message);
+        }
 
         // Remove welcome message
         const welcomeMsg = this.chatContainer.querySelector('.welcome-message');
@@ -2141,48 +2196,39 @@ Ultra: Unlimited`;
         }
 
         try {
-            // Check if image mode is enabled
-            if (this.settings.imageMode) {
-                // Generate image instead of text response
-                const response = await fetch(`${this.apiUrl}/image`, {
+            // Handle different scenarios:
+            // 1. Image uploaded -> analyze the image
+            // 2. Picture mode enabled -> generate new image
+            // 3. Regular text -> normal chat
+            let response;
+            
+            if (hasImage) {
+                // User uploaded an image - analyze it
+                response = await fetch(`${this.apiUrl}/image`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ 
-                        prompt: message, 
+                        prompt: messageContent, 
+                        userId: this.userId,
+                        mode: this.settings.imageModeType || 'normal',
+                        imageData: imageDataToSave
+                    })
+                });
+            } else if (this.settings.imageMode) {
+                // Picture mode enabled - generate new image
+                response = await fetch(`${this.apiUrl}/image`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        prompt: messageContent, 
                         userId: this.userId,
                         mode: this.settings.imageModeType || 'normal'
                     })
                 });
-
-                if (typingId) this.hideTypingIndicator(typingId);
-
-                if (!response.ok) {
-                    const errorData = await response.json();
-                    throw new Error(errorData.error || 'Failed to generate image');
-                }
-
-                const data = await response.json();
-                
-                // Add image to UI
-                // Don't escape SVG data URLs as they contain special characters
-                const escapedUrl = data.imageUrl.startsWith('data:image/svg+xml') ? data.imageUrl : this.escapeHtml(data.imageUrl);
-                const imageHtml = `<div class="message-image"><img src="${escapedUrl}" alt="Generated image" style="max-width: 100%; border-radius: 8px;"></div>`;
-                this.addMessageToUI(imageHtml, 'assistant', true);
-                
-                // Save image URL as message content
-                await this.saveMessageToSupabase(`[Image Generated] ${data.imageUrl}`, 'assistant');
-                
-                // Refresh user data to update tokens
-                await this.loadUserInfo();
-                this.updateUserProfile();
-                
-                this.playSound('receive');
             } else {
-                // Get conversation history from Supabase
+                // Regular text chat
                 const history = await this.getConversationHistory();
-
-                // Call AI API
-                const response = await fetch(`${this.apiUrl}/chat`, {
+                response = await fetch(`${this.apiUrl}/chat`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -2195,24 +2241,92 @@ Ultra: Unlimited`;
                         systemPrompt: this.getPersonalizedSystemPrompt()
                     })
                 });
+            }
 
                 if (typingId) this.hideTypingIndicator(typingId);
 
-                if (!response.ok) {
-                    const errorData = await response.json();
-                    throw new Error(errorData.error || 'Failed to get response');
-                }
-
-                const data = await response.json();
-                
-                // Add AI response to UI
-                this.addMessageToUI(data.response, 'assistant', true);
-                
-                // Save AI response to Supabase
-                await this.saveMessageToSupabase(data.response, 'assistant');
-                
-                this.playSound('receive');
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.error || 'Failed to get response');
             }
+
+            let data;
+            try {
+                data = await response.json();
+                console.log('📨 Response data received:', data);
+            } catch (jsonError) {
+                console.error('❌ JSON parse error:', jsonError);
+                const responseText = await response.text();
+                console.error('❌ Raw response:', responseText);
+                throw new Error('Invalid response format from server');
+            }
+            
+            // Handle different response types based on what was requested
+            if (hasImage) {
+                console.log('📸 Has image data, checking for enhancement...');
+                console.log('📸 Response type:', data.type);
+                console.log('📸 Response data:', data);
+                // Check if it's an enhancement request
+                const isEnhancement = messageContent.toLowerCase().includes('make it') || 
+                                     messageContent.toLowerCase().includes('enhance') || 
+                                     messageContent.toLowerCase().includes('better') ||
+                                     messageContent.toLowerCase().includes('flashy') ||
+                                     messageContent.toLowerCase().includes('improve');
+                console.log('📸 Is enhancement request:', isEnhancement);
+                
+                if (data.type === 'image_generation') {
+                    console.log('📸 Processing image generation response...');
+                    // Image generation response (enhancement)
+                    const imageId = 'img-' + Date.now();
+                    // Use window.aiAssistant instead of App
+                    const imageHtml = `
+                        <div class="message-image">
+                            <img id="${imageId}" src="${data.imageUrl}" alt="Enhanced image" style="max-width: 100%; border-radius: 8px; display: block; margin-bottom: 8px;">
+                            <button onclick="window.aiAssistant.downloadImage('${data.imageUrl}', '${imageId}')" style="
+                                background: var(--accent-color, #667eea);
+                                color: white;
+                                border: none;
+                                padding: 8px 16px;
+                                border-radius: 6px;
+                                cursor: pointer;
+                                font-size: 14px;
+                                display: flex;
+                                align-items: center;
+                                gap: 6px;
+                            ">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                    <polyline points="7 10 12 15 17 10"></polyline>
+                                    <line x1="12" y1="15" x2="12" y2="3"></line>
+                                </svg>
+                                Download Image
+                            </button>
+                        </div>`;
+                    this.addMessageToUI(imageHtml, 'assistant', true);
+                    this.addMessageToUI(data.response, 'assistant', true);
+                    await this.saveMessageToSupabase(`[Enhanced Image] ${data.imageUrl}`, 'assistant');
+                } else {
+                    // Image analysis response
+                    console.log('📸 Processing image analysis response:', data.response);
+                    this.addMessageToUI(data.response, 'assistant', true);
+                    await this.saveMessageToSupabase(data.response, 'assistant');
+                }
+            } else if (this.settings.imageMode) {
+                // Image generation response
+                const escapedUrl = data.imageUrl.startsWith('data:image/svg+xml') ? data.imageUrl : this.escapeHtml(data.imageUrl);
+                const imageHtml = `<div class="message-image"><img src="${escapedUrl}" alt="Generated image" style="max-width: 100%; border-radius: 8px;"></div>`;
+                this.addMessageToUI(imageHtml, 'assistant', true);
+                await this.saveMessageToSupabase(`[Image Generated] ${data.imageUrl}`, 'assistant');
+            } else {
+                // Regular text response
+                this.addMessageToUI(data.response, 'assistant', true);
+                await this.saveMessageToSupabase(data.response, 'assistant');
+            }
+            
+            // Refresh user data and play sound
+            await this.loadUserInfo();
+            this.updateUserProfile();
+            this.playSound('receive');
         } catch (error) {
             if (typingId) this.hideTypingIndicator(typingId);
             this.showErrorMessage(error.message || 'Failed to communicate with AI');
@@ -2248,9 +2362,10 @@ Ultra: Unlimited`;
         }
     }
 
-    async saveMessageToSupabase(content, role) {
+    async saveMessageToSupabase(content, role, imageData = null) {
         console.log('💬 SAVING MESSAGE - role:', role, 'chatId:', this.currentChatId, 'userId:', this.userId);
         console.log('💬 MESSAGE CONTENT LENGTH:', content ? content.length : 0);
+        console.log('💬 HAS IMAGE:', imageData ? 'YES' : 'NO');
         
         // CRITICAL: Must have both chat_id and user_id
         if (!this.currentChatId) {
@@ -2295,18 +2410,25 @@ Ultra: Unlimited`;
             }
 
             // CRITICAL: Save message with BOTH user_id and chat_id
-            const { data: messageData, error } = await this.supabase
+            const messageData = {
+                chat_id: this.currentChatId,
+                user_id: this.userId,
+                role: role,
+                content: content
+            };
+            
+            // Add image data if present
+            if (imageData) {
+                messageData.image_data = imageData;
+            }
+            
+            const { data, error } = await this.supabase
                 .from('messages')
-                .insert({
-                    user_id: this.userId,        // CRITICAL: User ID
-                    chat_id: this.currentChatId, // CRITICAL: Chat ID
-                    role: role,
-                    content: content.trim()
-                })
+                .insert(messageData)
                 .select()
                 .single();
 
-            console.log('💬 MESSAGE SAVE RESULT:', messageData);
+            console.log('💬 MESSAGE SAVE RESULT:', data);
             console.log('💬 MESSAGE SAVE ERROR:', error);
 
             if (error) {
@@ -2459,6 +2581,52 @@ Ultra: Unlimited`;
         if (sender === 'assistant' && this.settings.ttsEnabled) {
             this.speakText(text);
         }
+        
+        if (this.settings.showTimestamps) {
+            const timestamp = document.createElement('div');
+            timestamp.className = 'message-timestamp';
+            timestamp.textContent = this.formatTime();
+            contentDiv.appendChild(timestamp);
+        }
+        
+        messageDiv.appendChild(avatarDiv);
+        messageDiv.appendChild(contentDiv);
+        this.chatContainer.appendChild(messageDiv);
+        
+        if (this.settings.autoScroll) {
+            this.chatContainer.scrollTop = this.chatContainer.scrollHeight;
+        }
+    }
+
+    addImageToUI(imageData, sender) {
+        if (!this.chatContainer) return;
+
+        const messageDiv = document.createElement('div');
+        messageDiv.className = `message ${sender}`;
+        
+        const avatarDiv = document.createElement('div');
+        avatarDiv.className = 'message-avatar';
+        if (sender === 'user') {
+            avatarDiv.textContent = 'You';
+        } else {
+            avatarDiv.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"></path><path d="M2 17l10 5 10-5"></path><path d="M2 12l10 5 10-5"></path></svg>';
+        }
+        
+        const contentDiv = document.createElement('div');
+        contentDiv.className = 'message-content';
+        
+        const imageElement = document.createElement('img');
+        imageElement.src = imageData;
+        imageElement.alt = 'Uploaded image';
+        imageElement.style.cssText = `
+            max-width: 100%;
+            max-height: 300px;
+            border-radius: 8px;
+            object-fit: contain;
+            margin-bottom: 8px;
+        `;
+        
+        contentDiv.appendChild(imageElement);
         
         if (this.settings.showTimestamps) {
             const timestamp = document.createElement('div');
@@ -3096,6 +3264,216 @@ Ultra: Unlimited`;
             }
         } catch (e) {
             console.error('Speech recognition error:', e);
+        }
+    }
+
+    // ============================================
+    // IMAGE UPLOAD HANDLING
+    // ============================================
+    async handleImageUpload(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        console.log('📁 File selected:', file.name, file.type, file.size);
+
+        // Validate file type
+        if (!file.type.startsWith('image/')) {
+            this.showNotification('Invalid File', 'Please upload an image file');
+            return;
+        }
+
+        // Validate file size (max 10MB)
+        if (file.size > 10 * 1024 * 1024) {
+            this.showNotification('File Too Large', 'Please upload an image smaller than 10MB');
+            return;
+        }
+
+        try {
+            // Convert image to base64
+            const base64 = await this.fileToBase64(file);
+            console.log('📷 Base64 conversion successful, length:', base64.length);
+            this.uploadedImageData = base64;
+            
+            // Show image preview in input area
+            this.showImagePreview(base64, file.name);
+            
+            // Update placeholder text
+            if (this.userInput) {
+                this.userInput.placeholder = "Type your instructions for the image...";
+            }
+            
+            console.log('📷 Image uploaded successfully');
+            console.log('📷 Current uploadedImageData state:', !!this.uploadedImageData);
+        } catch (error) {
+            console.error('❌ Image upload failed:', error);
+            this.showNotification('Upload Failed', 'Failed to upload image. Please try again.');
+        }
+    }
+
+    fileToBase64(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => {
+                    // Compress image if it's too large
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    
+                    // Calculate new dimensions (max 800px width/height)
+                    let width = img.width;
+                    let height = img.height;
+                    const maxSize = 800;
+                    
+                    if (width > maxSize || height > maxSize) {
+                        if (width > height) {
+                            height = (height * maxSize) / width;
+                            width = maxSize;
+                        } else {
+                            width = (width * maxSize) / height;
+                            height = maxSize;
+                        }
+                    }
+                    
+                    canvas.width = width;
+                    canvas.height = height;
+                    ctx.drawImage(img, 0, 0, width, height);
+                    
+                    // Convert to base64 with reduced quality
+                    const compressedBase64 = canvas.toDataURL('image/jpeg', 0.7);
+                    console.log('📷 Original size:', e.target.result.length);
+                    console.log('📷 Compressed size:', compressedBase64.length);
+                    resolve(compressedBase64);
+                };
+                img.onerror = reject;
+                img.src = e.target.result;
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+        });
+    }
+
+    showImagePreview(base64, fileName) {
+        // Remove existing preview if any
+        const existingPreview = document.getElementById('imagePreview');
+        if (existingPreview) {
+            existingPreview.remove();
+        }
+
+        // Create preview element
+        const preview = document.createElement('div');
+        preview.id = 'imagePreview';
+        preview.className = 'image-preview';
+        preview.innerHTML = `
+            <img src="${base64}" alt="Uploaded image" style="max-width: 100px; max-height: 100px; border-radius: 8px; object-fit: cover;">
+            <div class="image-info">
+                <span>${fileName}</span>
+                <button type="button" id="removeImageBtn" class="btn-small btn-danger">✕</button>
+            </div>
+            <div class="image-hint">💡 AI will analyze this image when you send a message</div>
+        `;
+
+        // Style the preview
+        preview.style.cssText = `
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            margin-bottom: 8px;
+            border: 1px solid #dee2e6;
+        `;
+
+        const imageInfo = preview.querySelector('.image-info');
+        imageInfo.style.cssText = `
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            flex: 1;
+        `;
+
+        const removeBtn = preview.querySelector('#removeImageBtn');
+        removeBtn.style.cssText = `
+            align-self: flex-start;
+            padding: 2px 6px;
+            font-size: 12px;
+            border-radius: 4px;
+            border: none;
+            background: #dc3545;
+            color: white;
+            cursor: pointer;
+        `;
+
+        // Add remove functionality
+        removeBtn.addEventListener('click', () => this.removeImagePreview());
+
+        // Style the hint
+        const hint = preview.querySelector('.image-hint');
+        if (hint) {
+            hint.style.cssText = `
+                font-size: 12px;
+                color: #666;
+                margin-top: 4px;
+                font-style: italic;
+            `;
+        }
+
+        // Insert preview before input container
+        const inputContainer = document.querySelector('.input-container');
+        if (inputContainer && inputContainer.parentNode) {
+            inputContainer.parentNode.insertBefore(preview, inputContainer);
+        }
+    }
+
+    removeImagePreview() {
+        const preview = document.getElementById('imagePreview');
+        if (preview) {
+            preview.remove();
+        }
+        this.uploadedImageData = null;
+        if (this.imageInput) {
+            this.imageInput.value = '';
+        }
+        if (this.userInput) {
+            this.userInput.placeholder = "Type your message here...";
+        }
+    }
+
+    // Download image method
+    downloadImage(imageUrl, imageId) {
+        console.log('📥 Downloading image:', imageUrl);
+        
+        // Create a temporary link element
+        const link = document.createElement('a');
+        link.href = imageUrl;
+        link.download = `voidzen-generated-image-${Date.now()}.png`;
+        link.target = '_blank';
+        
+        // For external URLs, we need to fetch and create a blob
+        if (imageUrl.startsWith('http')) {
+            fetch(imageUrl)
+                .then(response => response.blob())
+                .then(blob => {
+                    const blobUrl = URL.createObjectURL(blob);
+                    link.href = blobUrl;
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    URL.revokeObjectURL(blobUrl);
+                    console.log('✅ Image downloaded successfully');
+                })
+                .catch(error => {
+                    console.error('❌ Failed to download image:', error);
+                    // Fallback: open in new tab
+                    window.open(imageUrl, '_blank');
+                });
+        } else {
+            // For data URLs, download directly
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            console.log('✅ Image downloaded successfully');
         }
     }
 

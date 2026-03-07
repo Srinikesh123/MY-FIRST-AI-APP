@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image Upload Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #667eea;
+        }
+        .upload-section {
+            margin: 20px 0;
+            padding: 20px;
+            border: 2px dashed #667eea;
+            border-radius: 8px;
+            text-align: center;
+        }
+        input[type="file"] {
+            margin: 10px 0;
+        }
+        button {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background: #5a67d8;
+        }
+        #preview {
+            max-width: 300px;
+            max-height: 300px;
+            margin: 20px 0;
+            border-radius: 8px;
+        }
+        #result {
+            margin-top: 20px;
+            padding: 20px;
+            background: #f9f9f9;
+            border-radius: 8px;
+            min-height: 100px;
+        }
+        .loading {
+            color: #667eea;
+            font-style: italic;
+        }
+        .error {
+            color: red;
+        }
+        .success {
+            color: green;
+        }
+        img.result-image {
+            max-width: 100%;
+            border-radius: 8px;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🖼️ Image Upload & Enhancement Test</h1>
+        
+        <div class="upload-section">
+            <h3>Step 1: Upload an Image</h3>
+            <input type="file" id="imageInput" accept="image/*">
+            <div id="previewContainer"></div>
+        </div>
+
+        <div>
+            <h3>Step 2: Enter Your Request</h3>
+            <input type="text" id="promptInput" placeholder="e.g., make it better, analyze this, what is written here" style="width: 70%; padding: 10px; margin: 10px 0;">
+            <br>
+            <button onclick="sendRequest()">Send to AI</button>
+        </div>
+
+        <div id="result">
+            <p>Result will appear here...</p>
+        </div>
+    </div>
+
+    <script>
+        let uploadedImageData = null;
+
+        // Handle file upload
+        document.getElementById('imageInput').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                uploadedImageData = event.target.result;
+                
+                // Show preview
+                const container = document.getElementById('previewContainer');
+                container.innerHTML = `<img id="preview" src="${uploadedImageData}" alt="Preview">`;
+            };
+            reader.readAsDataURL(file);
+        });
+
+        // Send request to server
+        async function sendRequest() {
+            const prompt = document.getElementById('promptInput').value;
+            const resultDiv = document.getElementById('result');
+
+            if (!uploadedImageData) {
+                resultDiv.innerHTML = '<p class="error">Please upload an image first!</p>';
+                return;
+            }
+
+            if (!prompt) {
+                resultDiv.innerHTML = '<p class="error">Please enter a request!</p>';
+                return;
+            }
+
+            resultDiv.innerHTML = '<p class="loading">Processing... please wait...</p>';
+
+            try {
+                console.log('Sending request with image data length:', uploadedImageData.length);
+                
+                const response = await fetch('http://localhost:3000/api/image', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        prompt: prompt,
+                        imageData: uploadedImageData,
+                        userId: 'test-user'
+                    })
+                });
+
+                console.log('Response status:', response.status);
+                
+                const data = await response.json();
+                console.log('Response data:', data);
+
+                if (data.error) {
+                    resultDiv.innerHTML = `<p class="error">Error: ${data.error}</p>`;
+                    return;
+                }
+
+                // Display result
+                let html = `<p class="success">✅ ${data.provider || 'AI'} responded:</p>`;
+                html += `<p>${data.response || data.message || 'No text response'}</p>`;
+                
+                if (data.imageUrl) {
+                    html += `<h4>Generated/Enhanced Image:</h4>`;
+                    html += `<img class="result-image" src="${data.imageUrl}" alt="Result">`;
+                    html += `<br><a href="${data.imageUrl}" download="generated-image.png" target="_blank">`;
+                    html += `<button>Download Image</button></a>`;
+                }
+
+                if (data.type) {
+                    html += `<p><small>Response type: ${data.type}</small></p>`;
+                }
+
+                resultDiv.innerHTML = html;
+
+            } catch (error) {
+                console.error('Error:', error);
+                resultDiv.innerHTML = `<p class="error">Failed to connect: ${error.message}</p>`;
+            }
+        }
+    </script>
+</body>
+</html>

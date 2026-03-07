@@ -3,6 +3,7 @@ const cors = require('cors');
 const OpenAI = require('openai');
 const { createClient } = require('@supabase/supabase-js');
 const path = require('path');
+const multer = require('multer');
 require('dotenv').config();
 
 const app = express();
@@ -10,13 +11,41 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' })); // Increased limit for image uploads
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(express.static(__dirname));
+
+// Configure multer for image uploads
+const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: {
+        fileSize: 10 * 1024 * 1024 // 10MB limit
+    },
+    fileFilter: (req, file, cb) => {
+        if (file.mimetype.startsWith('image/')) {
+            cb(null, true);
+        } else {
+            cb(new Error('Only image files are allowed'), false);
+        }
+    }
+});
 
 // Initialize OpenAI client
 const openai = process.env.OPENAI_API_KEY ? new OpenAI({
     apiKey: process.env.OPENAI_API_KEY
 }) : null;
+
+// Initialize Gemini client for vision
+let geminiClient = null;
+if (process.env.GEMINI_API_KEY) {
+    try {
+        const { GoogleGenerativeAI } = require('@google/generative-ai');
+        geminiClient = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+        console.log(' Gemini client initialized');
+    } catch (e) {
+        console.error('Failed to initialize Gemini client:', e);
+    }
+}
 
 // Initialize Groq client (free alternative using Llama models)
 let groqClient = null;
@@ -526,15 +555,299 @@ function textToEmoji(prompt) {
     return emojiRows.join('\n');
 }
 
-// API endpoint to generate images from text
+// Helper function to analyze uploaded images using Groq (free alternative)
+async function analyzeImage(req, res, prompt, userId, imageData) {
+    try {
+        console.log('🔍 ANALYZE IMAGE CALLED');
+        console.log('🔍 Prompt:', prompt);
+        console.log('🔍 Image data length:', imageData ? imageData.length : 0);
+        console.log('🔍 Gemini client exists:', !!geminiClient);
+        console.log('� Groq client exists:', !!groqClient);
+
+        // Track usage if userId provided (count as image generation for limits)
+        if (userId && supabase) {
+            const { data: user, error: userError } = await supabase
+                .from('users')
+                .select('plan')
+                .eq('id', userId)
+                .single();
+
+            if (!userError && user) {
+                const limits = PLAN_LIMITS[user.plan || 'free'];
+                
+                // Get current image usage
+                const { data: usage, error: usageError } = await supabase
+                    .from('usage_limits')
+                    .select('images_used')
+                    .eq('user_id', userId)
+                    .single();
+                
+                const imagesUsed = usage?.images_used || 0;
+                const imagesLimit = limits.images;
+                
+                // Check if user has reached image limit
+                if (imagesLimit !== -1 && imagesUsed >= imagesLimit) {
+                    return res.status(403).json({
+                        error: `Image limit reached. Free plan: ${imagesLimit} images, Pro: ${imagesLimit * 10} images, Ultra: Unlimited.`,
+                        imagesUsed: imagesUsed,
+                        imagesLimit: imagesLimit
+                    });
+                }
+
+                // Increment image usage
+                const newImagesUsed = imagesUsed + 1;
+                await supabase
+                    .from('usage_limits')
+                    .upsert({
+                        user_id: userId,
+                        images_used: newImagesUsed,
+                        updated_at: new Date().toISOString()
+                    }, {
+                        onConflict: 'user_id'
+                    });
+            }
+        }
+
+        // Create a smart analysis prompt for Groq
+        const analysisPrompt = `You are voidzen AI, a helpful AI assistant created by Srinikesh. The user has uploaded an image and asked: "${prompt}". 
+
+IMPORTANT: When users ask to "make it more flashy", "make it better", or similar enhancement requests, they want you to CREATE A NEW IMPROVED VERSION of their image, not just suggest improvements.
+
+Please:
+1. If they ask for analysis (like "what is written", "describe this"), provide helpful analysis
+2. If they ask for enhancement (like "make it more flashy", "make it better", "enhance this"), CREATE A NEW IMAGE by describing what the new image should look like based on their request
+
+For enhancement requests, respond with: "I'll create an improved version of your image with [enhancement details]. Here's what the new image will look like: [detailed description]"
+
+Be creative but specific in your descriptions.`;
+
+        // Use Gemini for image analysis (free vision API) with Groq fallback
+        let aiResponse = '';
+        let usedProvider = '';
+        
+        // Check if this is an enhancement request
+        const isEnhancementRequest = prompt.toLowerCase().includes('make it') || 
+                                   prompt.toLowerCase().includes('enhance') || 
+                                   prompt.toLowerCase().includes('better') ||
+                                   prompt.toLowerCase().includes('flashy') ||
+                                   prompt.toLowerCase().includes('improve');
+        
+        if (isEnhancementRequest) {
+            console.log('🎨 Enhancement request detected - will generate new image');
+            
+            // Use Groq to create a detailed enhancement prompt (text only, no vision needed)
+            const enhancementPromptRequest = `Create a detailed image generation prompt based on this request: "${prompt}". 
+The user wants to enhance their uploaded image. Create a detailed, specific prompt that describes what the enhanced image should look like.
+Be creative and descriptive. Return ONLY the image generation prompt, nothing else.`;
+            
+            let imagePrompt = enhancementPromptRequest;
+            
+            // Try to get better prompt from Groq
+            if (groqClient) {
+                try {
+                    console.log('🤖 Asking Groq to create enhancement prompt...');
+                    const promptCompletion = await groqClient.chat.completions.create({
+                        messages: [
+                            { role: 'system', content: 'You are an expert at creating detailed image generation prompts. Create vivid, descriptive prompts.' },
+                            { role: 'user', content: enhancementPromptRequest }
+                        ],
+                        model: 'llama-3.1-8b-instant',
+                        temperature: 0.8,
+                        max_tokens: 200
+                    });
+                    imagePrompt = promptCompletion.choices[0].message.content;
+                    console.log('📝 Generated prompt:', imagePrompt);
+                } catch (promptError) {
+                    console.log('⚠️ Using default prompt, Groq error:', promptError.message);
+                }
+            }
+            
+            // Use Pollinations.ai - free, no API key needed
+            const encodedPrompt = encodeURIComponent(imagePrompt);
+            const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=512&height=512&nologo=true`;
+            
+            console.log('🌐 Generated image URL:', imageUrl);
+            
+            return res.json({ 
+                imageUrl: imageUrl,
+                response: `I've created an enhanced version of your image based on: "${prompt}". Here's the new image:`,
+                provider: 'Pollinations.ai (free)',
+                type: 'image_generation',
+                prompt: imagePrompt
+            });
+        }
+        
+        // For analysis requests, try Gemini first, fall back to Groq text-based
+        if (geminiClient) {
+            try {
+                console.log('🧠 Trying Gemini vision model for image analysis...');
+                
+                // Check if it's a homework/analysis request by looking for keywords
+                const isAnalysisRequest = prompt.toLowerCase().includes('what is written') || 
+                                         prompt.toLowerCase().includes('what does it say') ||
+                                         prompt.toLowerCase().includes('analyze') ||
+                                         prompt.toLowerCase().includes('describe') ||
+                                         prompt.toLowerCase().includes('solve') ||
+                                         prompt.toLowerCase().includes('answer');
+                
+                let analysisPrompt;
+                if (isAnalysisRequest) {
+                    analysisPrompt = `The user has uploaded an image and asked: "${prompt}"
+
+Please look at the uploaded image and provide a detailed, accurate analysis. If there's text in the image, transcribe it exactly. If it's a homework problem, solve it step by step. Be precise and helpful.`;
+                } else {
+                    analysisPrompt = `The user has uploaded an image and said: "${prompt}"
+
+Please provide a helpful response about the uploaded image.`;
+                }
+                
+                // Use Gemini vision model with the actual image
+                const model = geminiClient.getGenerativeModel({ model: 'gemini-1.5-flash-latest' });
+                
+                // Extract base64 data from the data URL
+                const base64Data = imageData.replace(/^data:image\/(png|jpeg|jpg);base64,/, '');
+                
+                const result = await model.generateContent([
+                    analysisPrompt,
+                    {
+                        inlineData: {
+                            data: base64Data,
+                            mimeType: 'image/png'
+                        }
+                    }
+                ]);
+                
+                const response = await result.response;
+                aiResponse = response.text();
+                usedProvider = 'Gemini Vision (free)';
+                console.log('✅ Gemini vision analysis success!');
+                
+            } catch (geminiError) {
+                console.error('❌ Gemini vision failed, falling back to Groq text-based:', geminiError.message);
+                
+                // Fallback: Use Groq to acknowledge the image and provide helpful response
+                if (groqClient) {
+                    try {
+                        const fallbackPrompt = `The user has uploaded an image and asked: "${prompt}"
+
+IMPORTANT: I cannot actually see the image due to technical limitations, but I should provide a helpful response acknowledging their request. If they're asking for analysis (like "what is written" or "solve this"), explain that I cannot see the image clearly at the moment but offer to help in other ways. If they want enhancement (like "make it better"), acknowledge that I can create an enhanced version.
+
+Provide a brief, helpful response.`;
+                        
+                        const fallbackCompletion = await groqClient.chat.completions.create({
+                            messages: [
+                                { role: 'system', content: 'You are a helpful AI assistant. Be honest about limitations while being helpful.' },
+                                { role: 'user', content: fallbackPrompt }
+                            ],
+                            model: 'llama-3.1-8b-instant',
+                            temperature: 0.7,
+                            max_tokens: 300
+                        });
+                        
+                        aiResponse = fallbackCompletion.choices[0].message.content;
+                        usedProvider = 'Groq (text-based fallback)';
+                        console.log('✅ Groq fallback response generated');
+                    } catch (groqError) {
+                        console.error('❌ Groq fallback also failed:', groqError.message);
+                        aiResponse = 'I apologize, but I am currently unable to analyze images due to technical limitations. For enhancement requests (like "make it better"), I can still generate improved images. Please try asking me to enhance or improve your image instead.';
+                        usedProvider = 'Fallback';
+                    }
+                } else {
+                    aiResponse = 'Image analysis is temporarily unavailable. Please try an enhancement request like "make it better" or "enhance this image" instead.';
+                    usedProvider = 'Fallback';
+                }
+            }
+        } else if (groqClient) {
+            // No Gemini client, use Groq fallback
+            console.log('🤖 Using Groq fallback for image analysis...');
+            
+            const fallbackPrompt = `The user has uploaded an image and asked: "${prompt}"
+
+IMPORTANT: I cannot actually see the image, but I should provide a helpful response acknowledging their request. If they want enhancement, acknowledge that. If they want analysis, explain the limitation briefly and offer alternatives.
+
+Provide a brief, helpful response.`;
+            
+            try {
+                const fallbackCompletion = await groqClient.chat.completions.create({
+                    messages: [
+                        { role: 'system', content: 'You are a helpful AI assistant.' },
+                        { role: 'user', content: fallbackPrompt }
+                    ],
+                    model: 'llama-3.1-8b-instant',
+                    temperature: 0.7,
+                    max_tokens: 300
+                });
+                
+                aiResponse = fallbackCompletion.choices[0].message.content;
+                usedProvider = 'Groq (text-based)';
+            } catch (groqError) {
+                aiResponse = 'Image analysis is temporarily unavailable. Please try asking for image enhancement instead.';
+                usedProvider = 'Fallback';
+            }
+        } else {
+            aiResponse = 'No AI provider available for image analysis. Please try asking for image enhancement.';
+            usedProvider = 'None';
+        }
+
+        return res.json({ 
+            response: aiResponse,
+            provider: usedProvider,
+            type: 'image_analysis'
+        });
+
+    } catch (error) {
+        console.error('Error analyzing image:', error);
+        console.error('Full error details:', JSON.stringify(error, null, 2));
+        
+        let errorMessage = 'I apologize, but I encountered an error while analyzing the image.';
+        let statusCode = 500;
+        
+        if (error.status || error.response?.status) {
+            const errorStatus = error.status || error.response.status;
+            
+            if (errorStatus === 401) {
+                errorMessage = 'API authentication failed. Please check your GEMINI_API_KEY in .env file.';
+                statusCode = 401;
+            } else if (errorStatus === 429) {
+                errorMessage = 'Rate limit exceeded. Please wait a moment and try again.';
+                statusCode = 429;
+            } else if (errorStatus === 400) {
+                errorMessage = `Invalid request: ${error.message || 'Please check your request and try again.'}`;
+                statusCode = 400;
+            }
+        } else if (error.message) {
+            errorMessage = `Error: ${error.message}`;
+        }
+
+        return res.status(statusCode).json({ 
+            error: errorMessage,
+            details: error.message || 'Unknown error',
+            stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        });
+    }
+}
+
+// API endpoint to generate images from text and analyze uploaded images
 app.post('/api/image', async (req, res) => {
     try {
-        const { prompt, userId, mode } = req.body;
+        console.log('📨 POST /api/image received');
+        console.log('📨 Request body:', JSON.stringify(req.body, null, 2));
+        
+        const { prompt, userId, mode, imageData } = req.body;
 
         if (!prompt || !prompt.trim()) {
             return res.status(400).json({
                 error: 'Prompt is required'
             });
+        }
+
+        console.log('📨 Image data present:', !!imageData);
+        console.log('📨 Image data length:', imageData ? imageData.length : 0);
+
+        // If image data is provided, analyze image instead of generating one
+        if (imageData) {
+            console.log('📨 Routing to image analysis...');
+            return await analyzeImage(req, res, prompt, userId, imageData);
         }
 
         // Check image usage limits if userId provided
