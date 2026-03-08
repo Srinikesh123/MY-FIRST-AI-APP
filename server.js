@@ -608,184 +608,150 @@ async function analyzeImage(req, res, prompt, userId, imageData) {
             }
         }
 
-        // Create a smart analysis prompt for Groq
-        const analysisPrompt = `You are voidzen AI, a helpful AI assistant created by Srinikesh. The user has uploaded an image and asked: "${prompt}". 
-
-IMPORTANT: When users ask to "make it more flashy", "make it better", or similar enhancement requests, they want you to CREATE A NEW IMPROVED VERSION of their image, not just suggest improvements.
-
-Please:
-1. If they ask for analysis (like "what is written", "describe this"), provide helpful analysis
-2. If they ask for enhancement (like "make it more flashy", "make it better", "enhance this"), CREATE A NEW IMAGE by describing what the new image should look like based on their request
-
-For enhancement requests, respond with: "I'll create an improved version of your image with [enhancement details]. Here's what the new image will look like: [detailed description]"
-
-Be creative but specific in your descriptions.`;
-
         // Use Gemini for image analysis (free vision API) with Groq fallback
         let aiResponse = '';
         let usedProvider = '';
-        
-        // Check if this is an enhancement request
-        const isEnhancementRequest = prompt.toLowerCase().includes('make it') || 
-                                   prompt.toLowerCase().includes('enhance') || 
-                                   prompt.toLowerCase().includes('better') ||
-                                   prompt.toLowerCase().includes('flashy') ||
-                                   prompt.toLowerCase().includes('improve');
-        
-        if (isEnhancementRequest) {
-            console.log('🎨 Enhancement request detected - will generate new image');
-            
-            // Use Groq to create a detailed enhancement prompt (text only, no vision needed)
-            const enhancementPromptRequest = `Create a detailed image generation prompt based on this request: "${prompt}". 
-The user wants to enhance their uploaded image. Create a detailed, specific prompt that describes what the enhanced image should look like.
-Be creative and descriptive. Return ONLY the image generation prompt, nothing else.`;
-            
-            let imagePrompt = enhancementPromptRequest;
-            
-            // Try to get better prompt from Groq
-            if (groqClient) {
-                try {
-                    console.log('🤖 Asking Groq to create enhancement prompt...');
-                    const promptCompletion = await groqClient.chat.completions.create({
-                        messages: [
-                            { role: 'system', content: 'You are an expert at creating detailed image generation prompts. Create vivid, descriptive prompts.' },
-                            { role: 'user', content: enhancementPromptRequest }
-                        ],
-                        model: 'llama-3.1-8b-instant',
-                        temperature: 0.8,
-                        max_tokens: 200
-                    });
-                    imagePrompt = promptCompletion.choices[0].message.content;
-                    console.log('📝 Generated prompt:', imagePrompt);
-                } catch (promptError) {
-                    console.log('⚠️ Using default prompt, Groq error:', promptError.message);
-                }
+
+        // Detect the actual mime type from the data URL
+        const mimeMatch = imageData.match(/^data:(image\/[a-zA-Z+]+);base64,/);
+        const detectedMimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+        const base64Data = imageData.replace(/^data:image\/[a-zA-Z+]+;base64,/, '');
+
+        // Build a smart dynamic system prompt based on what the user asked
+        const smartPrompt = `You are voidzen AI, a helpful AI assistant created by Srinikesh. The user has uploaded an image and asked: "${prompt}"
+
+Your job is to carefully look at the image and respond EXACTLY to what the user asked:
+
+- If they ask "what is written" or "read the text" → Extract and display ALL visible text from the image exactly as written.
+- If they ask to "solve", "answer", or "help with questions" → Read the image carefully and solve/answer the question(s) shown.
+- If they ask to "describe" or "explain" → Describe what is shown in the image in detail.
+- If they ask to "make it more colorful", "make it look better", "enhance", "improve", or similar → Describe exactly how the image should be enhanced (brighter colors, saturation, contrast, etc.) and provide a detailed image generation prompt.
+- If they ask something else → Use your best judgment based on the image content.
+
+IMPORTANT:
+- Always base your answer on what is actually visible in the image.
+- If text is present, read it carefully before responding.
+- Be precise, clear, and directly answer what was asked.`;
+
+        // For enhancement/colorful requests, use Gemini to understand the image first, then generate
+        const isEnhancementRequest = /make.*(it|this|image|photo|picture).*(better|colorful|colourful|flashy|nicer|beautiful|vibrant|brighter|cooler|amazing)|enhance|improve.*(image|photo|picture)|add.*(color|colour|effects)/i.test(prompt);
+
+        if (isEnhancementRequest && geminiClient) {
+            console.log('🎨 Enhancement request detected - using Gemini to understand image first');
+            try {
+                const model = geminiClient.getGenerativeModel({ model: 'gemini-1.5-flash' });
+
+                const descriptionPrompt = `Look at this image carefully and describe it in detail: what objects, colors, scene, text, or subjects are present. Be specific and concise. This description will be used to generate an enhanced version.`;
+
+                const descResult = await model.generateContent([
+                    descriptionPrompt,
+                    { inlineData: { data: base64Data, mimeType: detectedMimeType } }
+                ]);
+                const imageDescription = (await descResult.response).text();
+                console.log('📝 Image described by Gemini:', imageDescription);
+
+                // Now build an enhancement prompt based on real image content
+                const userRequest = prompt;
+                const enhancementImagePrompt = `${imageDescription}, enhanced version: ${userRequest}, vibrant colors, high quality, detailed, photorealistic`;
+
+                const encodedPrompt = encodeURIComponent(enhancementImagePrompt);
+                const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=512&height=512&nologo=true`;
+
+                return res.json({
+                    imageUrl: imageUrl,
+                    response: `I've analyzed your image and created an enhanced version based on your request: "${userRequest}". Here's the new image:`,
+                    provider: 'Gemini Vision + Pollinations.ai',
+                    type: 'image_generation',
+                    prompt: enhancementImagePrompt
+                });
+            } catch (geminiDescError) {
+                console.error('❌ Gemini description failed, falling back to generic enhancement:', geminiDescError.message);
+                // Fall through to generic enhancement below
             }
-            
-            // Use Pollinations.ai - free, no API key needed
-            const encodedPrompt = encodeURIComponent(imagePrompt);
+        }
+
+        // If enhancement request but Gemini failed or not available, do generic generation
+        if (isEnhancementRequest) {
+            console.log('🎨 Enhancement request fallback - generic generation');
+            const encodedPrompt = encodeURIComponent(`${prompt}, vibrant colors, high quality, detailed, photorealistic`);
             const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=512&height=512&nologo=true`;
-            
-            console.log('🌐 Generated image URL:', imageUrl);
-            
-            return res.json({ 
+            return res.json({
                 imageUrl: imageUrl,
-                response: `I've created an enhanced version of your image based on: "${prompt}". Here's the new image:`,
+                response: `Here's an enhanced version based on your request: "${prompt}". Here's the new image:`,
                 provider: 'Pollinations.ai (free)',
                 type: 'image_generation',
-                prompt: imagePrompt
+                prompt: prompt
             });
         }
-        
-        // For analysis requests, try Gemini first, fall back to Groq text-based
+
+        // For all other requests (analysis, text reading, solving, describing), use Gemini vision
         if (geminiClient) {
             try {
-                console.log('🧠 Trying Gemini vision model for image analysis...');
-                
-                // Check if it's a homework/analysis request by looking for keywords
-                const isAnalysisRequest = prompt.toLowerCase().includes('what is written') || 
-                                         prompt.toLowerCase().includes('what does it say') ||
-                                         prompt.toLowerCase().includes('analyze') ||
-                                         prompt.toLowerCase().includes('describe') ||
-                                         prompt.toLowerCase().includes('solve') ||
-                                         prompt.toLowerCase().includes('answer');
-                
-                let analysisPrompt;
-                if (isAnalysisRequest) {
-                    analysisPrompt = `The user has uploaded an image and asked: "${prompt}"
+                console.log('🧠 Using Gemini vision model for image analysis...');
+                console.log('🧠 Detected mime type:', detectedMimeType);
 
-Please look at the uploaded image and provide a detailed, accurate analysis. If there's text in the image, transcribe it exactly. If it's a homework problem, solve it step by step. Be precise and helpful.`;
-                } else {
-                    analysisPrompt = `The user has uploaded an image and said: "${prompt}"
+                const model = geminiClient.getGenerativeModel({ model: 'gemini-1.5-flash' });
 
-Please provide a helpful response about the uploaded image.`;
-                }
-                
-                // Use Gemini vision model with the actual image
-                const model = geminiClient.getGenerativeModel({ model: 'gemini-1.5-flash-latest' });
-                
-                // Extract base64 data from the data URL
-                const base64Data = imageData.replace(/^data:image\/(png|jpeg|jpg);base64,/, '');
-                
                 const result = await model.generateContent([
-                    analysisPrompt,
+                    smartPrompt,
                     {
                         inlineData: {
                             data: base64Data,
-                            mimeType: 'image/png'
+                            mimeType: detectedMimeType
                         }
                     }
                 ]);
-                
+
                 const response = await result.response;
                 aiResponse = response.text();
-                usedProvider = 'Gemini Vision (free)';
+                usedProvider = 'Gemini Vision';
                 console.log('✅ Gemini vision analysis success!');
-                
+
             } catch (geminiError) {
-                console.error('❌ Gemini vision failed, falling back to Groq text-based:', geminiError.message);
-                
-                // Fallback: Use Groq to acknowledge the image and provide helpful response
+                console.error('❌ Gemini vision failed, falling back to Groq:', geminiError.message);
+
                 if (groqClient) {
                     try {
-                        const fallbackPrompt = `The user has uploaded an image and asked: "${prompt}"
-
-IMPORTANT: I cannot actually see the image due to technical limitations, but I should provide a helpful response acknowledging their request. If they're asking for analysis (like "what is written" or "solve this"), explain that I cannot see the image clearly at the moment but offer to help in other ways. If they want enhancement (like "make it better"), acknowledge that I can create an enhanced version.
-
-Provide a brief, helpful response.`;
-                        
                         const fallbackCompletion = await groqClient.chat.completions.create({
                             messages: [
-                                { role: 'system', content: 'You are a helpful AI assistant. Be honest about limitations while being helpful.' },
-                                { role: 'user', content: fallbackPrompt }
+                                { role: 'system', content: 'You are a helpful AI assistant. Be honest that you cannot see images directly, but try to help based on the user\'s description.' },
+                                { role: 'user', content: `The user uploaded an image and asked: "${prompt}". I cannot see the image right now due to a technical issue. Provide a helpful response acknowledging this and offer to help if they describe the image.` }
                             ],
                             model: 'llama-3.1-8b-instant',
                             temperature: 0.7,
                             max_tokens: 300
                         });
-                        
                         aiResponse = fallbackCompletion.choices[0].message.content;
-                        usedProvider = 'Groq (text-based fallback)';
-                        console.log('✅ Groq fallback response generated');
+                        usedProvider = 'Groq (fallback)';
                     } catch (groqError) {
-                        console.error('❌ Groq fallback also failed:', groqError.message);
-                        aiResponse = 'I apologize, but I am currently unable to analyze images due to technical limitations. For enhancement requests (like "make it better"), I can still generate improved images. Please try asking me to enhance or improve your image instead.';
+                        aiResponse = 'I encountered an issue analyzing the image. Please try again or describe what you need help with.';
                         usedProvider = 'Fallback';
                     }
                 } else {
-                    aiResponse = 'Image analysis is temporarily unavailable. Please try an enhancement request like "make it better" or "enhance this image" instead.';
-                    usedProvider = 'Fallback';
+                    aiResponse = 'Image analysis failed. Please ensure your GEMINI_API_KEY is valid and try again.';
+                    usedProvider = 'None';
                 }
             }
         } else if (groqClient) {
-            // No Gemini client, use Groq fallback
-            console.log('🤖 Using Groq fallback for image analysis...');
-            
-            const fallbackPrompt = `The user has uploaded an image and asked: "${prompt}"
-
-IMPORTANT: I cannot actually see the image, but I should provide a helpful response acknowledging their request. If they want enhancement, acknowledge that. If they want analysis, explain the limitation briefly and offer alternatives.
-
-Provide a brief, helpful response.`;
-            
+            console.log('⚠️ No Gemini client - Groq cannot see images, providing honest response');
             try {
                 const fallbackCompletion = await groqClient.chat.completions.create({
                     messages: [
                         { role: 'system', content: 'You are a helpful AI assistant.' },
-                        { role: 'user', content: fallbackPrompt }
+                        { role: 'user', content: `The user uploaded an image and asked: "${prompt}". Unfortunately, I cannot see images without the Gemini API key configured. Please ask the user to describe their image, and I will help based on their description.` }
                     ],
                     model: 'llama-3.1-8b-instant',
                     temperature: 0.7,
                     max_tokens: 300
                 });
-                
                 aiResponse = fallbackCompletion.choices[0].message.content;
-                usedProvider = 'Groq (text-based)';
+                usedProvider = 'Groq (text-only)';
             } catch (groqError) {
-                aiResponse = 'Image analysis is temporarily unavailable. Please try asking for image enhancement instead.';
-                usedProvider = 'Fallback';
+                aiResponse = 'Image analysis requires the Gemini API. Please check your GEMINI_API_KEY in the .env file.';
+                usedProvider = 'None';
             }
         } else {
-            aiResponse = 'No AI provider available for image analysis. Please try asking for image enhancement.';
+            aiResponse = 'No AI provider available for image analysis. Please configure GEMINI_API_KEY in your .env file.';
             usedProvider = 'None';
         }
 
