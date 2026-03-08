@@ -131,6 +131,33 @@
         </div>
     </div>
 
+    <!-- Camera Modal -->
+    <div class="modal" id="cameraModal">
+        <div class="modal-content camera-modal">
+            <h2>📷 Take a Photo</h2>
+            <div class="camera-container">
+                <video id="cameraVideo" autoplay playsinline style="display: none;"></video>
+                <canvas id="cameraCanvas" style="display: none;"></canvas>
+                <div id="cameraPlaceholder" class="camera-placeholder">
+                    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="1">
+                        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+                        <circle cx="12" cy="13" r="4"></circle>
+                    </svg>
+                    <p>Click "Start Camera" to begin</p>
+                </div>
+                <img id="cameraPreview" style="display: none; max-width: 100%; border-radius: 8px;">
+            </div>
+            <div class="camera-controls">
+                <button id="startCameraBtn" class="btn-primary">Start Camera</button>
+                <button id="captureBtn" class="btn-primary" style="display: none;">📸 Capture</button>
+                <button id="retakeBtn" class="btn-secondary" style="display: none;">Retake</button>
+                <button id="usePhotoBtn" class="btn-primary" style="display: none;">Use Photo</button>
+                <button id="closeCameraBtn" class="btn-secondary">Close</button>
+            </div>
+            <p class="camera-hint">Tip: You can also type "make it better" or "enhance" after capturing to improve the image with AI!</p>
+        </div>
+    </div>
+
     <div class="container">
         <header>
             <div class="header-left">
@@ -233,6 +260,12 @@
                         <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
                         <circle cx="8.5" cy="8.5" r="1.5"></circle>
                         <polyline points="21 15 16 10 5 21"></polyline>
+                    </svg>
+                </button>
+                <button id="cameraBtn" class="icon-btn" title="Take Photo" aria-label="Take photo">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+                        <circle cx="12" cy="13" r="4"></circle>
                     </svg>
                 </button>
                 <input type="file" id="imageInput" accept="image/*" style="display: none;">
@@ -578,23 +611,6 @@
                             <span class="label-text">Error-Free Mode</span>
                         </label>
                         <small>If the AI is not sure, it will say: "I don’t know yet, but here’s what I can explain."</small>
-                    </div>
-                </div>
-
-                <!-- Memory Settings -->
-                <div class="settings-section">
-                    <h3>🧠 Memory</h3>
-                    
-                    <div class="setting-item">
-                        <label class="toggle-switch">
-                            <input type="checkbox" id="memoryEnabled">
-                            <span class="slider"></span>
-                            <span class="label-text">Store memory for this chat</span>
-                        </label>
-                        <small>When ON: AI remembers context. When OFF: No memory stored.</small>
-                        <div class="memory-status" id="memoryStatus" style="margin-top: 10px; padding: 8px; border-radius: 4px; background: #f0f0f0;">
-                            <strong>Status:</strong> <span id="memoryStatusText">OFF - No memory stored</span>
-                        </div>
                     </div>
                 </div>
 

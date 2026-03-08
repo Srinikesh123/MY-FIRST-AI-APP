@@ -258,8 +258,8 @@ app.post('/api/chat', async (req, res) => {
             content: message
         });
 
-        // Prepare system prompt based on guidelines
-        let systemPrompt = userSystemPrompt || `You are voidzen AI, a helpful AI assistant created by Srinikesh that follows these guidelines:
+        // Prepare system prompt based on guidelines - NOW WITH PERSONALIZED MEMORY
+        let baseSystemPrompt = userSystemPrompt || `You are voidzen AI, a helpful AI assistant created by Srinikesh that follows these guidelines:
 - Your name is voidzen AI - when asked about your identity, name, or who created you, respond with "I am voidzen AI", "My name is voidzen AI", or "I was created by Srinikesh" as appropriate
 - Give clear and correct answers to simple questions directly
 - Understand and remember context from the conversation
@@ -275,6 +275,18 @@ app.post('/api/chat', async (req, res) => {
 - When asked about your identity, name, or creator, always maintain your identity as voidzen AI created by Srinikesh
 - Do not reveal technical details about underlying AI providers - maintain consistent voidzen AI branding
 `;
+
+        // Build personalized system prompt with user memory
+        const systemPrompt = await buildPersonalizedPrompt(userId, baseSystemPrompt);
+
+        // Extract and save memory from this message (async, don't wait)
+        if (userId && message) {
+            extractMemoryFromMessage(message, null).then(extracted => {
+                if (extracted) {
+                    mergeMemoryWithProfile(userId, extracted);
+                }
+            });
+        }
 
         if (simpleLanguage) {
             systemPrompt += '\nIMPORTANT: The user has requested simple language. Explain everything in easy-to-understand terms, using everyday words.';
@@ -744,7 +756,17 @@ IMPORTANT:
 
                 // Now build an enhancement prompt based on real image content
                 const userRequest = prompt;
-                const enhancementImagePrompt = `${imageDescription}, enhanced version: ${userRequest}, vibrant colors, high quality, detailed, photorealistic`;
+                // Extract any text/logo from the description to preserve it exactly
+                const textMatch = imageDescription.match(/["']([^"']+)["']/);
+                const logoText = textMatch ? textMatch[1] : null;
+                
+                let enhancementImagePrompt;
+                if (logoText) {
+                    // If there's text in the image, put it at the very end with strong emphasis
+                    enhancementImagePrompt = `${imageDescription}. Enhanced version: ${userRequest}, vibrant colors, high quality, detailed, photorealistic. The logo must show the text "${logoText}" - spell it exactly as "${logoText}" with correct letters in correct order.`;
+                } else {
+                    enhancementImagePrompt = `${imageDescription}, enhanced version: ${userRequest}, vibrant colors, high quality, detailed, photorealistic. Preserve all text exactly as written in the original.`;
+                }
 
                 const encodedPrompt = encodeURIComponent(enhancementImagePrompt);
                 const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=512&height=512&nologo=true`;
@@ -1062,86 +1084,19 @@ app.post('/api/image', async (req, res) => {
             }
         }
         
-        // Try Hugging Face if available
-        if (process.env.HUGGINGFACE_API_KEY && process.env.HUGGINGFACE_USE_FOR_IMAGES === 'true') {
-            try {
-                console.log('🔄 Attempting Hugging Face image generation for prompt:', prompt);
-                
-                const hfResponse = await fetch(
-                    `https://api-inference.huggingface.co/models/THUDM/cogview-2`,
-                    {
-                        headers: { 
-                            'Authorization': `Bearer ${process.env.HUGGINGFACE_API_KEY}`
-                        },
-                        method: 'POST',
-                        body: JSON.stringify({
-                            inputs: prompt,
-                        })
-                    }
-                );
-                
-                console.log('HF Response status:', hfResponse.status);
-                
-                if (hfResponse.ok) {
-                    const arrayBuffer = await hfResponse.arrayBuffer();
-                    
-                    // Check if the response is actually an image (PNG/JPG header)
-                    const uint8Array = new Uint8Array(arrayBuffer.slice(0, 8));
-                    const header = Array.from(uint8Array).map(b => b.toString(16)).join('');
-                    
-                    // PNG signature: 89 50 4e 47 0d 0a 1a 0a
-                    const isPng = header.startsWith('89504e470d0a1a0a');
-                    // JPEG signature: ff d8 ff
-                    const isJpeg = header.startsWith('ffd8ff');
-                    
-                    if (isPng || isJpeg) {
-                        const base64Image = Buffer.from(arrayBuffer).toString('base64');
-                        const imageUrl = `data:image/png;base64,${base64Image}`;
-                        console.log('✅ Hugging Face image generated successfully');
-                        return res.json({ imageUrl });
-                    } else {
-                        // The response might be JSON with error/informational message
-                        const textResponse = Buffer.from(arrayBuffer).toString('utf8');
-                        console.log('📝 Hugging Face response might be text:', textResponse.substring(0, 200));
-                        
-                        // Try to parse as JSON to see if it's an error message
-                        try {
-                            const jsonResponse = JSON.parse(textResponse);
-                            console.error('❌ Hugging Face API returned JSON error:', jsonResponse);
-                            
-                            // If it's a model loading message, we might need to handle retries
-                            if (jsonResponse.error && jsonResponse.time) {
-                                console.log(`⏳ Model loading, retry after ${jsonResponse.time}s`);
-                                // In a real implementation, we could implement retry logic here
-                            }
-                        } catch (e) {
-                            // Not JSON, might be HTML error page or plain text
-                            console.error('❌ Hugging Face response is not an image:', textResponse.substring(0, 200));
-                        }
-                    }
-                } else {
-                    const errorText = await hfResponse.text();
-                    console.error('❌ Hugging Face API error response:', errorText);
-                }
-            } catch (error) {
-                console.error('🚨 Hugging Face API error:', error.message);
-            }
-        }
-        
-        // Alternative: Use a free image generation service
-        // This is a simple service that generates images based on text
+        // Use Pollinations.ai as the primary free image generation service
+        console.log('🔄 Using Pollinations.ai for image generation:', prompt);
         try {
-            console.log('🔄 Attempting free image generation for prompt:', prompt);
-            
-            // Using an alternative approach - generate an image from a text prompt using a free service
             const encodedPrompt = encodeURIComponent(prompt);
-            const imageUrl = `https://api.dicebear.com/7.x/bottts-neutral/png?seed=${encodedPrompt}&size=512`;
+            const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&seed=${Date.now()}`;
             
-            console.log('✅ Free image service used successfully');
-            return res.json({ imageUrl });
-            
-        } catch (error) {
-            console.error('🚨 Free image service error:', error.message);
+            console.log('✅ Pollinations.ai image URL generated');
+            return res.json({ 
+                imageUrl,
+                provider: 'Pollinations.ai'
+            });
+        } catch (pollinationsError) {
+            console.error('🚨 Pollinations.ai error:', pollinationsError.message);
         }
         
         // Fallback: placeholder image
@@ -1661,6 +1616,514 @@ app.delete('/api/users/delete', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+
+// ============================================
+// COMPREHENSIVE MEMORY SYSTEM ENDPOINTS
+// ============================================
+
+// Helper function to extract memory from user message using AI
+async function extractMemoryFromMessage(message, existingProfile) {
+    if (!geminiClient && !openai) {
+        console.log('⚠️ No AI client available for memory extraction');
+        return null;
+    }
+
+    const extractionPrompt = `Analyze this user message and extract any personal information, interests, preferences, or facts about the user.
+
+User message: "${message}"
+
+Existing profile: ${JSON.stringify(existingProfile || {})}
+
+Extract ONLY information that is explicitly stated in the message. Return a JSON object with this exact structure:
+{
+  "profile_updates": {
+    "name": "if mentioned",
+    "job_title": "if mentioned",
+    "interests": ["array of interests mentioned"],
+    "hobbies": ["array of hobbies mentioned"],
+    "skills": ["array of skills mentioned"],
+    "devices": ["devices mentioned"],
+    "favorite_apps": ["apps mentioned"],
+    "favorite_technologies": ["tech mentioned"],
+    "vehicles": ["vehicles mentioned"],
+    "favorite_sports": ["sports mentioned"],
+    "favorite_games": ["games mentioned"],
+    "favorite_movies": ["movies mentioned"],
+    "favorite_music": ["music mentioned"],
+    "favorite_books": ["books mentioned"],
+    "news_interests": ["news topics mentioned"],
+    "favorite_cuisines": ["cuisines mentioned"],
+    "favorite_brands": ["brands mentioned"],
+    "personality_style": "if mentioned"
+  },
+  "custom_terms": [
+    {"term": "phrase", "meaning": "what it means to this user", "category": "project/slang/joke"}
+  ],
+  "relationships": [
+    {"person_name": "name", "relationship_type": "friend/family/colleague/pet", "notes": "relevant context"}
+  ],
+  "private_facts": [
+    {"fact_type": "story/habit/preference", "fact": "the fact", "context": "context"}
+  ]
+}
+
+If no new information is found, return {"profile_updates": {}, "custom_terms": [], "relationships": [], "private_facts": []}.`;
+
+    try {
+        let response;
+        
+        // Try Gemini first
+        if (geminiClient) {
+            const model = geminiClient.getGenerativeModel({ model: GEMINI_VISION_MODEL });
+            const result = await model.generateContent(extractionPrompt);
+            response = (await result.response).text();
+        } else if (openai) {
+            const completion = await openai.chat.completions.create({
+                model: 'gpt-3.5-turbo',
+                messages: [{ role: 'user', content: extractionPrompt }],
+                temperature: 0.3,
+                max_tokens: 1000
+            });
+            response = completion.choices[0].message.content;
+        }
+
+        // Parse the JSON response
+        const jsonMatch = response.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+            const extracted = JSON.parse(jsonMatch[0]);
+            console.log('🧠 Memory extracted:', extracted);
+            return extracted;
+        }
+        return null;
+    } catch (error) {
+        console.error('❌ Memory extraction error:', error);
+        return null;
+    }
+}
+
+// Helper function to merge extracted memory with existing profile
+async function mergeMemoryWithProfile(userId, extractedData) {
+    if (!supabase || !userId) return false;
+    
+    try {
+        // Get existing profile
+        const { data: existingProfile, error: profileError } = await supabase
+            .from('user_profiles')
+            .select('*')
+            .eq('user_id', userId)
+            .single();
+        
+        let profile = existingProfile;
+        if (profileError || !existingProfile) {
+            // Create new profile
+            const { data: newProfile, error: createError } = await supabase
+                .from('user_profiles')
+                .insert({ user_id: userId })
+                .select()
+                .single();
+            if (createError) throw createError;
+            profile = newProfile;
+        }
+
+        const profileUpdates = {};
+        const updates = extractedData.profile_updates || {};
+        
+        // Merge simple fields
+        if (updates.name) profileUpdates.name = updates.name;
+        if (updates.job_title) profileUpdates.job_title = updates.job_title;
+        if (updates.profession) profileUpdates.profession = updates.profession;
+        if (updates.bio) profileUpdates.bio = updates.bio;
+        if (updates.personality_style) profileUpdates.personality_style = updates.personality_style;
+        
+        // Merge array fields (combine unique values)
+        const arrayFields = ['interests', 'hobbies', 'skills', 'devices', 'favorite_apps', 
+                            'favorite_technologies', 'vehicles', 'favorite_sports', 'favorite_games',
+                            'favorite_movies', 'favorite_music', 'favorite_books', 'news_interests',
+                            'favorite_cuisines', 'favorite_brands'];
+        
+        arrayFields.forEach(field => {
+            if (updates[field] && updates[field].length > 0) {
+                const existing = profile[field] || [];
+                const combined = [...new Set([...existing, ...updates[field]])];
+                profileUpdates[field] = combined;
+            }
+        });
+        
+        // Update profile if there are changes
+        if (Object.keys(profileUpdates).length > 0) {
+            const { error: updateError } = await supabase
+                .from('user_profiles')
+                .update(profileUpdates)
+                .eq('user_id', userId);
+            if (updateError) throw updateError;
+            console.log('✅ Profile updated:', profileUpdates);
+        }
+        
+        // Insert custom terms
+        const customTerms = extractedData.custom_terms || [];
+        for (const term of customTerms) {
+            const { error: termError } = await supabase
+                .from('user_custom_terms')
+                .upsert({
+                    user_id: userId,
+                    term: term.term,
+                    meaning: term.meaning,
+                    category: term.category || 'general'
+                }, { onConflict: 'user_id,term' });
+            if (termError) console.error('Custom term error:', termError);
+        }
+        
+        // Insert relationships
+        const relationships = extractedData.relationships || [];
+        for (const rel of relationships) {
+            const { error: relError } = await supabase
+                .from('user_relationships')
+                .upsert({
+                    user_id: userId,
+                    person_name: rel.person_name || rel.name,
+                    relationship_type: rel.relationship_type || rel.type || 'other',
+                    notes: rel.notes || ''
+                }, { onConflict: 'user_id,person_name' });
+            if (relError) console.error('Relationship error:', relError);
+        }
+        
+        // Insert private facts
+        const privateFacts = extractedData.private_facts || [];
+        for (const fact of privateFacts) {
+            const { error: factError } = await supabase
+                .from('user_private_facts')
+                .insert({
+                    user_id: userId,
+                    fact_type: fact.fact_type || 'general',
+                    fact: fact.fact,
+                    context: fact.context || ''
+                });
+            if (factError) console.error('Private fact error:', factError);
+        }
+        
+        // Log the extraction
+        if (Object.keys(profileUpdates).length > 0 || customTerms.length > 0 || 
+            relationships.length > 0 || privateFacts.length > 0) {
+            await supabase.from('memory_extraction_log').insert({
+                user_id: userId,
+                extraction_type: 'auto_extraction',
+                extracted_data: extractedData
+            });
+        }
+        
+        return true;
+    } catch (error) {
+        console.error('❌ Merge memory error:', error);
+        return false;
+    }
+}
+
+// GET user memory (profile + custom terms + relationships + facts)
+app.get('/api/memory', async (req, res) => {
+    try {
+        const { userId } = req.query;
+        
+        if (!userId || !supabase) {
+            return res.status(400).json({ error: 'Missing userId' });
+        }
+        
+        // Fetch all memory data in parallel
+        const [profileRes, termsRes, relationshipsRes, factsRes] = await Promise.all([
+            supabase.from('user_profiles').select('*').eq('user_id', userId).single(),
+            supabase.from('user_custom_terms').select('*').eq('user_id', userId),
+            supabase.from('user_relationships').select('*').eq('user_id', userId),
+            supabase.from('user_private_facts').select('*').eq('user_id', userId)
+        ]);
+        
+        const memory = {
+            profile: profileRes.data || null,
+            customTerms: termsRes.data || [],
+            relationships: relationshipsRes.data || [],
+            privateFacts: factsRes.data || []
+        };
+        
+        res.json({ success: true, memory });
+    } catch (error) {
+        console.error('Get memory error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// POST extract and save memory from message
+app.post('/api/memory/extract', async (req, res) => {
+    try {
+        const { userId, message } = req.body;
+        
+        if (!userId || !message || !supabase) {
+            return res.status(400).json({ error: 'Missing userId or message' });
+        }
+        
+        // Get existing profile for context
+        const { data: existingProfile } = await supabase
+            .from('user_profiles')
+            .select('*')
+            .eq('user_id', userId)
+            .single();
+        
+        // Extract memory using AI
+        const extracted = await extractMemoryFromMessage(message, existingProfile);
+        
+        if (!extracted) {
+            return res.json({ success: true, extracted: null, message: 'No new information found' });
+        }
+        
+        // Merge with existing profile
+        const saved = await mergeMemoryWithProfile(userId, extracted);
+        
+        res.json({ 
+            success: true, 
+            extracted: extracted,
+            saved: saved,
+            message: saved ? 'Memory saved' : 'Failed to save memory'
+        });
+    } catch (error) {
+        console.error('Extract memory error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// POST update user profile
+app.post('/api/memory/profile', async (req, res) => {
+    try {
+        const { userId, updates } = req.body;
+        
+        if (!userId || !updates || !supabase) {
+            return res.status(400).json({ error: 'Missing userId or updates' });
+        }
+        
+        const { data, error } = await supabase
+            .from('user_profiles')
+            .upsert({ user_id: userId, ...updates }, { onConflict: 'user_id' })
+            .select()
+            .single();
+        
+        if (error) throw error;
+        
+        res.json({ success: true, profile: data });
+    } catch (error) {
+        console.error('Update profile error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// POST add custom term
+app.post('/api/memory/custom-term', async (req, res) => {
+    try {
+        const { userId, term, meaning, category } = req.body;
+        
+        if (!userId || !term || !meaning || !supabase) {
+            return res.status(400).json({ error: 'Missing required fields' });
+        }
+        
+        const { data, error } = await supabase
+            .from('user_custom_terms')
+            .upsert({
+                user_id: userId,
+                term: term,
+                meaning: meaning,
+                category: category || 'general'
+            }, { onConflict: 'user_id,term' })
+            .select()
+            .single();
+        
+        if (error) throw error;
+        
+        res.json({ success: true, term: data });
+    } catch (error) {
+        console.error('Add custom term error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// POST add relationship
+app.post('/api/memory/relationship', async (req, res) => {
+    try {
+        const { userId, personName, relationshipType, notes } = req.body;
+        
+        if (!userId || !personName || !supabase) {
+            return res.status(400).json({ error: 'Missing required fields' });
+        }
+        
+        const { data, error } = await supabase
+            .from('user_relationships')
+            .upsert({
+                user_id: userId,
+                person_name: personName,
+                relationship_type: relationshipType || 'other',
+                notes: notes || ''
+            }, { onConflict: 'user_id,person_name' })
+            .select()
+            .single();
+        
+        if (error) throw error;
+        
+        res.json({ success: true, relationship: data });
+    } catch (error) {
+        console.error('Add relationship error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// POST add private fact
+app.post('/api/memory/private-fact', async (req, res) => {
+    try {
+        const { userId, factType, fact, context } = req.body;
+        
+        if (!userId || !fact || !supabase) {
+            return res.status(400).json({ error: 'Missing required fields' });
+        }
+        
+        const { data, error } = await supabase
+            .from('user_private_facts')
+            .insert({
+                user_id: userId,
+                fact_type: factType || 'general',
+                fact: fact,
+                context: context || ''
+            })
+            .select()
+            .single();
+        
+        if (error) throw error;
+        
+        res.json({ success: true, fact: data });
+    } catch (error) {
+        console.error('Add private fact error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// DELETE memory endpoints
+app.delete('/api/memory/custom-term', async (req, res) => {
+    try {
+        const { userId, term } = req.body;
+        const { error } = await supabase
+            .from('user_custom_terms')
+            .delete()
+            .eq('user_id', userId)
+            .eq('term', term);
+        if (error) throw error;
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.delete('/api/memory/relationship', async (req, res) => {
+    try {
+        const { userId, personName } = req.body;
+        const { error } = await supabase
+            .from('user_relationships')
+            .delete()
+            .eq('user_id', userId)
+            .eq('person_name', personName);
+        if (error) throw error;
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============================================
+// ENHANCED CHAT WITH MEMORY
+// ============================================
+
+// Helper function to build personalized system prompt with memory
+async function buildPersonalizedPrompt(userId, baseSystemPrompt) {
+    if (!supabase || !userId) return baseSystemPrompt;
+    
+    try {
+        // Fetch user memory
+        const [profileRes, termsRes, relationshipsRes, factsRes] = await Promise.all([
+            supabase.from('user_profiles').select('*').eq('user_id', userId).single(),
+            supabase.from('user_custom_terms').select('*').eq('user_id', userId),
+            supabase.from('user_relationships').select('*').eq('user_id', userId),
+            supabase.from('user_private_facts').select('*').eq('user_id', userId)
+        ]);
+        
+        const profile = profileRes.data;
+        const customTerms = termsRes.data || [];
+        const relationships = relationshipsRes.data || [];
+        const privateFacts = factsRes.data || [];
+        
+        if (!profile && customTerms.length === 0 && relationships.length === 0 && privateFacts.length === 0) {
+            return baseSystemPrompt;
+        }
+        
+        let memoryContext = '\n\n[USER MEMORY CONTEXT - Use this to personalize your responses]:\n';
+        
+        // Add profile info
+        if (profile) {
+            if (profile.name) memoryContext += `- User's name: ${profile.name}\n`;
+            if (profile.job_title || profile.profession) {
+                memoryContext += `- User's job: ${profile.job_title || profile.profession}\n`;
+            }
+            if (profile.interests?.length > 0) {
+                memoryContext += `- User's interests: ${profile.interests.join(', ')}\n`;
+            }
+            if (profile.hobbies?.length > 0) {
+                memoryContext += `- User's hobbies: ${profile.hobbies.join(', ')}\n`;
+            }
+            if (profile.skills?.length > 0) {
+                memoryContext += `- User's skills: ${profile.skills.join(', ')}\n`;
+            }
+            if (profile.favorite_apps?.length > 0) {
+                memoryContext += `- Apps user uses: ${profile.favorite_apps.join(', ')}\n`;
+            }
+            if (profile.favorite_technologies?.length > 0) {
+                memoryContext += `- Technologies user likes: ${profile.favorite_technologies.join(', ')}\n`;
+            }
+            if (profile.vehicles?.length > 0) {
+                memoryContext += `- User's vehicles: ${profile.vehicles.join(', ')}\n`;
+            }
+            if (profile.favorite_sports?.length > 0) {
+                memoryContext += `- Sports user follows: ${profile.favorite_sports.join(', ')}\n`;
+            }
+            if (profile.favorite_games?.length > 0) {
+                memoryContext += `- Games user plays: ${profile.favorite_games.join(', ')}\n`;
+            }
+            if (profile.personality_style) {
+                memoryContext += `- User's personality: ${profile.personality_style}\n`;
+            }
+        }
+        
+        // Add custom terms
+        if (customTerms.length > 0) {
+            memoryContext += '\n[Custom terms user uses]:\n';
+            customTerms.forEach(term => {
+                memoryContext += `- "${term.term}" means: ${term.meaning}\n`;
+            });
+        }
+        
+        // Add relationships
+        if (relationships.length > 0) {
+            memoryContext += '\n[User relationships]:\n';
+            relationships.forEach(rel => {
+                memoryContext += `- ${rel.person_name} (${rel.relationship_type})${rel.notes ? `: ${rel.notes}` : ''}\n`;
+            });
+        }
+        
+        // Add private facts
+        if (privateFacts.length > 0) {
+            memoryContext += '\n[Private facts about user]:\n';
+            privateFacts.forEach(fact => {
+                memoryContext += `- ${fact.fact}${fact.context ? ` (${fact.context})` : ''}\n`;
+            });
+        }
+        
+        memoryContext += '\n[INSTRUCTIONS]: Use the above context to personalize your responses. Reference their interests when relevant. Use their custom terms correctly. Remember their relationships and private facts.';
+        
+        return baseSystemPrompt + memoryContext;
+    } catch (error) {
+        console.error('Build personalized prompt error:', error);
+        return baseSystemPrompt;
+    }
+}
 
 // Catch-all route for SPA (must be placed before app.listen)
 app.get('*', (req, res) => {

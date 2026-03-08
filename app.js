@@ -21,8 +21,10 @@ this.apiUrl = window.location.hostname === 'localhost' || window.location.hostna
         this.userPlan = 'free';
         this.userCoins = 0;
         this.gamesCache = []; // Cache games for instant display
+        this.userMemory = null;
         this.userName = null;
         this.userContext = null; // User context and identity information
+        this.userMemory = null; // Comprehensive user memory (profile, custom terms, relationships, facts)
         
         // UI state (ONLY temporary UI state in localStorage)
         this.uiState = this.loadUIState(); // Only for modal open/close, loading flags
@@ -87,8 +89,8 @@ this.apiUrl = window.location.hostname === 'localhost' || window.location.hostna
             imageMode: false,
             imageModeType: 'normal', // normal, emoji
             
-            // Memory
-            memoryEnabled: false
+            // Memory (removed)
+            // memoryEnabled: false
         };
     }
 
@@ -96,9 +98,9 @@ this.apiUrl = window.location.hostname === 'localhost' || window.location.hostna
     loadUIState() {
         try {
             const saved = localStorage.getItem('voidzenzi_ui_state');
-            return saved ? JSON.parse(saved) : { sidebarOpen: true };
+            return saved ? JSON.parse(saved) : { sidebarOpen: false };
         } catch {
-            return { sidebarOpen: true };
+            return { sidebarOpen: false };
         }
     }
 
@@ -150,7 +152,6 @@ this.apiUrl = window.location.hostname === 'localhost' || window.location.hostna
         // Chat header
         this.chatHeader = document.getElementById('chatHeader');
         this.currentChatTitle = document.getElementById('currentChatTitle');
-        this.chatMemoryStatus = document.getElementById('chatMemoryStatus');
         this.deleteChatBtn = document.getElementById('deleteChatBtn');
         
         // Coin counter
@@ -186,7 +187,6 @@ this.apiUrl = window.location.hostname === 'localhost' || window.location.hostna
         this.inviteProgressBar = document.getElementById('inviteProgressBar');
         this.inviteStatus = document.getElementById('inviteStatus');
         this.currentPlanDisplay = document.getElementById('currentPlanDisplay');
-        this.memoryStatusText = document.getElementById('memoryStatusText');
         
         // Image upload
         this.imageUploadBtn = document.getElementById('imageUploadBtn');
@@ -213,13 +213,15 @@ this.apiUrl = window.location.hostname === 'localhost' || window.location.hostna
         // Load user context and identity
         await this.loadUserContext();
         
+        // Load comprehensive user memory
+        await this.loadUserMemory();
+        
         // Update coin counter
         this.updateCoinCounter();
         
         // Load settings from Supabase
         await this.loadSettingsFromSupabase();
         this.applySettings();
-        this.updateMemoryStatus();
         
         // Load chats from Supabase - CRITICAL: Must load after auth verified
         await this.loadChats();
@@ -558,51 +560,146 @@ this.apiUrl = window.location.hostname === 'localhost' || window.location.hostna
         return false;
     }
 
-    getPersonalizedSystemPrompt() {
-        if (!this.userContext) {
-            return "You are voidzen AI, created by Srinikesh. You are a helpful AI assistant.";
+    async loadUserMemory() {
+        if (!this.supabase || !this.userId) return null;
+        
+        try {
+            // Fetch comprehensive memory from backend
+            const response = await fetch(`${this.apiUrl}/memory?userId=${this.userId}`);
+            if (!response.ok) throw new Error('Failed to load memory');
+            
+            const data = await response.json();
+            if (data.success && data.memory) {
+                this.userMemory = data.memory;
+                console.log('🧠 USER MEMORY LOADED:', this.userMemory);
+                return this.userMemory;
+            }
+        } catch (error) {
+            console.error('❌ Failed to load user memory:', error);
         }
+        return null;
+    }
 
-        let prompt = "You are voidzen AI, created by Srinikesh. You are a helpful AI assistant.";
+    async extractAndSaveMemory(message) {
+        if (!this.userId || !message) return false;
         
-        // Add user name if available
-        if (this.userContext.displayName) {
-            prompt += ` The user's name is ${this.userContext.displayName}.`;
+        try {
+            // Call backend to extract and save memory
+            const response = await fetch(`${this.apiUrl}/memory/extract`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userId: this.userId, message: message })
+            });
+            
+            if (!response.ok) throw new Error('Failed to extract memory');
+            
+            const data = await response.json();
+            if (data.success && data.saved) {
+                console.log('✅ Memory extracted and saved');
+                // Reload memory
+                await this.loadUserMemory();
+                return true;
+            }
+        } catch (error) {
+            console.error('❌ Memory extraction error:', error);
+        }
+        return false;
+    }
+
+    getPersonalizedSystemPrompt() {
+        // First check for comprehensive memory
+        const memory = this.userMemory;
+        
+        if (memory && (memory.profile || memory.customTerms?.length > 0 || 
+            memory.relationships?.length > 0 || memory.privateFacts?.length > 0)) {
+            
+            let prompt = "You are voidzen AI, created by Srinikesh. You are a helpful AI assistant.";
+            prompt += " You have access to the user's personal memory to personalize your responses.";
+            
+            const profile = memory.profile;
+            
+            // Add profile info
+            if (profile) {
+                if (profile.name) {
+                    prompt += ` The user's name is ${profile.name}.`;
+                }
+                if (profile.job_title || profile.profession) {
+                    prompt += ` They work as ${profile.job_title || profile.profession}.`;
+                }
+                if (profile.interests?.length > 0) {
+                    prompt += ` Their interests include: ${profile.interests.join(', ')}.`;
+                }
+                if (profile.hobbies?.length > 0) {
+                    prompt += ` Their hobbies are: ${profile.hobbies.join(', ')}.`;
+                }
+                if (profile.skills?.length > 0) {
+                    prompt += ` Their skills: ${profile.skills.join(', ')}.`;
+                }
+                if (profile.favorite_apps?.length > 0) {
+                    prompt += ` Apps they use: ${profile.favorite_apps.join(', ')}.`;
+                }
+                if (profile.favorite_technologies?.length > 0) {
+                    prompt += ` Technologies they like: ${profile.favorite_technologies.join(', ')}.`;
+                }
+                if (profile.vehicles?.length > 0) {
+                    prompt += ` Their vehicles: ${profile.vehicles.join(', ')}.`;
+                }
+                if (profile.favorite_sports?.length > 0) {
+                    prompt += ` Sports they follow: ${profile.favorite_sports.join(', ')}.`;
+                }
+                if (profile.favorite_games?.length > 0) {
+                    prompt += ` Games they play: ${profile.favorite_games.join(', ')}.`;
+                }
+                if (profile.personality_style) {
+                    prompt += ` Their personality: ${profile.personality_style}.`;
+                }
+            }
+            
+            // Add custom terms
+            if (memory.customTerms?.length > 0) {
+                prompt += " Important: The user uses these custom terms:";
+                memory.customTerms.forEach(term => {
+                    prompt += ` "${term.term}" means "${term.meaning}";`;
+                });
+            }
+            
+            // Add relationships
+            if (memory.relationships?.length > 0) {
+                prompt += " They have these relationships:";
+                memory.relationships.forEach(rel => {
+                    prompt += ` ${rel.person_name} (${rel.relationship_type})${rel.notes ? ` - ${rel.notes}` : ''};`;
+                });
+            }
+            
+            // Add private facts
+            if (memory.privateFacts?.length > 0) {
+                prompt += " Important facts about them:";
+                memory.privateFacts.forEach(fact => {
+                    prompt += ` ${fact.fact};`;
+                });
+            }
+            
+            prompt += " Use this context to personalize your responses naturally. Don't explicitly mention you know these things unless relevant.";
+            
+            return prompt;
         }
         
-        // Add user bio/identity if available
-        if (this.userContext.bio) {
-            prompt += ` The user identifies as: ${this.userContext.bio}.`;
+        // Fallback to old userContext
+        if (this.userContext) {
+            let prompt = "You are voidzen AI, created by Srinikesh. You are a helpful AI assistant.";
+            if (this.userContext.displayName) {
+                prompt += ` The user's name is ${this.userContext.displayName}.`;
+            }
+            if (this.userContext.bio) {
+                prompt += ` They identify as: ${this.userContext.bio}.`;
+            }
+            if (this.userContext.interests?.length > 0) {
+                prompt += ` Their interests: ${this.userContext.interests.join(', ')}.`;
+            }
+            return prompt;
         }
         
-        // Add personality traits
-        if (this.userContext.personalityTraits && this.userContext.personalityTraits.length > 0) {
-            const traits = this.userContext.personalityTraits.join(', ');
-            prompt += ` The user has these traits: ${traits}.`;
-        }
-        
-        // Add interests
-        if (this.userContext.interests && this.userContext.interests.length > 0) {
-            const interests = this.userContext.interests.join(', ');
-            prompt += ` The user is interested in: ${interests}.`;
-        }
-        
-        // Add response style preference
-        if (this.userContext.responseStyle && this.userContext.responseStyle !== 'balanced') {
-            prompt += ` Adapt your response style to be ${this.userContext.responseStyle}.`;
-        }
-        
-        // Add AI personality preference
-        if (this.userContext.aiPersonalityPreference) {
-            prompt += ` Use a ${this.userContext.aiPersonalityPreference} personality in your responses.`;
-        }
-        
-        // Add communication style
-        if (this.userContext.communicationStyle && this.userContext.communicationStyle !== 'adaptive') {
-            prompt += ` Use a ${this.userContext.communicationStyle} communication style.`;
-        }
-        
-        return prompt;
+        return "You are voidzen AI, created by Srinikesh. You are a helpful AI assistant.";
     }
 
     updateDebugPanel() {
@@ -628,7 +725,6 @@ this.apiUrl = window.location.hostname === 'localhost' || window.location.hostna
             
             if (coinsEl) coinsEl.textContent = this.userCoins || 0;
             if (planEl) planEl.textContent = this.userPlan || 'free';
-            if (memoryEl) memoryEl.textContent = this.settings.memoryEnabled ? 'ON' : 'OFF';
             
             // Check admin status
             if (adminEl && this.userId && this.supabase) {
@@ -898,51 +994,6 @@ Ultra: Unlimited`;
         }
     }
 
-    updateMemoryStatus() {
-        if (!this.memoryStatusText) return;
-        
-        // CRITICAL: Get the actual value from settings AND check the toggle
-        const memoryToggle = document.getElementById('memoryEnabled');
-        const toggleValue = memoryToggle ? memoryToggle.checked : false;
-        const settingsValue = this.settings.memoryEnabled || false;
-        
-        // Use toggle value if it exists, otherwise use settings value
-        const isEnabled = memoryToggle ? toggleValue : settingsValue;
-        
-        // Sync settings with toggle if they differ
-        if (memoryToggle && this.settings.memoryEnabled !== toggleValue) {
-            console.log('🧠 SYNCING MEMORY SETTING - Toggle:', toggleValue, 'Settings:', this.settings.memoryEnabled);
-            this.settings.memoryEnabled = toggleValue;
-        }
-        
-        console.log('🧠 MEMORY STATUS UPDATE - Enabled:', isEnabled, 'Toggle:', toggleValue, 'Settings:', settingsValue);
-        
-        const statusDiv = document.getElementById('memoryStatus');
-        
-        if (isEnabled) {
-            this.memoryStatusText.textContent = 'ON - Memory is being stored';
-            if (statusDiv) {
-                statusDiv.style.background = '#d4edda';
-                statusDiv.style.color = '#155724';
-            }
-        } else {
-            this.memoryStatusText.textContent = 'OFF - No memory stored';
-            if (statusDiv) {
-                statusDiv.style.background = '#f8d7da';
-                statusDiv.style.color = '#721c24';
-            }
-        }
-
-        // Update chat header memory status
-        if (this.chatMemoryStatus) {
-            if (isEnabled && this.currentChatId) {
-                this.chatMemoryStatus.textContent = '🧠 Memory ON';
-                this.chatMemoryStatus.style.color = '#10b981';
-            } else {
-                this.chatMemoryStatus.textContent = '';
-            }
-        }
-    }
 
     copyReferralCode() {
         if (!this.referralCodeDisplay) return;
@@ -1169,6 +1220,25 @@ Ultra: Unlimited`;
             this.imageInput.addEventListener('change', (e) => this.handleImageUpload(e));
         }
 
+        // Camera button
+        this.cameraBtn = document.getElementById('cameraBtn');
+        if (this.cameraBtn) {
+            this.cameraBtn.addEventListener('click', () => this.showCameraModal());
+        }
+
+        // Camera modal buttons
+        const startCameraBtn = document.getElementById('startCameraBtn');
+        const captureBtn = document.getElementById('captureBtn');
+        const retakeBtn = document.getElementById('retakeBtn');
+        const usePhotoBtn = document.getElementById('usePhotoBtn');
+        const closeCameraBtn = document.getElementById('closeCameraBtn');
+
+        if (startCameraBtn) startCameraBtn.addEventListener('click', () => this.startCamera());
+        if (captureBtn) captureBtn.addEventListener('click', () => this.capturePhoto());
+        if (retakeBtn) retakeBtn.addEventListener('click', () => this.retakePhoto());
+        if (usePhotoBtn) usePhotoBtn.addEventListener('click', () => this.usePhoto());
+        if (closeCameraBtn) closeCameraBtn.addEventListener('click', () => this.closeCameraModal());
+
         // Navigation
         if (this.newChatBtn) {
             this.newChatBtn.addEventListener('click', () => this.showNewChatModal());
@@ -1365,8 +1435,7 @@ Ultra: Unlimited`;
             { id: 'ttsEnabled', key: 'ttsEnabled' },
             { id: 'imageMode', key: 'imageMode' },
             { id: 'typingEffect', key: 'typingEffect' },
-            { id: 'errorFreeMode', key: 'errorFreeMode' },
-            { id: 'memoryEnabled', key: 'memoryEnabled', special: true } // Special handling for memory
+            { id: 'errorFreeMode', key: 'errorFreeMode' }
         ];
 
         toggles.forEach(({ id, key, special }) => {
@@ -1377,36 +1446,6 @@ Ultra: Unlimited`;
                     console.log(`🔄 TOGGLE CHANGED - ${id}:`, newValue);
                     this.settings[key] = newValue;
                     this.applySettings();
-                    
-                    // Special handling for memory toggle
-                    if (special && id === 'memoryEnabled') {
-                        console.log('🧠 MEMORY TOGGLE CHANGED:', newValue);
-                        this.settings.memoryEnabled = newValue;
-                        
-                        // If enabling memory, check usage limits
-                        if (newValue) {
-                            const usageCheck = await this.checkMemoryUsage();
-                            if (!usageCheck.success) {
-                                if (usageCheck.limitExceeded) {
-                                    // Disable the toggle if limit is exceeded
-                                    e.target.checked = false;
-                                    this.settings.memoryEnabled = false;
-                                    return;
-                                }
-                            } else {
-                                // Track memory usage when enabling
-                                const tracked = await this.trackMemoryUsage();
-                                if (!tracked) {
-                                    // Disable the toggle if tracking fails
-                                    e.target.checked = false;
-                                    this.settings.memoryEnabled = false;
-                                    return;
-                                }
-                            }
-                        }
-                        
-                        this.updateMemoryStatus();
-                    }
                     
                     // Save immediately to Supabase
                     await this.saveSettingsToSupabase();
@@ -1445,15 +1484,15 @@ Ultra: Unlimited`;
     }
 
     openSidebar() {
-        this.sidebar.classList.add('open');
-        this.sidebarOverlay.classList.add('show');
+        if (this.sidebar) this.sidebar.classList.add('open');
+        if (this.sidebarOverlay) this.sidebarOverlay.classList.add('show');
         this.uiState.sidebarOpen = true;
         this.saveUIState();
     }
 
     closeSidebar() {
-        this.sidebar.classList.remove('open');
-        this.sidebarOverlay.classList.remove('show');
+        if (this.sidebar) this.sidebar.classList.remove('open');
+        if (this.sidebarOverlay) this.sidebarOverlay.classList.remove('show');
         this.uiState.sidebarOpen = false;
         this.saveUIState();
     }
@@ -1716,7 +1755,6 @@ Ultra: Unlimited`;
             if (this.currentChatTitle) {
                 this.currentChatTitle.textContent = chat.name;
             }
-            this.updateMemoryStatus();
             
             // Load messages for THIS chat only
             await this.loadChatMessages(chatId);
@@ -1778,8 +1816,8 @@ Ultra: Unlimited`;
 
             if (error) {
                 console.error('❌ MESSAGES QUERY ERROR:', error);
-                console.error('❌ ERROR DETAILS:', JSON.stringify(error, null, 2));
                 
+                // Provide helpful error messages
                 if (error.message && (error.message.includes('schema cache') || error.message.includes('does not exist') || error.message.includes('relation'))) {
                     // Schema cache error - table exists (messages are saving), so this is a cache issue
                     // Try to refresh by re-querying
@@ -1949,18 +1987,6 @@ Ultra: Unlimited`;
                 throw new Error(`Failed to delete chat: ${chatError.message}`);
             }
 
-            console.log('🗑️ DELETING MEMORIES for chat:', chatId);
-            // Delete memories for this chat
-            const { error: memoriesError } = await this.supabase
-                .from('memories')
-                .delete()
-                .eq('chat_id', chatId)
-                .eq('user_id', this.userId);
-
-            if (memoriesError) {
-                console.warn('⚠️ Failed to delete memories (non-critical):', memoriesError);
-            }
-
             console.log('✅ CHAT DELETED SUCCESSFULLY');
 
             // If this was the current chat, reset
@@ -2073,17 +2099,6 @@ Ultra: Unlimited`;
                 }
             }
 
-            // Delete memories for this chat
-            const { error: memoriesError } = await this.supabase
-                .from('memories')
-                .delete()
-                .eq('chat_id', this.currentChatId)
-                .eq('user_id', this.userId);
-
-            if (memoriesError) {
-                console.warn('⚠️ Failed to clear memories (non-critical):', memoriesError);
-            }
-
             // Clear UI
             if (this.chatContainer) {
                 this.chatContainer.innerHTML = `
@@ -2121,12 +2136,76 @@ Ultra: Unlimited`;
     }
 
     // ============================================
+    // COMMAND HANDLING
+    // ============================================
+    async handleCommand(message) {
+        const parts = message.trim().split(' ');
+        const command = parts[0].toLowerCase();
+        const args = parts.slice(1);
+
+        console.log('🎯 COMMAND:', command, 'ARGS:', args);
+
+        switch (command) {
+            case '/pic':
+                // Toggle picture mode
+                this.settings.imageMode = !this.settings.imageMode;
+                this.applySettings();
+                await this.saveSettingsToSupabase();
+                this.showNotification('Picture Mode', this.settings.imageMode ? 'Picture mode ON' : 'Picture mode OFF');
+                break;
+
+            case '/clear':
+                // Clear current chat
+                await this.clearCurrentChat();
+                break;
+
+            case '/new':
+                // Create new chat
+                this.showNewChatModal();
+                break;
+
+            case '/settings':
+                // Open settings
+                this.showSettings();
+                break;
+
+            case '/help':
+                // Show help
+                this.showHelp();
+                break;
+
+            default:
+                this.addMessageToUI(`Unknown command: ${command}. Type /help for available commands.`, 'assistant', true);
+                break;
+        }
+    }
+
+    showHelp() {
+        const helpText = `
+Available commands:
+/pic - Toggle picture mode (generate images from text)
+/clear - Clear current chat
+/new - Create new chat
+/settings - Open settings
+/help - Show this help message
+        `.trim();
+        this.addMessageToUI(helpText, 'assistant', true);
+    }
+
+    // ============================================
     // MESSAGE HANDLING (STRICT SUPABASE)
     // ============================================
     async handleSend() {
         if (!this.userInput) return;
         const message = this.userInput.value.trim();
         if (!message && !this.uploadedImageData) return;
+
+        // Handle slash commands
+        if (message.startsWith('/')) {
+            await this.handleCommand(message);
+            this.userInput.value = '';
+            return;
+        }
 
         // ENFORCE: Must have a chat before sending
         if (!this.currentChatId) {
@@ -2180,9 +2259,19 @@ Ultra: Unlimited`;
             this.removeImagePreview();
         }
 
-        // Process identity information from user message
+        // Process identity information from user message (legacy)
         if (message) {
             await this.processIdentityMessage(message);
+        }
+        
+        // Extract and save comprehensive memory from message (new system)
+        if (message) {
+            // Don't await - run in background
+            this.extractAndSaveMemory(message).then(saved => {
+                if (saved) {
+                    console.log('✅ New memory extracted and saved from message');
+                }
+            });
         }
 
         // Remove welcome message
@@ -2282,18 +2371,7 @@ Ultra: Unlimited`;
                     const imageHtml = `
                         <div class="message-image">
                             <img id="${imageId}" src="${data.imageUrl}" alt="Enhanced image" style="max-width: 100%; border-radius: 8px; display: block; margin-bottom: 8px;">
-                            <button onclick="window.aiAssistant.downloadImage('${data.imageUrl}', '${imageId}')" style="
-                                background: var(--accent-color, #667eea);
-                                color: white;
-                                border: none;
-                                padding: 8px 16px;
-                                border-radius: 6px;
-                                cursor: pointer;
-                                font-size: 14px;
-                                display: flex;
-                                align-items: center;
-                                gap: 6px;
-                            ">
+                            <button class="download-btn" onclick="window.aiAssistant.downloadImage('${data.imageUrl}', '${imageId}')">
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
                                     <polyline points="7 10 12 15 17 10"></polyline>
@@ -2464,16 +2542,6 @@ Ultra: Unlimited`;
 
             console.log('✅ Message saved successfully - ID:', messageData.id);
 
-            // Save memory if enabled
-            if (this.settings.memoryEnabled && role === 'assistant') {
-                console.log('🧠 MEMORY SAVE ENABLED - Saving memory to Supabase');
-                await this.saveMemory(content);
-            } else if (this.settings.memoryEnabled) {
-                console.log('🧠 MEMORY ENABLED but role is not assistant, skipping');
-            } else {
-                console.log('🧠 MEMORY DISABLED - Not saving');
-            }
-            
             // Update coin counter if coins changed (from games, etc.)
             await this.loadUserInfo();
             this.updateCoinCounter();
@@ -2496,57 +2564,6 @@ Ultra: Unlimited`;
         }
     }
 
-    async saveMemory(content) {
-        if (!this.settings.memoryEnabled || !this.currentChatId || !this.userId) {
-            console.log('🧠 Memory save skipped - enabled:', this.settings.memoryEnabled, 'chatId:', this.currentChatId, 'userId:', this.userId);
-            return;
-        }
-        
-        // Check memory usage before saving
-        const usageCheck = await this.checkMemoryUsage();
-        if (!usageCheck.success) {
-            if (usageCheck.limitExceeded) {
-                // Disable memory if limit exceeded
-                this.settings.memoryEnabled = false;
-                const memoryToggle = document.getElementById('memoryEnabled');
-                if (memoryToggle) memoryToggle.checked = false;
-                this.updateMemoryStatus();
-                return;
-            }
-        }
-        
-        // Track memory usage
-        const tracked = await this.trackMemoryUsage();
-        if (!tracked) {
-            console.error('Failed to track memory usage');
-            return;
-        }
-
-        console.log('🧠 SAVING MEMORY - chatId:', this.currentChatId);
-
-        try {
-            const { data, error } = await this.supabase
-                .from('memories')
-                .insert({
-                    user_id: this.userId,
-                    chat_id: this.currentChatId,
-                    memory_type: 'short_term',
-                    content: content.substring(0, 500) // Limit memory size
-                });
-
-            console.log('🧠 MEMORY SAVE RESULT:', data);
-            console.log('🧠 MEMORY SAVE ERROR:', error);
-
-            if (error) {
-                console.error('❌ Failed to save memory:', error);
-            } else {
-                console.log('✅ Memory saved successfully');
-            }
-        } catch (error) {
-            console.error('❌ Failed to save memory:', error);
-        }
-    }
-
     addMessageToUI(text, sender, animate = true) {
         if (!this.chatContainer) return;
 
@@ -2565,21 +2582,30 @@ Ultra: Unlimited`;
         const contentDiv = document.createElement('div');
         contentDiv.className = 'message-content';
         
-        const formattedText = text.replace(/\n/g, '<br>');
-        const shouldTypeEffect = sender === 'assistant' &&
-            this.settings.typingEffect &&
-            this.settings.animations &&
-            !text.includes('<');
-
-        if (shouldTypeEffect && animate) {
-            contentDiv.innerHTML = '';
-            this.typeText(contentDiv, text);
+        // Check if text contains HTML (like image tags)
+        const containsHtml = /<[a-z][\s\S]*>/i.test(text);
+        
+        if (containsHtml) {
+            // Text contains HTML - render it directly (for images, etc.)
+            contentDiv.innerHTML = text;
         } else {
-            contentDiv.innerHTML = formattedText;
-        }
+            // Plain text - format newlines and apply typing effect
+            const formattedText = text.replace(/\n/g, '<br>');
+            const shouldTypeEffect = sender === 'assistant' &&
+                this.settings.typingEffect &&
+                this.settings.animations &&
+                animate;
 
-        if (sender === 'assistant' && this.settings.ttsEnabled) {
-            this.speakText(text);
+            if (shouldTypeEffect) {
+                contentDiv.innerHTML = '';
+                this.typeText(contentDiv, text);
+            } else {
+                contentDiv.innerHTML = formattedText;
+            }
+
+            if (sender === 'assistant' && this.settings.ttsEnabled) {
+                this.speakText(text);
+            }
         }
         
         if (this.settings.showTimestamps) {
@@ -2708,16 +2734,7 @@ Ultra: Unlimited`;
                 this.simpleLanguageToggle.checked = this.settings.simpleLanguage;
             }
             
-            // Update memory toggle - CRITICAL: Sync UI with settings
-            const memoryToggle = document.getElementById('memoryEnabled');
-            if (memoryToggle) {
-                const memoryEnabled = this.settings.memoryEnabled || false;
-                memoryToggle.checked = memoryEnabled;
-                console.log('🧠 MEMORY TOGGLE SYNCED - UI:', memoryEnabled, 'Settings:', this.settings.memoryEnabled);
-            }
-            
-            // Update memory status AFTER toggle is synced
-            this.updateMemoryStatus();
+            // Memory toggle removed
             this.updateDebugPanel();
         } catch (error) {
             console.error('❌ Error loading settings:', error);
@@ -2871,8 +2888,7 @@ Ultra: Unlimited`;
             'ttsEnabled': this.settings.ttsEnabled,
             'imageMode': this.settings.imageMode,
             'typingEffect': this.settings.typingEffect,
-            'errorFreeMode': this.settings.errorFreeMode,
-            'memoryEnabled': this.settings.memoryEnabled
+            'errorFreeMode': this.settings.errorFreeMode
         };
 
         Object.entries(toggles).forEach(([id, value]) => {
@@ -3444,36 +3460,201 @@ Ultra: Unlimited`;
     downloadImage(imageUrl, imageId) {
         console.log('📥 Downloading image:', imageUrl);
         
-        // Create a temporary link element
-        const link = document.createElement('a');
-        link.href = imageUrl;
-        link.download = `voidzen-generated-image-${Date.now()}.png`;
-        link.target = '_blank';
+        // Generate proper filename with timestamp
+        const timestamp = Date.now();
+        const filename = `voidzen-image-${timestamp}.png`;
         
-        // For external URLs, we need to fetch and create a blob
+        // For external URLs, fetch and create a proper blob
         if (imageUrl.startsWith('http')) {
-            fetch(imageUrl)
-                .then(response => response.blob())
+            fetch(imageUrl, {
+                headers: {
+                    'Accept': 'image/png,image/jpeg,image/webp,*/*'
+                }
+            })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response.blob();
+                })
                 .then(blob => {
-                    const blobUrl = URL.createObjectURL(blob);
+                    // Create blob with proper type
+                    const imageBlob = new Blob([blob], { type: 'image/png' });
+                    const blobUrl = URL.createObjectURL(imageBlob);
+                    
+                    // Create download link
+                    const link = document.createElement('a');
                     link.href = blobUrl;
+                    link.download = filename;
+                    link.style.display = 'none';
+                    
                     document.body.appendChild(link);
                     link.click();
-                    document.body.removeChild(link);
-                    URL.revokeObjectURL(blobUrl);
-                    console.log('✅ Image downloaded successfully');
+                    
+                    // Cleanup
+                    setTimeout(() => {
+                        document.body.removeChild(link);
+                        URL.revokeObjectURL(blobUrl);
+                    }, 100);
+                    
+                    console.log('✅ Image downloaded successfully as', filename);
+                    this.showNotification('Download Complete', `Image saved as ${filename}`);
                 })
                 .catch(error => {
                     console.error('❌ Failed to download image:', error);
-                    // Fallback: open in new tab
+                    this.showNotification('Download Failed', 'Opening image in new tab instead');
                     window.open(imageUrl, '_blank');
                 });
-        } else {
-            // For data URLs, download directly
+        } else if (imageUrl.startsWith('data:')) {
+            // For data URLs (base64), download directly
+            const link = document.createElement('a');
+            link.href = imageUrl;
+            link.download = filename;
+            link.style.display = 'none';
+            
             document.body.appendChild(link);
             link.click();
-            document.body.removeChild(link);
-            console.log('✅ Image downloaded successfully');
+            
+            setTimeout(() => {
+                document.body.removeChild(link);
+            }, 100);
+            
+            console.log('✅ Image downloaded successfully as', filename);
+            this.showNotification('Download Complete', `Image saved as ${filename}`);
+        } else {
+            // Unknown format, open in new tab
+            window.open(imageUrl, '_blank');
+        }
+    }
+
+    // ============================================
+    // CAMERA FUNCTIONS
+    // ============================================
+    showCameraModal() {
+        console.log('📷 SHOWING CAMERA MODAL');
+        const modal = document.getElementById('cameraModal');
+        if (modal) {
+            modal.classList.add('show');
+            this.resetCameraUI();
+        }
+    }
+
+    closeCameraModal() {
+        console.log('📷 CLOSING CAMERA MODAL');
+        const modal = document.getElementById('cameraModal');
+        if (modal) {
+            modal.classList.remove('show');
+        }
+        this.stopCamera();
+        this.resetCameraUI();
+    }
+
+    resetCameraUI() {
+        const video = document.getElementById('cameraVideo');
+        const canvas = document.getElementById('cameraCanvas');
+        const preview = document.getElementById('cameraPreview');
+        const placeholder = document.getElementById('cameraPlaceholder');
+        const startBtn = document.getElementById('startCameraBtn');
+        const captureBtn = document.getElementById('captureBtn');
+        const retakeBtn = document.getElementById('retakeBtn');
+        const usePhotoBtn = document.getElementById('usePhotoBtn');
+
+        if (video) video.style.display = 'none';
+        if (canvas) canvas.style.display = 'none';
+        if (preview) preview.style.display = 'none';
+        if (placeholder) placeholder.style.display = 'flex';
+        if (startBtn) startBtn.style.display = 'inline-block';
+        if (captureBtn) captureBtn.style.display = 'none';
+        if (retakeBtn) retakeBtn.style.display = 'none';
+        if (usePhotoBtn) usePhotoBtn.style.display = 'none';
+
+        this.capturedPhotoData = null;
+    }
+
+    async startCamera() {
+        console.log('📷 STARTING CAMERA');
+        const video = document.getElementById('cameraVideo');
+        const placeholder = document.getElementById('cameraPlaceholder');
+        const startBtn = document.getElementById('startCameraBtn');
+        const captureBtn = document.getElementById('captureBtn');
+
+        try {
+            this.cameraStream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: 'environment' },
+                audio: false
+            });
+
+            if (video) {
+                video.srcObject = this.cameraStream;
+                video.style.display = 'block';
+                if (placeholder) placeholder.style.display = 'none';
+                if (startBtn) startBtn.style.display = 'none';
+                if (captureBtn) captureBtn.style.display = 'inline-block';
+            }
+        } catch (error) {
+            console.error('❌ Failed to start camera:', error);
+            this.showNotification('Camera Error', 'Could not access camera. Please make sure you have granted camera permissions.');
+        }
+    }
+
+    stopCamera() {
+        if (this.cameraStream) {
+            this.cameraStream.getTracks().forEach(track => track.stop());
+            this.cameraStream = null;
+        }
+    }
+
+    capturePhoto() {
+        console.log('📸 CAPTURING PHOTO');
+        const video = document.getElementById('cameraVideo');
+        const canvas = document.getElementById('cameraCanvas');
+        const preview = document.getElementById('cameraPreview');
+        const captureBtn = document.getElementById('captureBtn');
+        const retakeBtn = document.getElementById('retakeBtn');
+        const usePhotoBtn = document.getElementById('usePhotoBtn');
+
+        if (!video || !canvas) return;
+
+        // Set canvas dimensions to match video
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+
+        // Draw video frame to canvas
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        // Convert to data URL
+        this.capturedPhotoData = canvas.toDataURL('image/jpeg', 0.9);
+
+        // Show preview
+        if (preview) {
+            preview.src = this.capturedPhotoData;
+            preview.style.display = 'block';
+            video.style.display = 'none';
+        }
+
+        // Update buttons
+        if (captureBtn) captureBtn.style.display = 'none';
+        if (retakeBtn) retakeBtn.style.display = 'inline-block';
+        if (usePhotoBtn) usePhotoBtn.style.display = 'inline-block';
+
+        // Stop the camera stream
+        this.stopCamera();
+    }
+
+    retakePhoto() {
+        console.log('🔄 RETAKING PHOTO');
+        this.resetCameraUI();
+        this.startCamera();
+    }
+
+    usePhoto() {
+        console.log('✅ USING CAPTURED PHOTO');
+        if (this.capturedPhotoData) {
+            this.uploadedImageData = this.capturedPhotoData;
+            this.showImagePreview(this.capturedPhotoData);
+            this.closeCameraModal();
+            this.showNotification('Photo Captured', 'Your photo is ready! Type a message like "analyze this" or "make it better" and click send.');
         }
     }
 
@@ -3743,7 +3924,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
     }
 
-    new AIAssistant();
+    window.aiAssistant = new AIAssistant();
 });
 
 // Modal Helper Functions

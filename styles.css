@@ -1083,7 +1083,6 @@ body.no-animations * {
 body.theme-dark .message-timestamp {
     color: rgba(255, 255, 255, 0.4);
 }
-
 /* Clear Chat Button */
 .btn-danger {
     padding: 12px 24px;
@@ -1108,63 +1107,9 @@ body.theme-dark .message-timestamp {
     transform: translateY(0);
 }
 
-@media (max-width: 600px) {
-    .container {
-        height: 100vh;
-        border-radius: 0;
-    }
-    
-    header {
-        padding: 15px 20px;
-    }
-    
-    header h1 {
-        font-size: 20px;
-    }
-    
-    .message-content {
-        max-width: 85%;
-    }
-    
-    .chat-container {
-        padding: 20px;
-    }
-
-    .settings-container {
-        padding: 20px;
-    }
-
-    .settings-actions {
-        flex-direction: column;
-    }
-
-    .btn-primary,
-    .btn-secondary {
-        width: 100%;
-    }
-
-    .icon-btn {
-        width: 36px;
-        height: 36px;
-    }
-}
-
-/* Sidebar Styles */
-.sidebar {
-    position: fixed;
-    left: -300px;
-    top: 0;
-    width: 300px;
-    height: 100vh;
-    background: white;
-    box-shadow: 2px 0 10px rgba(0, 0, 0, 0.1);
-    z-index: 1000;
-    transition: left 0.3s ease;
-    overflow-y: auto;
-}
-
-.sidebar.open {
-    left: 0;
+/* Download Button */
+.download-btn {
+    padding: 8px 16px;
 }
 
 @media (min-width: 1024px) {
@@ -1172,6 +1117,26 @@ body.theme-dark .message-timestamp {
         margin-left: 300px;
         transition: margin-left 0.3s ease;
     }
+}
+
+/* Sidebar Base Styles */
+.sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 300px;
+    height: 100vh;
+    background: white;
+    z-index: 1000;
+    transform: translateX(-100%);
+    transition: transform 0.3s ease;
+    box-shadow: 2px 0 10px rgba(0, 0, 0, 0.1);
+    display: flex;
+    flex-direction: column;
+}
+
+.sidebar.open {
+    transform: translateX(0);
 }
 
 .sidebar-header {
@@ -1917,3 +1882,223 @@ body.theme-dark .progress-bar {
     font-weight: bold;
 }
 
+/* Camera button specific styles */
+#cameraBtn {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border: none;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.2s, box-shadow 0.2s;
+    box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+}
+
+#cameraBtn:hover {
+    transform: scale(1.05);
+    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.5);
+}
+
+#cameraBtn svg {
+    color: white;
+    stroke: white;
+}
+
+/* Camera controls button visibility */
+.camera-controls button {
+    padding: 12px 24px;
+    font-size: 14px;
+    font-weight: 500;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 120px;
+}
+
+#startCameraBtn {
+    background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+    color: white;
+}
+
+#startCameraBtn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
+}
+
+#captureBtn {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    font-size: 16px;
+}
+
+#captureBtn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+}
+
+#retakeBtn, #closeCameraBtn {
+    background: #f3f4f6;
+    color: #374151;
+    border: 2px solid #d1d5db;
+}
+
+#retakeBtn:hover, #closeCameraBtn:hover {
+    background: #e5e7eb;
+    transform: translateY(-2px);
+}
+
+#usePhotoBtn {
+    background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+    color: white;
+}
+
+#usePhotoBtn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
+}
+
+/* Download button styles */
+.download-btn {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    transition: all 0.2s;
+    box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+    margin-top: 10px;
+}
+
+.download-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 16px rgba(102, 126, 234, 0.5);
+}
+
+.download-btn svg {
+    stroke: white;
+}
+
+body.theme-dark .download-btn {
+    background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+    box-shadow: 0 2px 8px rgba(79, 172, 254, 0.3);
+}
+
+body.theme-dark .download-btn:hover {
+    box-shadow: 0 4px 16px rgba(79, 172, 254, 0.5);
+}
+
+/* Input container buttons wrapper */
+.input-buttons {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+#imageUploadBtn {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border: none;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.2s, box-shadow 0.2s;
+    box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+}
+
+#imageUploadBtn:hover {
+    transform: scale(1.05);
+    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.5);
+}
+
+#imageUploadBtn svg {
+    color: white;
+    stroke: white;
+}
+.camera-modal {
+    max-width: 600px;
+    width: 95%;
+}
+
+.camera-container {
+    position: relative;
+    width: 100%;
+    max-width: 500px;
+    margin: 20px auto;
+    background: #000;
+    border-radius: 12px;
+    overflow: hidden;
+    aspect-ratio: 4/3;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.camera-container video,
+.camera-container img,
+.camera-container canvas {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.camera-placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: #999;
+    text-align: center;
+    padding: 40px;
+}
+
+.camera-placeholder p {
+    margin-top: 16px;
+    font-size: 14px;
+}
+
+.camera-controls {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin-top: 20px;
+}
+
+.camera-controls button {
+    padding: 10px 20px;
+    font-size: 14px;
+}
+
+.camera-hint {
+    text-align: center;
+    font-size: 12px;
+    color: #666;
+    margin-top: 15px;
+    font-style: italic;
+}
+
+body.theme-dark .camera-hint {
+    color: #a0aec0;
+}
+
+body.theme-dark .camera-placeholder {
+    color: #666;
+}
