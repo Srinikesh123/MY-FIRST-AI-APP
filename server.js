@@ -37,11 +37,46 @@ const openai = process.env.OPENAI_API_KEY ? new OpenAI({
 
 // Initialize Gemini client for vision
 let geminiClient = null;
+
+// Normalize Gemini model IDs so common aliases / wrong values don't 404
+function normalizeGeminiModel(raw) {
+    // Default to a current, vision-capable model with generous free limits
+    if (!raw) return 'gemini-2.5-flash';
+
+    let model = String(raw).trim();
+
+    // Strip leading "models/" if someone copied a full resource name
+    if (model.startsWith('models/')) {
+        model = model.slice('models/'.length);
+    }
+
+    // Strip any ":generateContent" style suffix
+    const colonIndex = model.indexOf(':');
+    if (colonIndex !== -1) {
+        model = model.slice(0, colonIndex);
+    }
+
+    // Newer docs often show "...-latest" aliases which 404 on v1beta – drop the suffix
+    if (model.endsWith('-latest')) {
+        model = model.replace(/-latest$/, '');
+    }
+
+    // Map older vision IDs to currently supported models
+    if (model === 'gemini-pro-vision' || model === 'gemini-pro') {
+        model = 'gemini-2.5-flash';
+    }
+
+    return model || 'gemini-2.5-flash';
+}
+
+// Allow overriding the exact Gemini model via env; default to a stable, vision-capable model.
+const RAW_GEMINI_VISION_MODEL = process.env.GEMINI_VISION_MODEL || 'gemini-2.5-flash';
+const GEMINI_VISION_MODEL = normalizeGeminiModel(RAW_GEMINI_VISION_MODEL);
 if (process.env.GEMINI_API_KEY) {
     try {
         const { GoogleGenerativeAI } = require('@google/generative-ai');
         geminiClient = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-        console.log(' Gemini client initialized');
+        console.log(' Gemini client initialized with model:', GEMINI_VISION_MODEL, '(raw:', RAW_GEMINI_VISION_MODEL, ')');
     } catch (e) {
         console.error('Failed to initialize Gemini client:', e);
     }
@@ -555,7 +590,64 @@ function textToEmoji(prompt) {
     return emojiRows.join('\n');
 }
 
-// Helper function to analyze uploaded images using Groq (free alternative)
+// Helper: analyze image with OpenAI vision (fallback when Gemini fails or is unavailable)
+async function analyzeImageWithOpenAI(prompt, imageData, smartPrompt) {
+    if (!openai) return null;
+
+    try {
+        console.log('🧠 Using OpenAI vision model for image analysis...');
+
+        // Use a configurable vision-capable model, defaulting to gpt-4o-mini
+        const visionModel =
+            process.env.OPENAI_VISION_MODEL ||
+            process.env.OPENAI_MODEL_DETAILED ||
+            process.env.OPENAI_MODEL ||
+            'gpt-4o-mini';
+
+        const completion = await openai.chat.completions.create({
+            model: visionModel,
+            messages: [
+                { role: 'system', content: smartPrompt },
+                {
+                    role: 'user',
+                    content: [
+                        { type: 'text', text: `The user asked: "${prompt}". Carefully look at the image and respond exactly to that.` },
+                        {
+                            type: 'image_url',
+                            image_url: {
+                                // OpenAI supports data URLs with base64 image data
+                                url: imageData
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens: 800
+        });
+
+        const content = completion.choices?.[0]?.message?.content;
+        if (!content) {
+            console.warn('OpenAI vision returned empty content');
+            return null;
+        }
+
+        // content may be a string or an array of content parts; normalize to string
+        if (typeof content === 'string') return content;
+        if (Array.isArray(content)) {
+            return content
+                .map(part => (typeof part === 'string' ? part : part.text || ''))
+                .join(' ')
+                .trim();
+        }
+
+        return String(content);
+    } catch (error) {
+        console.error('❌ OpenAI vision analysis failed:', error.message || error);
+        return null;
+    }
+}
+
+// Helper function to analyze uploaded images using Gemini (with OpenAI / Groq fallbacks)
 async function analyzeImage(req, res, prompt, userId, imageData) {
     try {
         console.log('🔍 ANALYZE IMAGE CALLED');
@@ -639,7 +731,7 @@ IMPORTANT:
         if (isEnhancementRequest && geminiClient) {
             console.log('🎨 Enhancement request detected - using Gemini to understand image first');
             try {
-                const model = geminiClient.getGenerativeModel({ model: 'gemini-1.5-flash' });
+                const model = geminiClient.getGenerativeModel({ model: GEMINI_VISION_MODEL });
 
                 const descriptionPrompt = `Look at this image carefully and describe it in detail: what objects, colors, scene, text, or subjects are present. Be specific and concise. This description will be used to generate an enhanced version.`;
 
@@ -690,7 +782,7 @@ IMPORTANT:
                 console.log('🧠 Using Gemini vision model for image analysis...');
                 console.log('🧠 Detected mime type:', detectedMimeType);
 
-                const model = geminiClient.getGenerativeModel({ model: 'gemini-1.5-flash' });
+                const model = geminiClient.getGenerativeModel({ model: GEMINI_VISION_MODEL });
 
                 const result = await model.generateContent([
                     smartPrompt,
@@ -708,9 +800,14 @@ IMPORTANT:
                 console.log('✅ Gemini vision analysis success!');
 
             } catch (geminiError) {
-                console.error('❌ Gemini vision failed, falling back to Groq:', geminiError.message);
+                console.error('❌ Gemini vision failed, attempting OpenAI / Groq fallback:', geminiError.message);
 
-                if (groqClient) {
+                // First fallback: OpenAI vision (if configured)
+                const openaiResult = await analyzeImageWithOpenAI(prompt, imageData, smartPrompt);
+                if (openaiResult) {
+                    aiResponse = openaiResult;
+                    usedProvider = 'OpenAI Vision';
+                } else if (groqClient) {
                     try {
                         const fallbackCompletion = await groqClient.chat.completions.create({
                             messages: [
@@ -728,17 +825,45 @@ IMPORTANT:
                         usedProvider = 'Fallback';
                     }
                 } else {
-                    aiResponse = 'Image analysis failed. Please ensure your GEMINI_API_KEY is valid and try again.';
+                    aiResponse = 'Image analysis failed. Please ensure your GEMINI_API_KEY is valid or configure an OpenAI vision model, then try again.';
                     usedProvider = 'None';
                 }
             }
+        } else if (openai) {
+            // No Gemini but OpenAI is available – use OpenAI vision directly
+            const openaiResult = await analyzeImageWithOpenAI(prompt, imageData, smartPrompt);
+            if (openaiResult) {
+                aiResponse = openaiResult;
+                usedProvider = 'OpenAI Vision';
+            } else if (groqClient) {
+                console.log('⚠️ OpenAI vision failed - Groq cannot see images, providing honest response');
+                try {
+                    const fallbackCompletion = await groqClient.chat.completions.create({
+                        messages: [
+                            { role: 'system', content: 'You are a helpful AI assistant.' },
+                            { role: 'user', content: `The user uploaded an image and asked: "${prompt}". Unfortunately, I cannot see images due to a technical issue. Please ask the user to describe their image, and I will help based on their description.` }
+                        ],
+                        model: 'llama-3.1-8b-instant',
+                        temperature: 0.7,
+                        max_tokens: 300
+                    });
+                    aiResponse = fallbackCompletion.choices[0].message.content;
+                    usedProvider = 'Groq (text-only)';
+                } catch (groqError) {
+                    aiResponse = 'Image analysis requires a vision-capable AI. Please check your OpenAI or Gemini API keys in your .env file.';
+                    usedProvider = 'None';
+                }
+            } else {
+                aiResponse = 'Image analysis requires a vision-capable AI. Please check your OpenAI or Gemini API keys in your .env file.';
+                usedProvider = 'None';
+            }
         } else if (groqClient) {
-            console.log('⚠️ No Gemini client - Groq cannot see images, providing honest response');
+            console.log('⚠️ No Gemini/OpenAI vision - Groq cannot see images, providing honest response');
             try {
                 const fallbackCompletion = await groqClient.chat.completions.create({
                     messages: [
                         { role: 'system', content: 'You are a helpful AI assistant.' },
-                        { role: 'user', content: `The user uploaded an image and asked: "${prompt}". Unfortunately, I cannot see images without the Gemini API key configured. Please ask the user to describe their image, and I will help based on their description.` }
+                        { role: 'user', content: `The user uploaded an image and asked: "${prompt}". Unfortunately, I cannot see images because no vision-capable API (Gemini or OpenAI) is configured. Please ask the user to describe their image, and I will help based on their description.` }
                     ],
                     model: 'llama-3.1-8b-instant',
                     temperature: 0.7,
@@ -747,11 +872,11 @@ IMPORTANT:
                 aiResponse = fallbackCompletion.choices[0].message.content;
                 usedProvider = 'Groq (text-only)';
             } catch (groqError) {
-                aiResponse = 'Image analysis requires the Gemini API. Please check your GEMINI_API_KEY in the .env file.';
+                aiResponse = 'Image analysis requires a vision-capable AI. Please check your Gemini or OpenAI API keys in your .env file.';
                 usedProvider = 'None';
             }
         } else {
-            aiResponse = 'No AI provider available for image analysis. Please configure GEMINI_API_KEY in your .env file.';
+            aiResponse = 'No AI provider available for image analysis. Please configure GEMINI_API_KEY or an OpenAI vision model in your .env file.';
             usedProvider = 'None';
         }
 
