@@ -56,3 +56,4 @@ Run `FIX_MESSAGES_TABLE.sql` in the SQL Editor if the messages table is missing.
 
 
 
+
