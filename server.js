@@ -646,6 +646,8 @@ IMPORTANT:
         if (openrouterClient) {
             try {
                 console.log('🌐 Using OpenRouter for image analysis...');
+                console.log('🌐 Model: meta-llama/llama-3.2-11b-vision-instruct');
+                console.log('🌐 Image data length:', imageData ? imageData.length : 0);
                 
                 const completion = await openrouterClient.chat.completions.create({
                     model: 'meta-llama/llama-3.2-11b-vision-instruct', // Free vision model on OpenRouter
@@ -669,32 +671,65 @@ IMPORTANT:
                 });
                 
                 aiResponse = completion.choices[0].message.content;
-                usedProvider = 'OpenRouter (GPT-4o-mini)';
+                usedProvider = 'OpenRouter (Llama-3.2-Vision)';
                 console.log('✅ OpenRouter image analysis success!');
             } catch (openrouterError) {
-                console.error('❌ OpenRouter failed, using Groq fallback:', openrouterError.message);
+                console.error('❌ OpenRouter failed with error:', openrouterError.message);
+                console.error('❌ Full error details:', JSON.stringify(openrouterError, null, 2));
                 
-                // Fallback: Use Groq (text-only response)
-                if (groqClient) {
-                    try {
-                        const fallbackCompletion = await groqClient.chat.completions.create({
-                            messages: [
-                                { role: 'system', content: 'You are a helpful AI assistant. Be honest that you cannot see images directly, but try to help based on the user\'s description.' },
-                                { role: 'user', content: `The user uploaded an image and asked: "${prompt}". I cannot see the image right now due to a technical issue. Provide a helpful response acknowledging this and offer to help if they describe the image.` }
-                            ],
-                            model: 'llama-3.1-8b-instant',
-                            temperature: 0.7,
-                            max_tokens: 300
-                        });
-                        aiResponse = fallbackCompletion.choices[0].message.content;
-                        usedProvider = 'Groq (fallback)';
-                    } catch (groqError) {
-                        aiResponse = 'I encountered an issue analyzing the image. Please try again or describe what you need help with.';
-                        usedProvider = 'Fallback';
+                // Try alternative OpenRouter model
+                try {
+                    console.log('🔄 Trying alternative OpenRouter model...');
+                    const altCompletion = await openrouterClient.chat.completions.create({
+                        model: 'qwen/qwen-2-vl-7b-instruct', // Alternative free vision model
+                        messages: [
+                            { role: 'system', content: smartPrompt },
+                            { 
+                                role: 'user', 
+                                content: [
+                                    { type: 'text', text: `The user asked: "${prompt}". Analyze this image and respond.` },
+                                    { 
+                                        type: 'image_url', 
+                                        image_url: { 
+                                            url: imageData 
+                                        } 
+                                    }
+                                ]
+                            }
+                        ],
+                        temperature: 0.7,
+                        max_tokens: 800
+                    });
+                    
+                    aiResponse = altCompletion.choices[0].message.content;
+                    usedProvider = 'OpenRouter (Qwen-2-VL)';
+                    console.log('✅ Alternative OpenRouter model success!');
+                } catch (altError) {
+                    console.error('❌ Alternative OpenRouter model also failed:', altError.message);
+                    
+                    // Fallback: Use Groq (text-only response)
+                    if (groqClient) {
+                        try {
+                            console.log('🔄 Falling back to Groq text-only response...');
+                            const fallbackCompletion = await groqClient.chat.completions.create({
+                                messages: [
+                                    { role: 'system', content: 'You are a helpful AI assistant. Be honest that you cannot see images directly, but try to help based on the user\'s description.' },
+                                    { role: 'user', content: `The user uploaded an image and asked: "${prompt}". I cannot see the image right now due to a technical issue. Provide a helpful response acknowledging this and offer to help if they describe the image.` }
+                                ],
+                                model: 'llama-3.1-8b-instant',
+                                temperature: 0.7,
+                                max_tokens: 300
+                            });
+                            aiResponse = fallbackCompletion.choices[0].message.content;
+                            usedProvider = 'Groq (fallback)';
+                        } catch (groqError) {
+                            aiResponse = 'I encountered an issue analyzing the image. Please try again or describe what you need help with.';
+                            usedProvider = 'Fallback';
+                        }
+                    } else {
+                        aiResponse = 'Image analysis failed. Please ensure your API keys are valid.';
+                        usedProvider = 'None';
                     }
-                } else {
-                    aiResponse = 'Image analysis failed. Please ensure your API keys are valid.';
-                    usedProvider = 'None';
                 }
             }
         } else if (groqClient) {
