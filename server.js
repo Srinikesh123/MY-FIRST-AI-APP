@@ -648,7 +648,7 @@ IMPORTANT:
                 console.log('🌐 Using OpenRouter for image analysis...');
                 
                 const completion = await openrouterClient.chat.completions.create({
-                    model: 'GPT-4o-mini', // Free vision model on OpenRouter
+                    model: 'openai/gpt-4o-mini', // Free vision model on OpenRouter
                     messages: [
                         { role: 'system', content: smartPrompt },
                         { 
