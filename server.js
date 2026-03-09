@@ -35,7 +35,21 @@ const openai = process.env.OPENAI_API_KEY ? new OpenAI({
     apiKey: process.env.OPENAI_API_KEY
 }) : null;
 
-// Initialize OpenRouter client (for image analysis)
+// Initialize Cloudflare Workers AI client (for image analysis)
+let cloudflareClient = null;
+if (process.env.CLOUDFLARE_API_TOKEN) {
+    try {
+        const { Cloudflare } = require('@cloudflare/ai');
+        cloudflareClient = new Cloudflare({
+            apiToken: process.env.CLOUDFLARE_API_TOKEN
+        });
+        console.log(' Cloudflare Workers AI client initialized');
+    } catch (e) {
+        console.error('Failed to initialize Cloudflare client:', e);
+    }
+}
+
+// Initialize OpenRouter client (backup for image analysis)
 let openrouterClient = null;
 if (process.env.OPENROUTER_API_KEY) {
     try {
@@ -44,7 +58,7 @@ if (process.env.OPENROUTER_API_KEY) {
             apiKey: process.env.OPENROUTER_API_KEY,
             baseURL: 'https://openrouter.ai/api/v1'
         });
-        console.log(' OpenRouter client initialized');
+        console.log(' OpenRouter client initialized (backup)');
     } catch (e) {
         console.error('Failed to initialize OpenRouter client:', e);
     }
@@ -642,72 +656,86 @@ IMPORTANT:
             });
         }
 
-        // Try OpenRouter first for image analysis
-        if (openrouterClient) {
+        // Try Cloudflare Workers AI first for image analysis
+        if (cloudflareClient) {
             try {
-                console.log('🌐 Using OpenRouter for image analysis...');
-                console.log('🌐 Model: meta-llama/llama-3.2-11b-vision-instruct');
-                console.log('🌐 Image data length:', imageData ? imageData.length : 0);
+                console.log('☁️ Using Cloudflare Workers AI for image analysis...');
+                console.log('☁️ Model: @cf/meta/llama-3.2-11b-vision-instruct');
+                console.log('☁️ Image data length:', imageData ? imageData.length : 0);
                 
-                const completion = await openrouterClient.chat.completions.create({
-                    model: 'meta-llama/llama-3.2-11b-vision-instruct', // Free vision model on OpenRouter
-                    messages: [
-                        { role: 'system', content: smartPrompt },
-                        { 
-                            role: 'user', 
-                            content: [
-                                { type: 'text', text: `The user asked: "${prompt}". Analyze this image and respond.` },
-                                { 
-                                    type: 'image_url', 
-                                    image_url: { 
-                                        url: imageData 
-                                    } 
-                                }
-                            ]
-                        }
-                    ],
-                    temperature: 0.7,
-                    max_tokens: 800
+                // Convert base64 to buffer for Cloudflare
+                const base64Data = imageData.replace(/^data:image\/\w+;base64,/, '');
+                const imageBuffer = Buffer.from(base64Data, 'base64');
+                
+                const response = await cloudflareClient.run('@cf/meta/llama-3.2-11b-vision-instruct', {
+                    image: [...imageBuffer],
+                    prompt: `The user asked: "${prompt}". Analyze this image and respond to their question. ${smartPrompt}`
                 });
                 
-                aiResponse = completion.choices[0].message.content;
-                usedProvider = 'OpenRouter (Llama-3.2-Vision)';
-                console.log('✅ OpenRouter image analysis success!');
-            } catch (openrouterError) {
-                console.error('❌ OpenRouter failed with error:', openrouterError.message);
-                console.error('❌ Full error details:', JSON.stringify(openrouterError, null, 2));
+                aiResponse = response.result.response;
+                usedProvider = 'Cloudflare Workers AI (Llama-3.2-Vision)';
+                console.log('✅ Cloudflare Workers AI image analysis success!');
+            } catch (cloudflareError) {
+                console.error('❌ Cloudflare Workers AI failed:', cloudflareError.message);
+                console.error('❌ Full error details:', JSON.stringify(cloudflareError, null, 2));
                 
-                // Try alternative OpenRouter model
-                try {
-                    console.log('🔄 Trying alternative OpenRouter model...');
-                    const altCompletion = await openrouterClient.chat.completions.create({
-                        model: 'qwen/qwen-2-vl-7b-instruct', // Alternative free vision model
-                        messages: [
-                            { role: 'system', content: smartPrompt },
-                            { 
-                                role: 'user', 
-                                content: [
-                                    { type: 'text', text: `The user asked: "${prompt}". Analyze this image and respond.` },
-                                    { 
-                                        type: 'image_url', 
-                                        image_url: { 
-                                            url: imageData 
-                                        } 
-                                    }
-                                ]
+                // Fallback to OpenRouter
+                if (openrouterClient) {
+                    try {
+                        console.log('🔄 Falling back to OpenRouter...');
+                        const completion = await openrouterClient.chat.completions.create({
+                            model: 'meta-llama/llama-3.2-11b-vision-instruct',
+                            messages: [
+                                { role: 'system', content: smartPrompt },
+                                { 
+                                    role: 'user', 
+                                    content: [
+                                        { type: 'text', text: `The user asked: "${prompt}". Analyze this image and respond.` },
+                                        { 
+                                            type: 'image_url', 
+                                            image_url: { 
+                                                url: imageData 
+                                            } 
+                                        }
+                                    ]
+                                }
+                            ],
+                            temperature: 0.7,
+                            max_tokens: 800
+                        });
+                        
+                        aiResponse = completion.choices[0].message.content;
+                        usedProvider = 'OpenRouter (Llama-3.2-Vision)';
+                        console.log('✅ OpenRouter fallback success!');
+                    } catch (openrouterError) {
+                        console.error('❌ OpenRouter fallback also failed:', openrouterError.message);
+                        
+                        // Final fallback to Groq text-only
+                        if (groqClient) {
+                            try {
+                                console.log('🔄 Falling back to Groq text-only response...');
+                                const fallbackCompletion = await groqClient.chat.completions.create({
+                                    messages: [
+                                        { role: 'system', content: 'You are a helpful AI assistant. Be honest that you cannot see images directly, but try to help based on the user\'s description.' },
+                                        { role: 'user', content: `The user uploaded an image and asked: "${prompt}". I cannot see the image right now due to a technical issue. Provide a helpful response acknowledging this and offer to help if they describe the image.` }
+                                    ],
+                                    model: 'llama-3.1-8b-instant',
+                                    temperature: 0.7,
+                                    max_tokens: 300
+                                });
+                                aiResponse = fallbackCompletion.choices[0].message.content;
+                                usedProvider = 'Groq (fallback)';
+                            } catch (groqError) {
+                                aiResponse = 'I encountered an issue analyzing the image. Please try again or describe what you need help with.';
+                                usedProvider = 'Fallback';
                             }
-                        ],
-                        temperature: 0.7,
-                        max_tokens: 800
-                    });
-                    
-                    aiResponse = altCompletion.choices[0].message.content;
-                    usedProvider = 'OpenRouter (Qwen-2-VL)';
-                    console.log('✅ Alternative OpenRouter model success!');
-                } catch (altError) {
-                    console.error('❌ Alternative OpenRouter model also failed:', altError.message);
-                    
-                    // Fallback: Use Groq (text-only response)
+                        } else {
+                            aiResponse = 'Image analysis failed. Please ensure your API keys are valid.';
+                            usedProvider = 'None';
+                        }
+                    }
+                } else {
+                    // Direct fallback to Groq
                     if (groqClient) {
                         try {
                             console.log('🔄 Falling back to Groq text-only response...');
@@ -732,7 +760,7 @@ IMPORTANT:
                     }
                 }
             }
-        } else if (groqClient) {
+        } else if (openrouterClient) {
             console.log('⚠️ No vision-capable AI available - Groq cannot see images, providing honest response');
             try {
                 const fallbackCompletion = await groqClient.chat.completions.create({
