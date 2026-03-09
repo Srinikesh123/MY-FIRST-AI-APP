@@ -35,54 +35,22 @@ const openai = process.env.OPENAI_API_KEY ? new OpenAI({
     apiKey: process.env.OPENAI_API_KEY
 }) : null;
 
-// Initialize Gemini client for vision
-let geminiClient = null;
-
-// Normalize Gemini model IDs so common aliases / wrong values don't 404
-function normalizeGeminiModel(raw) {
-    // Default to a current, vision-capable model with generous free limits
-    if (!raw) return 'gemini-2.5-flash';
-
-    let model = String(raw).trim();
-
-    // Strip leading "models/" if someone copied a full resource name
-    if (model.startsWith('models/')) {
-        model = model.slice('models/'.length);
-    }
-
-    // Strip any ":generateContent" style suffix
-    const colonIndex = model.indexOf(':');
-    if (colonIndex !== -1) {
-        model = model.slice(0, colonIndex);
-    }
-
-    // Newer docs often show "...-latest" aliases which 404 on v1beta – drop the suffix
-    if (model.endsWith('-latest')) {
-        model = model.replace(/-latest$/, '');
-    }
-
-    // Map older vision IDs to currently supported models
-    if (model === 'gemini-pro-vision' || model === 'gemini-pro') {
-        model = 'gemini-2.5-flash';
-    }
-
-    return model || 'gemini-2.5-flash';
-}
-
-// Allow overriding the exact Gemini model via env; default to a stable, vision-capable model.
-const RAW_GEMINI_VISION_MODEL = process.env.GEMINI_VISION_MODEL || 'gemini-2.5-flash';
-const GEMINI_VISION_MODEL = normalizeGeminiModel(RAW_GEMINI_VISION_MODEL);
-if (process.env.GEMINI_API_KEY) {
+// Initialize OpenRouter client (for image analysis)
+let openrouterClient = null;
+if (process.env.OPENROUTER_API_KEY) {
     try {
-        const { GoogleGenerativeAI } = require('@google/generative-ai');
-        geminiClient = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-        console.log(' Gemini client initialized with model:', GEMINI_VISION_MODEL, '(raw:', RAW_GEMINI_VISION_MODEL, ')');
+        const OpenAI = require('openai');
+        openrouterClient = new OpenAI({
+            apiKey: process.env.OPENROUTER_API_KEY,
+            baseURL: 'https://openrouter.ai/api/v1'
+        });
+        console.log(' OpenRouter client initialized');
     } catch (e) {
-        console.error('Failed to initialize Gemini client:', e);
+        console.error('Failed to initialize OpenRouter client:', e);
     }
 }
 
-// Initialize Groq client (free alternative using Llama models)
+// Initialize Groq client (for all chat messages)
 let groqClient = null;
 if (process.env.GROQ_API_KEY) {
     try {
@@ -90,8 +58,9 @@ if (process.env.GROQ_API_KEY) {
         groqClient = new Groq({
             apiKey: process.env.GROQ_API_KEY
         });
+        console.log(' Groq client initialized for chat');
     } catch (e) {
-        console.log('Groq SDK not installed.');
+        console.error('Failed to initialize Groq client:', e);
     }
 }
 
@@ -128,26 +97,18 @@ const PLAN_LIMITS = {
 
 // Conversation history is now managed by Supabase on the client side
 
-// Helper to choose model based on mode
+// Helper to choose model based on mode (Groq only for chat)
 function getModelsForMode(mode) {
     const selected = mode || 'fast';
 
-    // Defaults can be overridden via .env
-    const openaiModels = {
-        fast: process.env.OPENAI_MODEL_FAST || 'gpt-3.5-turbo',
-        detailed: process.env.OPENAI_MODEL_DETAILED || process.env.OPENAI_MODEL || 'gpt-4o-mini',
-        coding: process.env.OPENAI_MODEL_CODING || process.env.OPENAI_MODEL || 'gpt-4o-mini'
-    };
-
-    // Updated to use currently supported Groq models (using latest available models)
+    // Groq models for all chat messages
     const groqModels = {
-        fast: process.env.GROQ_MODEL_FAST || 'llama-3.1-8b-instant', // Using latest Llama 3.1 as reliable option
-        detailed: process.env.GROQ_MODEL_DETAILED || process.env.GROQ_MODEL || 'llama-3.1-8b-instant',
-        coding: process.env.GROQ_MODEL_CODING || process.env.GROQ_MODEL || 'llama-3.1-8b-instant'
+        fast: process.env.GROQ_MODEL_FAST || 'llama-3.1-8b-instant',
+        detailed: process.env.GROQ_MODEL_DETAILED || 'llama-3.1-8b-instant',
+        coding: process.env.GROQ_MODEL_CODING || 'llama-3.1-8b-instant'
     };
 
     return {
-        openaiModel: openaiModels[selected] || openaiModels.fast,
         groqModel: groqModels[selected] || groqModels.fast
     };
 }
@@ -234,8 +195,8 @@ app.post('/api/chat', async (req, res) => {
             });
         }
 
-        // Check if at least one API is configured; if not, try offline-safe logic
-        if (!process.env.OPENAI_API_KEY && !process.env.GROQ_API_KEY) {
+        // Check if Groq API is configured for chat
+        if (!process.env.GROQ_API_KEY) {
             const offline = tryOfflineAnswer(message, command);
             if (offline) {
                 return res.json({
@@ -245,7 +206,7 @@ app.post('/api/chat', async (req, res) => {
             }
 
             return res.status(500).json({ 
-                error: 'No AI API key configured. Please set either OPENAI_API_KEY or GROQ_API_KEY in your .env file.' 
+                error: 'No AI API key configured. Please set GROQ_API_KEY in your .env file for chat functionality.' 
             });
         }
 
@@ -258,7 +219,7 @@ app.post('/api/chat', async (req, res) => {
             content: message
         });
 
-        // Prepare system prompt based on guidelines - NOW WITH PERSONALIZED MEMORY
+        // Prepare system prompt based on guidelines
         let baseSystemPrompt = userSystemPrompt || `You are voidzen AI, a helpful AI assistant created by Srinikesh that follows these guidelines:
 - Your name is voidzen AI - when asked about your identity, name, or who created you, respond with "I am voidzen AI", "My name is voidzen AI", or "I was created by Srinikesh" as appropriate
 - Give clear and correct answers to simple questions directly
@@ -277,7 +238,7 @@ app.post('/api/chat', async (req, res) => {
 `;
 
         // Build personalized system prompt with user memory
-        const systemPrompt = await buildPersonalizedPrompt(userId, baseSystemPrompt);
+        let systemPrompt = await buildPersonalizedPrompt(userId, baseSystemPrompt);
 
         // Extract and save memory from this message (async, don't wait)
         if (userId && message) {
@@ -299,7 +260,7 @@ app.post('/api/chat', async (req, res) => {
         } else if (mode === 'picture') {
             systemPrompt += '\nIMPORTANT: The user is in picture mode. Respond with visual descriptions and image-related content.';
         } else if (mode === 'code') {
-            systemPrompt += '\nIMPORTANT: The user is in code mode. Use GPT Codex for coding assistance, provide detailed code examples, and focus on programming solutions.';
+            systemPrompt += '\nIMPORTANT: The user is in code mode. Use for coding assistance, provide detailed code examples, and focus on programming solutions.';
         } else if (mode === 'fast') {
             systemPrompt += '\nIMPORTANT: The user is in fast mode. Prioritize short, direct answers over long explanations.';
         }
@@ -317,7 +278,7 @@ app.post('/api/chat', async (req, res) => {
 
         // Error-free mode
         if (errorFreeMode) {
-            systemPrompt += '\nIf you are not sure or do not know, say exactly: "I don’t know yet, but here’s what I can explain." and then give your best partial explanation.';
+            systemPrompt += '\nIf you are not sure or do not know, say exactly: "I don\'t know yet, but here\'s what I can explain." and then give your best partial explanation.';
         }
 
         // Command-based behaviors
@@ -328,7 +289,7 @@ app.post('/api/chat', async (req, res) => {
         } else if (command === 'notes') {
             systemPrompt += '\nCOMMAND: Reply only as short bullet-point notes.';
         } else if (command === 'solve') {
-            systemPrompt += '\nCOMMAND: Act as a math solver. Show the steps clearly, then the final answer.';
+            systemPrompt += '\nCOMMAND: Act as a math solver. Show steps clearly, then the final answer.';
         } else if (command === 'translate') {
             systemPrompt += '\nCOMMAND: Translate between English and Hindi. Detect the direction automatically. For a single word, give meanings in both languages; for sentences, translate the full sentence clearly.';
         } else if (command === 'define') {
@@ -339,101 +300,32 @@ app.post('/api/chat', async (req, res) => {
             systemPrompt += '\nCOMMAND: For math, explain how to do the calculation mentally in a few clear steps.';
         }
 
-        // Prepare messages for OpenAI
+        // Prepare messages for AI
         const messages = [
             { role: 'system', content: systemPrompt },
             ...conversationHistory
         ];
 
-        const { openaiModel, groqModel } = getModelsForMode(mode);
+        const { groqModel } = getModelsForMode(mode);
 
-        // According to requirements: When both OpenAI and Groq APIs are available, always use OpenAI (ChatGPT) as the primary AI provider
+        // Use Groq for all chat messages
         let aiResponse;
-        let usedProvider = 'OpenAI';
+        let usedProvider = 'Groq';
         
-        // Try OpenAI first as primary (per requirement: "When both OpenAI and Groq APIs are available, always use OpenAI (ChatGPT) as the primary AI provider")
-        if (openai) {
-            try {
-                let completion;
-                let retries = 3;
-                let retryDelay = 1000;
-                const model = openaiModel;
-                
-                while (retries > 0) {
-                    try {
-                        completion = await openai.chat.completions.create({
-                            model: model,
-                            messages: messages,
-                            temperature: 0.7,
-                            max_tokens: 800
-                        });
-                        aiResponse = completion.choices[0].message.content;
-                        break; // Success
-                    } catch (retryError) {
-                        retries--;
-                        
-                        // Check if it's a quota/billing error - switch to Groq immediately
-                        const errorStatus = retryError.status || retryError.response?.status;
-                        const errorMsg = retryError.response?.data?.error?.message || retryError.message || '';
-                        
-                        if (errorStatus === 429 && (errorMsg.includes('quota') || errorMsg.includes('billing'))) {
-                            console.log('OpenAI quota exceeded. Switching to Groq (free alternative)...');
-                            throw new Error('QUOTA_EXCEEDED'); // Signal to use fallback
-                        }
-                        
-                        // Check if it's a rate limit error (429) - retry
-                        if (errorStatus === 429 && retries > 0) {
-                            const retryAfter = retryError.response?.headers?.['retry-after'] || retryDelay / 1000;
-                            console.log(`Rate limit hit. Retrying in ${retryAfter} seconds... (${retries} retries left)`);
-                            await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
-                            retryDelay *= 2;
-                        } else {
-                            throw retryError;
-                        }
-                    }
-                }
-            } catch (openaiError) {
-                // If quota exceeded or other error, try Groq fallback
-                if (openaiError.message === 'QUOTA_EXCEEDED' || (openaiError.status === 429 && groqClient)) {
-                    console.log('Using Groq as fallback...');
-                    try {
-                        if (groqClient) {
-                            const groqCompletion = await groqClient.chat.completions.create({
-                                messages: messages,
-                                model: groqModel,
-                                temperature: 0.7,
-                                max_tokens: 800
-                            });
-                            aiResponse = groqCompletion.choices[0].message.content;
-                            usedProvider = 'Groq (ChatGPT)';
-                            console.log('Successfully used Groq API');
-                        } else {
-                            throw openaiError; // Re-throw original error if Groq not available
-                        }
-                    } catch (groqError) {
-                        console.error('Groq also failed:', groqError);
-                        throw openaiError; // Throw original OpenAI error
-                    }
-                } else {
-                    throw openaiError; // Re-throw if not a quota issue
-                }
-            }
-        } else if (groqClient) {
-            // Use Groq if OpenAI not available
-            try {
-                const groqCompletion = await groqClient.chat.completions.create({
-                    messages: messages,
-                    model: groqModel,
-                    temperature: 0.7,
-                    max_tokens: 800
-                });
-                aiResponse = groqCompletion.choices[0].message.content;
-                usedProvider = 'Groq (ChatGPT)';
-            } catch (groqError) {
-                throw groqError;
-            }
-        } else {
-            throw new Error('No AI provider available');
+        try {
+            console.log('🚀 Using Groq model:', groqModel);
+            const groqCompletion = await groqClient.chat.completions.create({
+                messages: messages,
+                model: groqModel,
+                temperature: 0.7,
+                max_tokens: 800
+            });
+            aiResponse = groqCompletion.choices[0].message.content;
+            usedProvider = 'Groq';
+            console.log('✅ Groq API success!');
+        } catch (groqError) {
+            console.error('❌ Groq failed:', groqError.message);
+            throw groqError;
         }
 
         // Add AI response to history
@@ -460,7 +352,7 @@ app.post('/api/chat', async (req, res) => {
             const errorData = error.response?.data || error.error || {};
             
             if (errorStatus === 401) {
-                errorMessage = 'API authentication failed. Please check your OpenAI API key in the .env file.';
+                errorMessage = 'API authentication failed. Please check your API keys in the .env file.';
                 statusCode = 401;
             } else if (errorStatus === 429) {
                 // Check if it's a quota issue or rate limit
@@ -659,14 +551,15 @@ async function analyzeImageWithOpenAI(prompt, imageData, smartPrompt) {
     }
 }
 
-// Helper function to analyze uploaded images using Gemini (with OpenAI / Groq fallbacks)
+// Helper function to analyze uploaded images using OpenRouter (with OpenAI/Groq fallbacks)
 async function analyzeImage(req, res, prompt, userId, imageData) {
     try {
         console.log('🔍 ANALYZE IMAGE CALLED');
         console.log('🔍 Prompt:', prompt);
         console.log('🔍 Image data length:', imageData ? imageData.length : 0);
-        console.log('🔍 Gemini client exists:', !!geminiClient);
-        console.log('� Groq client exists:', !!groqClient);
+        console.log('🔍 OpenRouter client exists:', !!openrouterClient);
+        console.log('🔍 OpenAI client exists:', !!openai);
+        console.log('🔍 Groq client exists:', !!groqClient);
 
         // Track usage if userId provided (count as image generation for limits)
         if (userId && supabase) {
@@ -707,19 +600,15 @@ async function analyzeImage(req, res, prompt, userId, imageData) {
                         images_used: newImagesUsed,
                         updated_at: new Date().toISOString()
                     }, {
-                        onConflict: 'user_id'
+                        onConflict: 'user_id',
+                        ignoreDuplicates: true
                     });
             }
         }
-
-        // Use Gemini for image analysis (free vision API) with Groq fallback
-        let aiResponse = '';
-        let usedProvider = '';
-
-        // Detect the actual mime type from the data URL
-        const mimeMatch = imageData.match(/^data:(image\/[a-zA-Z+]+);base64,/);
-        const detectedMimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+                
+        // Convert the image data URL to base64
         const base64Data = imageData.replace(/^data:image\/[a-zA-Z+]+;base64,/, '');
+        const detectedMimeType = imageData.match(/^data:(image\/[a-zA-Z+]+);base64,/)[1];
 
         // Build a smart dynamic system prompt based on what the user asked
         const smartPrompt = `You are voidzen AI, a helpful AI assistant created by Srinikesh. The user has uploaded an image and asked: "${prompt}"
@@ -737,56 +626,11 @@ IMPORTANT:
 - If text is present, read it carefully before responding.
 - Be precise, clear, and directly answer what was asked.`;
 
-        // For enhancement/colorful requests, use Gemini to understand the image first, then generate
+        // For enhancement requests, use Pollinations.ai directly
         const isEnhancementRequest = /make.*(it|this|image|photo|picture).*(better|colorful|colourful|flashy|nicer|beautiful|vibrant|brighter|cooler|amazing)|enhance|improve.*(image|photo|picture)|add.*(color|colour|effects)/i.test(prompt);
 
-        if (isEnhancementRequest && geminiClient) {
-            console.log('🎨 Enhancement request detected - using Gemini to understand image first');
-            try {
-                const model = geminiClient.getGenerativeModel({ model: GEMINI_VISION_MODEL });
-
-                const descriptionPrompt = `Look at this image carefully and describe it in detail: what objects, colors, scene, text, or subjects are present. Be specific and concise. This description will be used to generate an enhanced version.`;
-
-                const descResult = await model.generateContent([
-                    descriptionPrompt,
-                    { inlineData: { data: base64Data, mimeType: detectedMimeType } }
-                ]);
-                const imageDescription = (await descResult.response).text();
-                console.log('📝 Image described by Gemini:', imageDescription);
-
-                // Now build an enhancement prompt based on real image content
-                const userRequest = prompt;
-                // Extract any text/logo from the description to preserve it exactly
-                const textMatch = imageDescription.match(/["']([^"']+)["']/);
-                const logoText = textMatch ? textMatch[1] : null;
-                
-                let enhancementImagePrompt;
-                if (logoText) {
-                    // If there's text in the image, put it at the very end with strong emphasis
-                    enhancementImagePrompt = `${imageDescription}. Enhanced version: ${userRequest}, vibrant colors, high quality, detailed, photorealistic. The logo must show the text "${logoText}" - spell it exactly as "${logoText}" with correct letters in correct order.`;
-                } else {
-                    enhancementImagePrompt = `${imageDescription}, enhanced version: ${userRequest}, vibrant colors, high quality, detailed, photorealistic. Preserve all text exactly as written in the original.`;
-                }
-
-                const encodedPrompt = encodeURIComponent(enhancementImagePrompt);
-                const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=512&height=512&nologo=true`;
-
-                return res.json({
-                    imageUrl: imageUrl,
-                    response: `I've analyzed your image and created an enhanced version based on your request: "${userRequest}". Here's the new image:`,
-                    provider: 'Gemini Vision + Pollinations.ai',
-                    type: 'image_generation',
-                    prompt: enhancementImagePrompt
-                });
-            } catch (geminiDescError) {
-                console.error('❌ Gemini description failed, falling back to generic enhancement:', geminiDescError.message);
-                // Fall through to generic enhancement below
-            }
-        }
-
-        // If enhancement request but Gemini failed or not available, do generic generation
         if (isEnhancementRequest) {
-            console.log('🎨 Enhancement request fallback - generic generation');
+            console.log('🎨 Enhancement request - using Pollinations.ai');
             const encodedPrompt = encodeURIComponent(`${prompt}, vibrant colors, high quality, detailed, photorealistic`);
             const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=512&height=512&nologo=true`;
             return res.json({
@@ -798,38 +642,40 @@ IMPORTANT:
             });
         }
 
-        // For all other requests (analysis, text reading, solving, describing), use Gemini vision
-        if (geminiClient) {
+        // Try OpenRouter first for image analysis
+        if (openrouterClient) {
             try {
-                console.log('🧠 Using Gemini vision model for image analysis...');
-                console.log('🧠 Detected mime type:', detectedMimeType);
-
-                const model = geminiClient.getGenerativeModel({ model: GEMINI_VISION_MODEL });
-
-                const result = await model.generateContent([
-                    smartPrompt,
-                    {
-                        inlineData: {
-                            data: base64Data,
-                            mimeType: detectedMimeType
+                console.log('🌐 Using OpenRouter for image analysis...');
+                
+                const completion = await openrouterClient.chat.completions.create({
+                    model: 'meta-llama/llama-3.2-11b-vision-instruct', // Free vision model on OpenRouter
+                    messages: [
+                        { role: 'system', content: smartPrompt },
+                        { 
+                            role: 'user', 
+                            content: [
+                                { type: 'text', text: `The user asked: "${prompt}". Analyze this image and respond.` },
+                                { 
+                                    type: 'image_url', 
+                                    image_url: { 
+                                        url: imageData 
+                                    } 
+                                }
+                            ]
                         }
-                    }
-                ]);
-
-                const response = await result.response;
-                aiResponse = response.text();
-                usedProvider = 'Gemini Vision';
-                console.log('✅ Gemini vision analysis success!');
-
-            } catch (geminiError) {
-                console.error('❌ Gemini vision failed, attempting OpenAI / Groq fallback:', geminiError.message);
-
-                // First fallback: OpenAI vision (if configured)
-                const openaiResult = await analyzeImageWithOpenAI(prompt, imageData, smartPrompt);
-                if (openaiResult) {
-                    aiResponse = openaiResult;
-                    usedProvider = 'OpenAI Vision';
-                } else if (groqClient) {
+                    ],
+                    temperature: 0.7,
+                    max_tokens: 800
+                });
+                
+                aiResponse = completion.choices[0].message.content;
+                usedProvider = 'OpenRouter (GPT-4o-mini)';
+                console.log('✅ OpenRouter image analysis success!');
+            } catch (openrouterError) {
+                console.error('❌ OpenRouter failed, using Groq fallback:', openrouterError.message);
+                
+                // Fallback: Use Groq (text-only response)
+                if (groqClient) {
                     try {
                         const fallbackCompletion = await groqClient.chat.completions.create({
                             messages: [
@@ -847,45 +693,17 @@ IMPORTANT:
                         usedProvider = 'Fallback';
                     }
                 } else {
-                    aiResponse = 'Image analysis failed. Please ensure your GEMINI_API_KEY is valid or configure an OpenAI vision model, then try again.';
+                    aiResponse = 'Image analysis failed. Please ensure your API keys are valid.';
                     usedProvider = 'None';
                 }
-            }
-        } else if (openai) {
-            // No Gemini but OpenAI is available – use OpenAI vision directly
-            const openaiResult = await analyzeImageWithOpenAI(prompt, imageData, smartPrompt);
-            if (openaiResult) {
-                aiResponse = openaiResult;
-                usedProvider = 'OpenAI Vision';
-            } else if (groqClient) {
-                console.log('⚠️ OpenAI vision failed - Groq cannot see images, providing honest response');
-                try {
-                    const fallbackCompletion = await groqClient.chat.completions.create({
-                        messages: [
-                            { role: 'system', content: 'You are a helpful AI assistant.' },
-                            { role: 'user', content: `The user uploaded an image and asked: "${prompt}". Unfortunately, I cannot see images due to a technical issue. Please ask the user to describe their image, and I will help based on their description.` }
-                        ],
-                        model: 'llama-3.1-8b-instant',
-                        temperature: 0.7,
-                        max_tokens: 300
-                    });
-                    aiResponse = fallbackCompletion.choices[0].message.content;
-                    usedProvider = 'Groq (text-only)';
-                } catch (groqError) {
-                    aiResponse = 'Image analysis requires a vision-capable AI. Please check your OpenAI or Gemini API keys in your .env file.';
-                    usedProvider = 'None';
-                }
-            } else {
-                aiResponse = 'Image analysis requires a vision-capable AI. Please check your OpenAI or Gemini API keys in your .env file.';
-                usedProvider = 'None';
             }
         } else if (groqClient) {
-            console.log('⚠️ No Gemini/OpenAI vision - Groq cannot see images, providing honest response');
+            console.log('⚠️ No vision-capable AI available - Groq cannot see images, providing honest response');
             try {
                 const fallbackCompletion = await groqClient.chat.completions.create({
                     messages: [
                         { role: 'system', content: 'You are a helpful AI assistant.' },
-                        { role: 'user', content: `The user uploaded an image and asked: "${prompt}". Unfortunately, I cannot see images because no vision-capable API (Gemini or OpenAI) is configured. Please ask the user to describe their image, and I will help based on their description.` }
+                        { role: 'user', content: `The user uploaded an image and asked: "${prompt}". Unfortunately, I cannot see images because no vision-capable API is configured. Please ask the user to describe their image, and I will help based on their description.` }
                     ],
                     model: 'llama-3.1-8b-instant',
                     temperature: 0.7,
@@ -894,20 +712,19 @@ IMPORTANT:
                 aiResponse = fallbackCompletion.choices[0].message.content;
                 usedProvider = 'Groq (text-only)';
             } catch (groqError) {
-                aiResponse = 'Image analysis requires a vision-capable AI. Please check your Gemini or OpenAI API keys in your .env file.';
+                aiResponse = 'Image analysis requires a vision-capable AI. Please check your API keys.';
                 usedProvider = 'None';
             }
         } else {
-            aiResponse = 'No AI provider available for image analysis. Please configure GEMINI_API_KEY or an OpenAI vision model in your .env file.';
+            aiResponse = 'No AI provider available for image analysis. Please configure API keys.';
             usedProvider = 'None';
         }
-
-        return res.json({ 
+        
+        return res.json({
             response: aiResponse,
             provider: usedProvider,
             type: 'image_analysis'
         });
-
     } catch (error) {
         console.error('Error analyzing image:', error);
         console.error('Full error details:', JSON.stringify(error, null, 2));
@@ -1623,7 +1440,7 @@ app.delete('/api/users/delete', async (req, res) => {
 
 // Helper function to extract memory from user message using AI
 async function extractMemoryFromMessage(message, existingProfile) {
-    if (!geminiClient && !openai) {
+    if (!groqClient) {
         console.log('⚠️ No AI client available for memory extraction');
         return null;
     }
@@ -1672,20 +1489,14 @@ If no new information is found, return {"profile_updates": {}, "custom_terms": [
     try {
         let response;
         
-        // Try Gemini first
-        if (geminiClient) {
-            const model = geminiClient.getGenerativeModel({ model: GEMINI_VISION_MODEL });
-            const result = await model.generateContent(extractionPrompt);
-            response = (await result.response).text();
-        } else if (openai) {
-            const completion = await openai.chat.completions.create({
-                model: 'gpt-3.5-turbo',
-                messages: [{ role: 'user', content: extractionPrompt }],
-                temperature: 0.3,
-                max_tokens: 1000
-            });
-            response = completion.choices[0].message.content;
-        }
+        // Use Groq for memory extraction
+        const completion = await groqClient.chat.completions.create({
+            model: 'llama-3.1-8b-instant',
+            messages: [{ role: 'user', content: extractionPrompt }],
+            temperature: 0.3,
+            max_tokens: 1000
+        });
+        response = completion.choices[0].message.content;
 
         // Parse the JSON response
         const jsonMatch = response.match(/\{[\s\S]*\}/);
@@ -2133,5 +1944,5 @@ app.get('*', (req, res) => {
 // Start server
 app.listen(PORT, () => {
     console.log(`AI Assistant server running on http://localhost:${PORT}`);
-    console.log(`Make sure to set OPENAI_API_KEY or GROQ_API_KEY in your .env file`);
+    console.log(`Make sure to set GROQ_API_KEY in your .env file for chat functionality`);
 });

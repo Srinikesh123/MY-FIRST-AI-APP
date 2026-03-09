@@ -192,6 +192,9 @@ this.apiUrl = window.location.hostname === 'localhost' || window.location.hostna
         this.imageUploadBtn = document.getElementById('imageUploadBtn');
         this.imageInput = document.getElementById('imageInput');
         this.uploadedImageData = null;
+        
+        // Debouncing flag
+        this.isSending = false;
     }
 
     async initializeApp() {
@@ -2196,6 +2199,12 @@ Available commands:
     // MESSAGE HANDLING (STRICT SUPABASE)
     // ============================================
     async handleSend() {
+        // Prevent multiple rapid calls (debouncing)
+        if (this.isSending) {
+            console.log('⏳ Send already in progress, ignoring...');
+            return;
+        }
+
         if (!this.userInput) return;
         const message = this.userInput.value.trim();
         if (!message && !this.uploadedImageData) return;
@@ -2212,6 +2221,9 @@ Available commands:
             // Automatically create a new chat with the first message as the name
             await this.createAutoNamedChat(message || 'Image Analysis');
         }
+
+        // Set sending flag to prevent duplicates
+        this.isSending = true;
 
         console.log('🚀 handleSend called');
         console.log('📝 Message:', message);
@@ -2411,6 +2423,8 @@ Available commands:
         } finally {
             if (this.sendButton) this.sendButton.disabled = false;
             if (this.userInput) this.userInput.focus();
+            // Reset sending flag to allow new messages
+            this.isSending = false;
         }
     }
 
