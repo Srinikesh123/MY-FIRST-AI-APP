@@ -2327,7 +2327,7 @@ Available commands:
                     })
                 });
             } else {
-                // Regular text chat
+                // Regular text chat (also sends userId so backend can use remembered image for follow-ups)
                 const history = await this.getConversationHistory();
                 response = await fetch(`${this.apiUrl}/chat`, {
                     method: 'POST',
@@ -2335,6 +2335,7 @@ Available commands:
                     body: JSON.stringify({
                         message: message,
                         history: history,
+                        userId: this.userId,
                         simpleLanguage: this.settings.simpleLanguage,
                         mode: this.settings.chatMode || 'fast',
                         mood: this.settings.mood || 'friendly',
@@ -2362,51 +2363,22 @@ Available commands:
                 throw new Error('Invalid response format from server');
             }
             
-            // Handle different response types based on what was requested
-            if (hasImage) {
-                console.log('📸 Has image data, checking for enhancement...');
-                console.log('📸 Response type:', data.type);
-                console.log('📸 Response data:', data);
-                // Check if it's an enhancement request
-                const isEnhancement = messageContent.toLowerCase().includes('make it') || 
-                                     messageContent.toLowerCase().includes('enhance') || 
-                                     messageContent.toLowerCase().includes('better') ||
-                                     messageContent.toLowerCase().includes('flashy') ||
-                                     messageContent.toLowerCase().includes('improve');
-                console.log('📸 Is enhancement request:', isEnhancement);
-                
-                if (data.type === 'image_generation') {
-                    console.log('📸 Processing image generation response...');
-                    // Image generation response (enhancement)
-                    const imageId = 'img-' + Date.now();
-                    // Use window.aiAssistant instead of App
-                    const imageHtml = `
-                        <div class="message-image">
-                            <img id="${imageId}" src="${data.imageUrl}" alt="Enhanced image" style="max-width: 100%; border-radius: 8px; display: block; margin-bottom: 8px;">
-                            <button class="download-btn" onclick="window.aiAssistant.downloadImage('${data.imageUrl}', '${imageId}')">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                                    <polyline points="7 10 12 15 17 10"></polyline>
-                                    <line x1="12" y1="15" x2="12" y2="3"></line>
-                                </svg>
-                                Download Image
-                            </button>
-                        </div>`;
-                    this.addMessageToUI(imageHtml, 'assistant', true);
-                    this.addMessageToUI(data.response, 'assistant', true);
-                    await this.saveMessageToSupabase(`[Enhanced Image] ${data.imageUrl}`, 'assistant');
-                } else {
-                    // Image analysis response
-                    console.log('📸 Processing image analysis response:', data.response);
-                    this.addMessageToUI(data.response, 'assistant', true);
-                    await this.saveMessageToSupabase(data.response, 'assistant');
-                }
-            } else if (this.settings.imageMode) {
-                // Image generation response
-                const escapedUrl = data.imageUrl.startsWith('data:image/svg+xml') ? data.imageUrl : this.escapeHtml(data.imageUrl);
-                const imageHtml = `<div class="message-image"><img src="${escapedUrl}" alt="Generated image" style="max-width: 100%; border-radius: 8px;"></div>`;
+            // Handle response — show uploaded image thumbnail + AI text response
+            if (hasImage && imageDataToSave) {
+                const imageId = 'img-' + Date.now();
+                if (!window._voidzenImageCache) window._voidzenImageCache = {};
+                window._voidzenImageCache[imageId] = imageDataToSave;
+                const imageHtml = `
+                    <div class="message-image">
+                        <img id="${imageId}" src="${imageDataToSave}" alt="Uploaded image"
+                            style="max-width: 250px; border-radius: 8px; cursor: pointer; transition: opacity 0.2s;"
+                            onclick="window.aiAssistant.openImageLightbox('${imageId}')"
+                            onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'"
+                            title="Click to view full size & download">
+                    </div>`;
                 this.addMessageToUI(imageHtml, 'assistant', true);
-                await this.saveMessageToSupabase(`[Image Generated] ${data.imageUrl}`, 'assistant');
+                this.addMessageToUI(data.response, 'assistant', true);
+                await this.saveMessageToSupabase(data.response, 'assistant');
             } else {
                 // Regular text response
                 this.addMessageToUI(data.response, 'assistant', true);
@@ -3539,6 +3511,67 @@ Available commands:
             // Unknown format, open in new tab
             window.open(imageUrl, '_blank');
         }
+    }
+
+    // ============================================
+    // IMAGE LIGHTBOX — click image to view fullscreen + download
+    // ============================================
+    openImageLightbox(imageId) {
+        const imageUrl = window._voidzenImageCache && window._voidzenImageCache[imageId];
+        if (!imageUrl) {
+            console.error('No image found for id:', imageId);
+            return;
+        }
+
+        // Remove existing lightbox if any
+        const existing = document.getElementById('voidzen-lightbox');
+        if (existing) existing.remove();
+
+        const lightbox = document.createElement('div');
+        lightbox.id = 'voidzen-lightbox';
+        lightbox.style.cssText = `
+            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+            background: rgba(0,0,0,0.9); z-index: 99999;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            cursor: pointer; animation: fadeIn 0.2s ease;
+        `;
+
+        lightbox.innerHTML = `
+            <img src="${imageUrl}" alt="Full size image" style="
+                max-width: 90vw; max-height: 75vh; border-radius: 12px;
+                box-shadow: 0 8px 32px rgba(0,0,0,0.5); object-fit: contain;
+            ">
+            <button id="lightbox-download-btn" style="
+                margin-top: 20px; padding: 12px 28px;
+                background: #4f8cff; color: white; border: none; border-radius: 8px;
+                font-size: 16px; font-weight: 600; cursor: pointer;
+                display: flex; align-items: center; gap: 8px;
+                transition: background 0.2s;
+            " onmouseover="this.style.background='#3a6fdf'" onmouseout="this.style.background='#4f8cff'">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="7 10 12 15 17 10"></polyline>
+                    <line x1="12" y1="15" x2="12" y2="3"></line>
+                </svg>
+                Download Image
+            </button>
+            <p style="color: rgba(255,255,255,0.5); margin-top: 12px; font-size: 13px;">Click anywhere to close</p>
+        `;
+
+        // Close on background click
+        lightbox.addEventListener('click', (e) => {
+            if (e.target === lightbox || e.target.tagName === 'P') {
+                lightbox.remove();
+            }
+        });
+
+        // Download button
+        lightbox.querySelector('#lightbox-download-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.downloadImage(imageUrl, imageId);
+        });
+
+        document.body.appendChild(lightbox);
     }
 
     // ============================================
