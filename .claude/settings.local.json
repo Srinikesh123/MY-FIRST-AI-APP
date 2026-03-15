@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la /c/Users/howto/Documents/GitHub/MY-FIRST-AI-APP/*.js)",
+      "Bash(ls -la /c/Users/howto/Documents/GitHub/MY-FIRST-AI-APP/*.sql)",
+      "Bash(grep -r \"messages\\\\|chat\" /c/Users/howto/Documents/GitHub/MY-FIRST-AI-APP/*.sql)",
+      "Bash(wc -l /c/Users/howto/Documents/GitHub/MY-FIRST-AI-APP/*.js)",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(netstat -ano)",
+      "Bash(taskkill //F //PID 19344)",
+      "Bash(npx kill-port:*)",
+      "Bash(taskkill /F /IM node.exe)"
+    ]
+  }
+}

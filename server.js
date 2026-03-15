@@ -537,6 +537,47 @@ Rules:
 });
 
 // ============================================
+// USER CREATION — ensures public.users row exists
+// ============================================
+
+app.post('/api/users/create', async (req, res) => {
+    try {
+        const { userId, email, username } = req.body;
+        if (!userId || !email) {
+            return res.status(400).json({ success: false, error: 'userId and email required' });
+        }
+
+        const displayName = username || email.split('@')[0];
+
+        // Upsert: create if not exists, update email/username if exists
+        const { data, error } = await supabase
+            .from('users')
+            .upsert({
+                id: userId,
+                email: email,
+                username: displayName,
+                plan: 'free',
+                coins: 0,
+                invites_count: 0,
+                is_admin: false,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString()
+            }, { onConflict: 'id' });
+
+        if (error) {
+            console.error('User create error:', error);
+            return res.status(500).json({ success: false, error: error.message });
+        }
+
+        console.log('✅ User record created/updated for:', email);
+        return res.json({ success: true });
+    } catch (error) {
+        console.error('User create endpoint error:', error);
+        return res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// ============================================
 // START SERVER
 // ============================================
 

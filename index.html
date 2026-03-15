@@ -197,6 +197,19 @@
                         <path d="M12 1v6m0 6v6m9-9h-6m-6 0H3m15.364 6.364l-4.243-4.243m-4.242 0l-4.243 4.243m8.485 0l-4.243-4.243m-4.242 0l-4.243 4.243"></path>
                     </svg>
                 </button>
+                <button id="friendsBtn" class="icon-btn" title="Friends">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                        <circle cx="9" cy="7" r="4"></circle>
+                        <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                        <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                    </svg>
+                </button>
+                <button id="directChatBtn" class="icon-btn" title="Chat with Users">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                    </svg>
+                </button>
                 <button id="adminBtn" class="icon-btn" title="Admin Panel">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
@@ -661,6 +674,109 @@
         </div>
     </div>
     
+    <!-- Direct Chat Panel (User-to-User) -->
+    <div id="directChatPanel" class="direct-chat-panel" style="display: none;">
+        <div class="dc-header">
+            <button id="dcBackBtn" class="icon-btn-small" title="Back">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"></polyline>
+                </svg>
+            </button>
+            <h3 id="dcTitle">Messages</h3>
+            <button id="dcCloseBtn" class="icon-btn-small" title="Close">×</button>
+        </div>
+
+        <!-- Tab Bar: DMs / Groups -->
+        <div class="dc-tabs">
+            <button class="dc-tab active" data-tab="dms" id="dcTabDms">DMs</button>
+            <button class="dc-tab" data-tab="groups" id="dcTabGroups">Groups</button>
+        </div>
+
+        <!-- DM Conversations View -->
+        <div id="dcSearchView" class="dc-view">
+            <div id="dcChatsList" class="dc-chats-list">
+                <div class="dc-empty">No conversations yet. Add friends to start chatting!</div>
+            </div>
+        </div>
+
+        <!-- Groups View -->
+        <div id="dcGroupsView" class="dc-view" style="display: none;">
+            <div class="dc-search-bar">
+                <button id="dcCreateGroupBtn" class="btn-primary btn-small" style="width:100%;">+ Create Group</button>
+            </div>
+            <div id="dcGroupsList" class="dc-chats-list">
+                <div class="dc-empty">No groups yet. Create one!</div>
+            </div>
+        </div>
+
+        <!-- Create Group View -->
+        <div id="dcCreateGroupView" class="dc-view" style="display: none;">
+            <div style="padding: 16px;">
+                <label style="font-size:13px;font-weight:600;color:#4a5568;display:block;margin-bottom:6px;">Group Name</label>
+                <input type="text" id="dcGroupNameInput" placeholder="Enter group name..." autocomplete="off" style="width:100%;padding:10px 14px;border:1px solid #e2e8f0;border-radius:8px;font-size:14px;margin-bottom:12px;">
+                <label style="font-size:13px;font-weight:600;color:#4a5568;display:block;margin-bottom:6px;">Add Friends</label>
+                <div id="dcGroupFriendsList" class="dc-group-friends-list"></div>
+                <button id="dcCreateGroupSubmit" class="btn-primary" style="width:100%;margin-top:12px;">Create Group</button>
+            </div>
+        </div>
+
+        <!-- Active Chat View (DM or Group) -->
+        <div id="dcChatView" class="dc-view" style="display: none;">
+            <div id="dcMessages" class="dc-messages"></div>
+            <div class="dc-input-bar">
+                <button id="dcMediaBtn" class="dc-media-btn" title="Attach media">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
+                    </svg>
+                </button>
+                <input type="file" id="dcFileInput" accept="image/*,video/*" style="display:none;">
+                <input type="text" id="dcMessageInput" placeholder="Type a message..." autocomplete="off">
+                <button id="dcSendBtn" class="btn-primary btn-small">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="22" y1="2" x2="11" y2="13"></line>
+                        <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                    </svg>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Friends Panel -->
+    <div id="friendsPanel" class="friends-panel" style="display: none;">
+        <div class="dc-header">
+            <h3>Friends</h3>
+            <button id="friendsCloseBtn" class="icon-btn-small" title="Close">×</button>
+        </div>
+        <div class="dc-tabs">
+            <button class="friends-tab active" data-tab="all" id="friendsTabAll">All</button>
+            <button class="friends-tab" data-tab="pending" id="friendsTabPending">Pending</button>
+            <button class="friends-tab" data-tab="add" id="friendsTabAdd">Add</button>
+        </div>
+
+        <!-- All Friends -->
+        <div id="friendsAllView" class="dc-view">
+            <div id="friendsList" class="dc-chats-list">
+                <div class="dc-empty">No friends yet. Add some!</div>
+            </div>
+        </div>
+
+        <!-- Pending Requests -->
+        <div id="friendsPendingView" class="dc-view" style="display: none;">
+            <div id="friendsPendingList" class="dc-chats-list">
+                <div class="dc-empty">No pending requests</div>
+            </div>
+        </div>
+
+        <!-- Add Friend -->
+        <div id="friendsAddView" class="dc-view" style="display: none;">
+            <div class="dc-search-bar">
+                <input type="text" id="friendsSearchInput" placeholder="Search by username..." autocomplete="off">
+                <button id="friendsSearchBtn" class="btn-primary btn-small">Search</button>
+            </div>
+            <div id="friendsSearchResults" class="dc-search-results"></div>
+        </div>
+    </div>
+
     <!-- Footer Branding (voidzen.ai for free users only) -->
     <footer class="footer-branding">voidzen.ai</footer>
     

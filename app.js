@@ -192,7 +192,60 @@ this.apiUrl = window.location.hostname === 'localhost' || window.location.hostna
         this.imageUploadBtn = document.getElementById('imageUploadBtn');
         this.imageInput = document.getElementById('imageInput');
         this.uploadedImageData = null;
-        
+
+        // Direct Chat elements
+        this.directChatBtn = document.getElementById('directChatBtn');
+        this.directChatPanel = document.getElementById('directChatPanel');
+        this.dcCloseBtn = document.getElementById('dcCloseBtn');
+        this.dcBackBtn = document.getElementById('dcBackBtn');
+        this.dcTitle = document.getElementById('dcTitle');
+        this.dcSearchInput = document.getElementById('dcSearchInput');
+        this.dcSearchBtn = document.getElementById('dcSearchBtn');
+        this.dcSearchResults = document.getElementById('dcSearchResults');
+        this.dcChatsList = document.getElementById('dcChatsList');
+        this.dcSearchView = document.getElementById('dcSearchView');
+        this.dcChatView = document.getElementById('dcChatView');
+        this.dcMessages = document.getElementById('dcMessages');
+        this.dcMessageInput = document.getElementById('dcMessageInput');
+        this.dcSendBtn = document.getElementById('dcSendBtn');
+        this.dcMediaBtn = document.getElementById('dcMediaBtn');
+        this.dcFileInput = document.getElementById('dcFileInput');
+
+        // Tabs
+        this.dcTabDms = document.getElementById('dcTabDms');
+        this.dcTabGroups = document.getElementById('dcTabGroups');
+        this.dcGroupsView = document.getElementById('dcGroupsView');
+        this.dcGroupsList = document.getElementById('dcGroupsList');
+        this.dcCreateGroupBtn = document.getElementById('dcCreateGroupBtn');
+        this.dcCreateGroupView = document.getElementById('dcCreateGroupView');
+        this.dcGroupNameInput = document.getElementById('dcGroupNameInput');
+        this.dcGroupFriendsList = document.getElementById('dcGroupFriendsList');
+        this.dcCreateGroupSubmit = document.getElementById('dcCreateGroupSubmit');
+
+        // Friends panel elements
+        this.friendsBtn = document.getElementById('friendsBtn');
+        this.friendsPanel = document.getElementById('friendsPanel');
+        this.friendsCloseBtn = document.getElementById('friendsCloseBtn');
+        this.friendsTabAll = document.getElementById('friendsTabAll');
+        this.friendsTabPending = document.getElementById('friendsTabPending');
+        this.friendsTabAdd = document.getElementById('friendsTabAdd');
+        this.friendsAllView = document.getElementById('friendsAllView');
+        this.friendsPendingView = document.getElementById('friendsPendingView');
+        this.friendsAddView = document.getElementById('friendsAddView');
+        this.friendsList = document.getElementById('friendsList');
+        this.friendsPendingList = document.getElementById('friendsPendingList');
+        this.friendsSearchInput = document.getElementById('friendsSearchInput');
+        this.friendsSearchBtn = document.getElementById('friendsSearchBtn');
+        this.friendsSearchResults = document.getElementById('friendsSearchResults');
+
+        // Direct chat state
+        this.dcActiveChatId = null;
+        this.dcActiveChatUser = null;
+        this.dcActiveGroupId = null;
+        this.dcChats = [];
+        this.dcSubscription = null;
+        this.friendsData = [];
+
         // Debouncing flag
         this.isSending = false;
     }
@@ -234,7 +287,10 @@ this.apiUrl = window.location.hostname === 'localhost' || window.location.hostna
         
         // Setup realtime subscriptions
         this.setupRealtimeSubscriptions();
-        
+
+        // Setup DC connection recovery (handles offline/online/tab switch)
+        this.dcSetupConnectionRecovery();
+
         // Initialize other features
         this.initTextToSpeech();
         this.initSpeechRecognition();
@@ -285,12 +341,14 @@ this.apiUrl = window.location.hostname === 'localhost' || window.location.hostna
                 try {
                     const { data: authUser } = await this.supabase.auth.getUser();
                     if (authUser?.user) {
+                        const meta = authUser.user.user_metadata || {};
                         const response = await fetch(`${this.apiUrl}/users/create`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
                                 userId: this.userId,
-                                email: authUser.user.email
+                                email: authUser.user.email,
+                                username: meta.name || meta.username || authUser.user.email.split('@')[0]
                             })
                         });
                         if (response.ok) {
@@ -1356,7 +1414,86 @@ Ultra: Unlimited`;
         if (this.saveSettingsBtn) {
             this.saveSettingsBtn.addEventListener('click', () => this.saveSettingsToSupabase());
         }
-        
+
+        // Direct Chat (User-to-User)
+        if (this.directChatBtn) {
+            this.directChatBtn.addEventListener('click', () => this.openDirectChat());
+        }
+        if (this.dcCloseBtn) {
+            this.dcCloseBtn.addEventListener('click', () => this.closeDirectChat());
+        }
+        if (this.dcBackBtn) {
+            this.dcBackBtn.addEventListener('click', () => this.dcGoBack());
+        }
+        if (this.dcSearchBtn) {
+            this.dcSearchBtn.addEventListener('click', () => this.dcSearchUsers());
+        }
+        if (this.dcSearchInput) {
+            this.dcSearchInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') this.dcSearchUsers();
+            });
+        }
+        if (this.dcSendBtn) {
+            this.dcSendBtn.addEventListener('click', () => this.dcSendMessage());
+        }
+        if (this.dcMessageInput) {
+            this.dcMessageInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    this.dcSendMessage();
+                }
+            });
+        }
+
+        // Media attach button
+        if (this.dcMediaBtn) {
+            this.dcMediaBtn.addEventListener('click', () => this.dcFileInput?.click());
+        }
+        if (this.dcFileInput) {
+            this.dcFileInput.addEventListener('change', (e) => this.dcHandleFileUpload(e));
+        }
+
+        // DC Tabs (DMs / Groups)
+        if (this.dcTabDms) {
+            this.dcTabDms.addEventListener('click', () => this.dcSwitchTab('dms'));
+        }
+        if (this.dcTabGroups) {
+            this.dcTabGroups.addEventListener('click', () => this.dcSwitchTab('groups'));
+        }
+
+        // Group chat
+        if (this.dcCreateGroupBtn) {
+            this.dcCreateGroupBtn.addEventListener('click', () => this.dcShowCreateGroupView());
+        }
+        if (this.dcCreateGroupSubmit) {
+            this.dcCreateGroupSubmit.addEventListener('click', () => this.dcCreateGroup());
+        }
+
+        // Friends panel
+        if (this.friendsBtn) {
+            this.friendsBtn.addEventListener('click', () => this.openFriendsPanel());
+        }
+        if (this.friendsCloseBtn) {
+            this.friendsCloseBtn.addEventListener('click', () => this.closeFriendsPanel());
+        }
+        if (this.friendsTabAll) {
+            this.friendsTabAll.addEventListener('click', () => this.switchFriendsTab('all'));
+        }
+        if (this.friendsTabPending) {
+            this.friendsTabPending.addEventListener('click', () => this.switchFriendsTab('pending'));
+        }
+        if (this.friendsTabAdd) {
+            this.friendsTabAdd.addEventListener('click', () => this.switchFriendsTab('add'));
+        }
+        if (this.friendsSearchBtn) {
+            this.friendsSearchBtn.addEventListener('click', () => this.friendsSearchUsers());
+        }
+        if (this.friendsSearchInput) {
+            this.friendsSearchInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') this.friendsSearchUsers();
+            });
+        }
+
         // Settings change handlers (auto-save to Supabase)
         this.setupSettingsEventListeners();
         }
@@ -4088,9 +4225,9 @@ AIAssistant.prototype.trackMemoryUsage = async function() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ userId: this.userId, type: 'memory' })
         });
-        
+
         const data = await response.json();
-        
+
         if (!response.ok) {
             if (response.status === 403) {
                 this.showNotification('Memory Limit Exceeded', 'You have reached your memory limit. Please upgrade your plan.');
@@ -4098,12 +4235,1386 @@ AIAssistant.prototype.trackMemoryUsage = async function() {
             }
             throw new Error(data.error || 'Failed to track memory usage');
         }
-        
+
         return true;
-        
+
     } catch (error) {
         console.error('Error tracking memory usage:', error);
         this.showNotification('Error', `Failed to track memory usage: ${error.message}`);
         return false;
     }
+};
+
+// ============================================
+// DIRECT CHAT (User-to-User Messaging)
+// ============================================
+
+AIAssistant.prototype.openDirectChat = async function() {
+    if (!this.directChatPanel) return;
+    this.directChatPanel.style.display = 'flex';
+    this.dcSwitchTab('dms');
+    this.dcShowSearchView();
+    await this.dcLoadChats();
+    // Start global subscription for all DM notifications
+    this.dcSubscribeGlobal();
+};
+
+AIAssistant.prototype.closeDirectChat = function() {
+    if (!this.directChatPanel) return;
+    this.directChatPanel.style.display = 'none';
+    this.dcActiveChatId = null;
+    this.dcActiveChatUser = null;
+    this.dcActiveGroupId = null;
+    if (this.dcSubscription) {
+        this.supabase.removeChannel(this.dcSubscription);
+        this.dcSubscription = null;
+    }
+    if (this.dcGlobalSubscription) {
+        this.supabase.removeChannel(this.dcGlobalSubscription);
+        this.dcGlobalSubscription = null;
+    }
+};
+
+AIAssistant.prototype.dcSwitchTab = function(tab) {
+    // Update tab buttons
+    if (this.dcTabDms) this.dcTabDms.classList.toggle('active', tab === 'dms');
+    if (this.dcTabGroups) this.dcTabGroups.classList.toggle('active', tab === 'groups');
+
+    // Hide all views first
+    if (this.dcSearchView) this.dcSearchView.style.display = 'none';
+    if (this.dcGroupsView) this.dcGroupsView.style.display = 'none';
+    if (this.dcCreateGroupView) this.dcCreateGroupView.style.display = 'none';
+    if (this.dcChatView) this.dcChatView.style.display = 'none';
+
+    if (tab === 'dms') {
+        this.dcShowSearchView();
+        this.dcLoadChats();
+    } else if (tab === 'groups') {
+        if (this.dcGroupsView) this.dcGroupsView.style.display = 'flex';
+        if (this.dcBackBtn) this.dcBackBtn.style.visibility = 'hidden';
+        if (this.dcTitle) this.dcTitle.textContent = 'Groups';
+        this.dcLoadGroups();
+    }
+};
+
+AIAssistant.prototype.dcShowSearchView = function() {
+    if (this.dcSearchView) this.dcSearchView.style.display = 'flex';
+    if (this.dcChatView) this.dcChatView.style.display = 'none';
+    if (this.dcGroupsView) this.dcGroupsView.style.display = 'none';
+    if (this.dcCreateGroupView) this.dcCreateGroupView.style.display = 'none';
+    if (this.dcTitle) this.dcTitle.textContent = 'Messages';
+    if (this.dcBackBtn) this.dcBackBtn.style.visibility = 'hidden';
+};
+
+AIAssistant.prototype.dcShowChatView = function(userName) {
+    if (this.dcSearchView) this.dcSearchView.style.display = 'none';
+    if (this.dcGroupsView) this.dcGroupsView.style.display = 'none';
+    if (this.dcCreateGroupView) this.dcCreateGroupView.style.display = 'none';
+    if (this.dcChatView) this.dcChatView.style.display = 'flex';
+    if (this.dcTitle) {
+        this.dcTitle.textContent = userName || 'Chat';
+        // Add settings gear for groups
+        if (this.dcActiveGroupId) {
+            this.dcTitle.style.cursor = 'pointer';
+            this.dcTitle.title = 'Click for group settings';
+            this.dcTitle.onclick = () => this.dcShowGroupSettings();
+        } else {
+            this.dcTitle.style.cursor = 'default';
+            this.dcTitle.title = '';
+            this.dcTitle.onclick = null;
+        }
+    }
+    if (this.dcBackBtn) this.dcBackBtn.style.visibility = 'visible';
+};
+
+AIAssistant.prototype.dcGoBack = function() {
+    this.dcActiveChatId = null;
+    this.dcActiveChatUser = null;
+    this.dcActiveGroupId = null;
+    if (this.dcSubscription) {
+        this.supabase.removeChannel(this.dcSubscription);
+        this.dcSubscription = null;
+    }
+    // Return to the correct tab
+    const isGroupTab = this.dcTabGroups?.classList.contains('active');
+    if (isGroupTab) {
+        this.dcSwitchTab('groups');
+    } else {
+        this.dcShowSearchView();
+        this.dcLoadChats();
+    }
+};
+
+AIAssistant.prototype.dcSearchUsers = async function() {
+    const query = this.dcSearchInput?.value?.trim();
+
+    try {
+        // If query provided, filter; otherwise show all users
+        let supaQuery = this.supabase
+            .from('users')
+            .select('id, username, email')
+            .neq('id', this.userId)
+            .limit(20);
+
+        if (query && query.length >= 2) {
+            supaQuery = supaQuery.or(`username.ilike.%${query}%,email.ilike.%${query}%`);
+        }
+
+        const { data, error } = await supaQuery;
+
+        if (error) throw error;
+
+        if (!data || data.length === 0) {
+            if (this.dcSearchResults) this.dcSearchResults.innerHTML = '<div class="dc-empty" style="padding:12px 16px;font-size:13px;">No users found</div>';
+            return;
+        }
+
+        // Check friend status for each user
+        const userIds = data.map(u => u.id);
+        const { data: friendships } = await this.supabase
+            .from('friends')
+            .select('*')
+            .or(`user_id.eq.${this.userId},friend_id.eq.${this.userId}`);
+
+        const friendMap = {};
+        (friendships || []).forEach(f => {
+            const otherId = f.user_id === this.userId ? f.friend_id : f.user_id;
+            friendMap[otherId] = f;
+        });
+
+        if (this.dcSearchResults) {
+            this.dcSearchResults.innerHTML = data.map(user => {
+                const initial = (user.username || user.email || '?')[0].toUpperCase();
+                const displayName = user.username || user.email.split('@')[0];
+                const friendship = friendMap[user.id];
+                let friendBtn = '';
+                if (!friendship) {
+                    friendBtn = `<button class="dc-friend-btn add" data-action="add-friend" data-user-id="${user.id}">Add Friend</button>`;
+                } else if (friendship.status === 'pending' && friendship.user_id === this.userId) {
+                    friendBtn = `<span class="dc-friend-btn pending-label">Pending</span>`;
+                } else if (friendship.status === 'pending' && friendship.friend_id === this.userId) {
+                    friendBtn = `<button class="dc-friend-btn accept" data-action="accept-friend" data-friendship-id="${friendship.id}">Accept</button>`;
+                } else if (friendship.status === 'accepted') {
+                    friendBtn = `<span class="dc-friend-btn pending-label" style="background:#48bb78;color:white;">Friends</span>`;
+                }
+                return `
+                    <div class="dc-user-item" data-user-id="${user.id}" data-user-name="${this.escapeHtml(displayName)}">
+                        <div class="dc-user-avatar">${initial}</div>
+                        <div class="dc-user-info">
+                            <div class="dc-user-name">${this.escapeHtml(displayName)}</div>
+                            <div class="dc-user-email">${this.escapeHtml(user.email)}</div>
+                        </div>
+                        <div class="dc-friend-actions">
+                            ${friendBtn}
+                            <button class="dc-friend-btn chat" data-action="chat" data-user-id="${user.id}" data-user-name="${this.escapeHtml(displayName)}">Chat</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            // Bind actions
+            this.dcSearchResults.querySelectorAll('[data-action]').forEach(btn => {
+                btn.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    const action = btn.dataset.action;
+                    if (action === 'add-friend') {
+                        await this.sendFriendRequest(btn.dataset.userId);
+                        btn.textContent = 'Pending';
+                        btn.className = 'dc-friend-btn pending-label';
+                    } else if (action === 'accept-friend') {
+                        await this.acceptFriendRequest(btn.dataset.friendshipId);
+                        btn.textContent = 'Friends';
+                        btn.className = 'dc-friend-btn pending-label';
+                        btn.style.background = '#48bb78';
+                        btn.style.color = 'white';
+                    } else if (action === 'chat') {
+                        this.dcStartChat(btn.dataset.userId, btn.dataset.userName);
+                    }
+                });
+            });
+        }
+    } catch (error) {
+        console.error('DC search error:', error);
+        if (this.dcSearchResults) this.dcSearchResults.innerHTML = '<div class="dc-empty" style="padding:12px 16px;font-size:13px;color:#e53e3e;">Search failed. Try again.</div>';
+    }
+};
+
+AIAssistant.prototype.dcStartChat = async function(otherUserId, otherUserName) {
+    try {
+        const { data: existing } = await this.supabase
+            .from('direct_chats')
+            .select('*')
+            .or(`and(user1_id.eq.${this.userId},user2_id.eq.${otherUserId}),and(user1_id.eq.${otherUserId},user2_id.eq.${this.userId})`);
+
+        let chat;
+        if (existing && existing.length > 0) {
+            chat = existing[0];
+        } else {
+            const u1 = this.userId < otherUserId ? this.userId : otherUserId;
+            const u2 = this.userId < otherUserId ? otherUserId : this.userId;
+
+            const { data: newChat, error } = await this.supabase
+                .from('direct_chats')
+                .insert({ user1_id: u1, user2_id: u2 })
+                .select()
+                .single();
+
+            if (error) throw error;
+            chat = newChat;
+        }
+
+        this.dcActiveChatId = chat.id;
+        this.dcActiveGroupId = null;
+        this.dcActiveChatUser = { id: otherUserId, name: otherUserName };
+        if (this.dcSearchResults) this.dcSearchResults.innerHTML = '';
+        if (this.dcSearchInput) this.dcSearchInput.value = '';
+        this.dcShowChatView(otherUserName);
+        await this.dcLoadMessages();
+        this.dcSubscribeToMessages();
+    } catch (error) {
+        console.error('DC start chat error:', error);
+        this.showNotification('Error', 'Could not start chat. Please try again.');
+    }
+};
+
+AIAssistant.prototype.dcLoadChats = async function() {
+    try {
+        const { data, error } = await this.supabase
+            .from('direct_chats')
+            .select('*')
+            .or(`user1_id.eq.${this.userId},user2_id.eq.${this.userId}`)
+            .order('last_message_at', { ascending: false });
+
+        if (error) throw error;
+
+        this.dcChats = data || [];
+
+        if (this.dcChats.length === 0) {
+            if (this.dcChatsList) this.dcChatsList.innerHTML = '<div class="dc-empty">No conversations yet. Search for a user to start chatting!</div>';
+            return;
+        }
+
+        const otherUserIds = this.dcChats.map(c => c.user1_id === this.userId ? c.user2_id : c.user1_id);
+        const uniqueIds = [...new Set(otherUserIds)];
+
+        const { data: users } = await this.supabase
+            .from('users')
+            .select('id, username, email')
+            .in('id', uniqueIds);
+
+        const userMap = {};
+        (users || []).forEach(u => { userMap[u.id] = u; });
+
+        if (this.dcChatsList) {
+            this.dcChatsList.innerHTML = this.dcChats.map(chat => {
+                const otherUserId = chat.user1_id === this.userId ? chat.user2_id : chat.user1_id;
+                const otherUser = userMap[otherUserId] || {};
+                const displayName = otherUser.username || (otherUser.email ? otherUser.email.split('@')[0] : 'User');
+                const initial = displayName[0].toUpperCase();
+                const lastMsg = chat.last_message || 'No messages yet';
+                const time = chat.last_message_at ? this.dcFormatTimeShort(chat.last_message_at) : '';
+
+                return `
+                    <div class="dc-chat-item" data-chat-id="${chat.id}" data-other-id="${otherUserId}" data-other-name="${this.escapeHtml(displayName)}">
+                        <div class="dc-user-avatar">${initial}</div>
+                        <div class="dc-chat-preview">
+                            <div class="dc-chat-name">${this.escapeHtml(displayName)}</div>
+                            <div class="dc-chat-last-msg">${this.escapeHtml(lastMsg.substring(0, 50))}</div>
+                        </div>
+                        <div class="dc-chat-time">${time}</div>
+                    </div>
+                `;
+            }).join('');
+
+            this.dcChatsList.querySelectorAll('.dc-chat-item').forEach(item => {
+                item.addEventListener('click', () => {
+                    this.dcActiveChatId = item.dataset.chatId;
+                    this.dcActiveGroupId = null;
+                    this.dcActiveChatUser = { id: item.dataset.otherId, name: item.dataset.otherName };
+                    this.dcShowChatView(item.dataset.otherName);
+                    this.dcLoadMessages();
+                    this.dcSubscribeToMessages();
+                });
+            });
+        }
+    } catch (error) {
+        console.error('DC load chats error:', error);
+        if (this.dcChatsList) this.dcChatsList.innerHTML = '<div class="dc-empty">No conversations yet. Add friends to start chatting!</div>';
+    }
+};
+
+AIAssistant.prototype.dcLoadMessages = async function() {
+    if (!this.dcMessages) return;
+
+    try {
+        let data, error;
+        if (this.dcActiveGroupId) {
+            ({ data, error } = await this.supabase
+                .from('group_messages')
+                .select('*')
+                .eq('group_id', this.dcActiveGroupId)
+                .order('created_at', { ascending: true })
+                .limit(100));
+        } else if (this.dcActiveChatId) {
+            ({ data, error } = await this.supabase
+                .from('direct_messages')
+                .select('*')
+                .eq('chat_id', this.dcActiveChatId)
+                .order('created_at', { ascending: true })
+                .limit(100));
+        } else {
+            return;
+        }
+
+        if (error) throw error;
+        this.dcRenderMessages(data || []);
+    } catch (error) {
+        console.error('DC load messages error:', error);
+    }
+};
+
+AIAssistant.prototype.dcRenderMessages = function(messages) {
+    if (!this.dcMessages) return;
+
+    if (messages.length === 0) {
+        this.dcMessages.innerHTML = '<div class="dc-empty">No messages yet. Say hello!</div>';
+        return;
+    }
+
+    this.dcMessages.innerHTML = messages.map(msg => this.dcBuildMessageHtml(msg)).join('');
+    this.dcMessages.scrollTop = this.dcMessages.scrollHeight;
+};
+
+// Build HTML for a single message (used by both render and append)
+AIAssistant.prototype.dcBuildMessageHtml = function(msg) {
+    const isSent = msg.sender_id === this.userId;
+    const time = this.dcFormatTime(msg.created_at);
+    const statusClass = msg._status === 'sending' ? ' dc-msg-sending' : '';
+    let contentHtml = '';
+
+    const msgType = msg.message_type || 'text';
+    if (msgType === 'image' && msg.media_url) {
+        contentHtml = `<img src="${this.escapeHtml(msg.media_url)}" alt="image" loading="lazy">`;
+        if (msg.content) contentHtml += `<div>${this.escapeHtml(msg.content)}</div>`;
+    } else if (msgType === 'video' && msg.media_url) {
+        contentHtml = `<video src="${this.escapeHtml(msg.media_url)}" controls style="max-width:100%;border-radius:8px;"></video>`;
+        if (msg.content) contentHtml += `<div>${this.escapeHtml(msg.content)}</div>`;
+    } else if (msgType === 'link') {
+        const url = msg.media_url || msg.content;
+        contentHtml = `<a href="${this.escapeHtml(url)}" target="_blank" rel="noopener" class="dc-link-preview">${this.escapeHtml(url)}</a>`;
+        if (msg.content && msg.content !== url) contentHtml += `<div>${this.escapeHtml(msg.content)}</div>`;
+    } else {
+        const text = msg.content || '';
+        contentHtml = `<div>${this.dcLinkify(this.escapeHtml(text))}</div>`;
+    }
+
+    // Show sender name in group chats for received messages
+    let senderHtml = '';
+    if (!isSent && this.dcActiveGroupId && msg._senderName) {
+        senderHtml = `<div class="dc-msg-sender" style="font-size:11px;font-weight:600;color:#667eea;margin-bottom:2px;">${this.escapeHtml(msg._senderName)}</div>`;
+    }
+
+    return `
+        <div class="dc-msg ${isSent ? 'sent' : 'received'}${statusClass}" data-msg-id="${msg.id}">
+            ${senderHtml}
+            ${contentHtml}
+            <div class="dc-msg-time">${time}</div>
+        </div>
+    `;
+};
+
+// Append a single message to the chat (used by optimistic send and realtime)
+AIAssistant.prototype.dcAppendSingleMessage = function(msg) {
+    if (!this.dcMessages) return;
+    const emptyEl = this.dcMessages.querySelector('.dc-empty');
+    if (emptyEl) emptyEl.remove();
+
+    const msgEl = document.createElement('div');
+    msgEl.innerHTML = this.dcBuildMessageHtml(msg);
+    const el = msgEl.firstElementChild;
+    if (el) this.dcMessages.appendChild(el);
+    this.dcMessages.scrollTop = this.dcMessages.scrollHeight;
+};
+
+// Auto-detect URLs in text and make them clickable
+AIAssistant.prototype.dcLinkify = function(text) {
+    const urlRegex = /(https?:\/\/[^\s<]+)/g;
+    return text.replace(urlRegex, '<a href="$1" target="_blank" rel="noopener" style="color:#667eea;text-decoration:underline;">$1</a>');
+};
+
+AIAssistant.prototype.dcSendMessage = async function() {
+    const content = this.dcMessageInput?.value?.trim();
+    if (!content && !this.dcPendingMedia) return;
+    if (!this.dcActiveChatId && !this.dcActiveGroupId) return;
+
+    // Prevent double-send
+    if (this.dcIsSending) return;
+    this.dcIsSending = true;
+
+    this.dcMessageInput.value = '';
+
+    // Detect if text is a URL
+    let messageType = 'text';
+    let mediaUrl = null;
+    const urlPattern = /^https?:\/\/[^\s]+$/;
+    if (content && urlPattern.test(content)) {
+        messageType = 'link';
+        mediaUrl = content;
+    }
+
+    // If there's pending media from file upload
+    if (this.dcPendingMedia) {
+        messageType = this.dcPendingMedia.type;
+        mediaUrl = this.dcPendingMedia.url;
+        this.dcPendingMedia = null;
+    }
+
+    // --- Optimistic UI: show message immediately ---
+    const tempId = 'temp-' + Date.now();
+    const now = new Date().toISOString();
+    const optimisticMsg = {
+        id: tempId,
+        sender_id: this.userId,
+        content: content || null,
+        message_type: messageType,
+        media_url: mediaUrl,
+        created_at: now,
+        _status: 'sending'
+    };
+    this.dcAppendSingleMessage(optimisticMsg);
+
+    const isGroup = !!this.dcActiveGroupId;
+    const table = isGroup ? 'group_messages' : 'direct_messages';
+    const idCol = isGroup ? 'group_id' : 'chat_id';
+    const targetId = isGroup ? this.dcActiveGroupId : this.dcActiveChatId;
+
+    const insertData = {
+        [idCol]: targetId,
+        sender_id: this.userId,
+        content: content || null,
+        message_type: messageType,
+        media_url: mediaUrl
+    };
+
+    const updateTable = isGroup ? 'group_chats' : 'direct_chats';
+
+    // --- Send with retry ---
+    let success = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+            const { data: inserted, error } = await this.supabase
+                .from(table)
+                .insert(insertData)
+                .select()
+                .single();
+            if (error) throw error;
+
+            // Update last_message on the chat/group
+            await this.supabase
+                .from(updateTable)
+                .update({ last_message: content || messageType, last_message_at: inserted.created_at })
+                .eq('id', targetId);
+
+            // Replace optimistic element with real ID and mark sent
+            const tempEl = this.dcMessages?.querySelector(`[data-msg-id="${tempId}"]`);
+            if (tempEl) {
+                tempEl.dataset.msgId = inserted.id;
+                tempEl.classList.remove('dc-msg-sending');
+                // Update time with server timestamp
+                const timeEl = tempEl.querySelector('.dc-msg-time');
+                if (timeEl) timeEl.textContent = this.dcFormatTime(inserted.created_at);
+            }
+
+            success = true;
+            break;
+        } catch (error) {
+            console.error(`DC send attempt ${attempt + 1} failed:`, error);
+            if (attempt < 2) {
+                await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+            }
+        }
+    }
+
+    if (!success) {
+        // Mark as failed
+        const tempEl = this.dcMessages?.querySelector(`[data-msg-id="${tempId}"]`);
+        if (tempEl) {
+            tempEl.classList.remove('dc-msg-sending');
+            tempEl.classList.add('dc-msg-failed');
+            const timeEl = tempEl.querySelector('.dc-msg-time');
+            if (timeEl) timeEl.innerHTML = '&#x26A0; Failed - tap to retry';
+            tempEl.style.cursor = 'pointer';
+            tempEl.addEventListener('click', () => {
+                tempEl.remove();
+                this.dcMessageInput.value = content || '';
+                this.dcSendMessage();
+            }, { once: true });
+        }
+        this.showNotification('Error', 'Message failed to send. Tap it to retry.');
+    }
+
+    this.dcIsSending = false;
+};
+
+// Handle file upload for media sharing
+AIAssistant.prototype.dcHandleFileUpload = async function(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+        const isImage = file.type.startsWith('image/');
+        const isVideo = file.type.startsWith('video/');
+        if (!isImage && !isVideo) {
+            this.showNotification('Error', 'Only images and videos are supported.');
+            return;
+        }
+
+        // Upload to Supabase storage
+        const ext = file.name.split('.').pop();
+        const fileName = `${this.userId}/${Date.now()}.${ext}`;
+
+        const { data, error } = await this.supabase.storage
+            .from('chat-media')
+            .upload(fileName, file);
+
+        if (error) throw error;
+
+        const { data: urlData } = this.supabase.storage
+            .from('chat-media')
+            .getPublicUrl(fileName);
+
+        this.dcPendingMedia = {
+            type: isImage ? 'image' : 'video',
+            url: urlData.publicUrl,
+            name: file.name
+        };
+
+        // Auto-send media message
+        await this.dcSendMessage();
+    } catch (error) {
+        console.error('File upload error:', error);
+        this.showNotification('Error', 'Failed to upload file.');
+    }
+
+    // Reset file input
+    if (this.dcFileInput) this.dcFileInput.value = '';
+};
+
+AIAssistant.prototype.dcSubscribeToMessages = function() {
+    if (this.dcSubscription) {
+        this.supabase.removeChannel(this.dcSubscription);
+        this.dcSubscription = null;
+    }
+
+    const isGroup = !!this.dcActiveGroupId;
+    const targetId = isGroup ? this.dcActiveGroupId : this.dcActiveChatId;
+    if (!targetId) return;
+
+    const table = isGroup ? 'group_messages' : 'direct_messages';
+    const filterCol = isGroup ? 'group_id' : 'chat_id';
+
+    this.dcSubscription = this.supabase
+        .channel(`dc-messages-${targetId}-${Date.now()}`)
+        .on('postgres_changes', {
+            event: 'INSERT',
+            schema: 'public',
+            table: table,
+            filter: `${filterCol}=eq.${targetId}`
+        }, (payload) => {
+            const msg = payload.new;
+            if (!this.dcMessages) return;
+
+            // Skip if we already have this message (from optimistic send)
+            const existingEl = this.dcMessages.querySelector(`[data-msg-id="${msg.id}"]`);
+            if (existingEl) return;
+
+            // Skip if this is our own message (already shown optimistically)
+            // But only skip if there's a temp message from us that matches content
+            if (msg.sender_id === this.userId) {
+                const tempEls = this.dcMessages.querySelectorAll('[data-msg-id^="temp-"]');
+                for (const el of tempEls) {
+                    // Found a temp message from us — the real one will replace it
+                    return;
+                }
+            }
+
+            this.dcAppendSingleMessage(msg);
+        })
+        .subscribe((status) => {
+            console.log(`DC subscription ${targetId}: ${status}`);
+        });
+};
+
+// Global subscription to detect new messages even when not in a specific chat
+AIAssistant.prototype.dcSubscribeGlobal = function() {
+    if (this.dcGlobalSubscription) {
+        this.supabase.removeChannel(this.dcGlobalSubscription);
+    }
+
+    this.dcGlobalSubscription = this.supabase
+        .channel(`dc-global-${this.userId}-${Date.now()}`)
+        .on('postgres_changes', {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'direct_messages'
+        }, (payload) => {
+            // Refresh chat list when a new message arrives in any chat
+            if (this.directChatPanel?.style.display === 'flex' && !this.dcActiveChatId) {
+                this.dcLoadChats();
+            }
+        })
+        .on('postgres_changes', {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'group_messages'
+        }, (payload) => {
+            if (this.directChatPanel?.style.display === 'flex' && !this.dcActiveGroupId) {
+                this.dcLoadGroups();
+            }
+        })
+        .subscribe();
+};
+
+AIAssistant.prototype.dcFormatTime = function(dateStr) {
+    if (!dateStr) return '';
+    const date = new Date(dateStr);
+    if (isNaN(date.getTime())) return '';
+    const now = new Date();
+
+    const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
+
+    const isToday = date.toDateString() === now.toDateString();
+    if (isToday) return timeStr;
+
+    const yesterday = new Date(now);
+    yesterday.setDate(yesterday.getDate() - 1);
+    if (date.toDateString() === yesterday.toDateString()) return 'Yesterday ' + timeStr;
+
+    const datePrefix = date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+    return datePrefix + ' ' + timeStr;
+};
+
+// Format time for chat list previews (shorter format)
+AIAssistant.prototype.dcFormatTimeShort = function(dateStr) {
+    if (!dateStr) return '';
+    const date = new Date(dateStr);
+    if (isNaN(date.getTime())) return '';
+    const now = new Date();
+    const diff = now - date;
+
+    if (diff < 60000) return 'now';
+    if (diff < 3600000) return Math.floor(diff / 60000) + 'm';
+
+    const isToday = date.toDateString() === now.toDateString();
+    if (isToday) return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
+
+    if (diff < 604800000) {
+        return date.toLocaleDateString([], { weekday: 'short' });
+    }
+
+    return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+};
+
+// ============================================
+// GROUP CHATS
+// ============================================
+
+AIAssistant.prototype.dcShowCreateGroupView = async function() {
+    if (this.dcGroupsView) this.dcGroupsView.style.display = 'none';
+    if (this.dcCreateGroupView) this.dcCreateGroupView.style.display = 'flex';
+    if (this.dcBackBtn) this.dcBackBtn.style.visibility = 'visible';
+    if (this.dcTitle) this.dcTitle.textContent = 'New Group';
+    if (this.dcGroupNameInput) this.dcGroupNameInput.value = '';
+
+    // Load friends to select
+    await this.loadFriendsData();
+    if (this.dcGroupFriendsList) {
+        if (this.friendsData.length === 0) {
+            this.dcGroupFriendsList.innerHTML = '<div class="dc-empty" style="padding:12px;font-size:13px;">Add friends first to create a group.</div>';
+            return;
+        }
+        this.dcGroupFriendsList.innerHTML = this.friendsData.map(f => {
+            const initial = (f.name || '?')[0].toUpperCase();
+            return `
+                <div class="dc-group-friend-item" data-user-id="${f.id}">
+                    <div class="dc-checkbox"></div>
+                    <div class="dc-user-avatar" style="width:30px;height:30px;font-size:12px;">${initial}</div>
+                    <div style="font-size:13px;font-weight:500;">${this.escapeHtml(f.name)}</div>
+                </div>
+            `;
+        }).join('');
+
+        this.dcGroupFriendsList.querySelectorAll('.dc-group-friend-item').forEach(item => {
+            item.addEventListener('click', () => {
+                item.classList.toggle('selected');
+                const cb = item.querySelector('.dc-checkbox');
+                cb.innerHTML = item.classList.contains('selected') ? '&#10003;' : '';
+            });
+        });
+    }
+};
+
+AIAssistant.prototype.dcCreateGroup = async function() {
+    const name = this.dcGroupNameInput?.value?.trim();
+    if (!name) {
+        this.showNotification('Error', 'Please enter a group name.');
+        return;
+    }
+
+    const selectedFriends = [];
+    this.dcGroupFriendsList?.querySelectorAll('.dc-group-friend-item.selected').forEach(item => {
+        selectedFriends.push(item.dataset.userId);
+    });
+
+    if (selectedFriends.length === 0) {
+        this.showNotification('Error', 'Please select at least one friend.');
+        return;
+    }
+
+    try {
+        // Create group
+        const { data: group, error } = await this.supabase
+            .from('group_chats')
+            .insert({ name, creator_id: this.userId })
+            .select()
+            .single();
+
+        if (error) throw error;
+
+        // Add members (creator + selected friends)
+        const members = [
+            { group_id: group.id, user_id: this.userId, role: 'admin' },
+            ...selectedFriends.map(fid => ({ group_id: group.id, user_id: fid, role: 'member' }))
+        ];
+
+        const { error: memberError } = await this.supabase
+            .from('group_members')
+            .insert(members);
+
+        if (memberError) throw memberError;
+
+        // Open the group chat
+        this.dcActiveGroupId = group.id;
+        this.dcActiveChatId = null;
+        this.dcShowChatView(name);
+        await this.dcLoadMessages();
+        this.dcSubscribeToMessages();
+    } catch (error) {
+        console.error('Create group error:', error);
+        this.showNotification('Error', 'Failed to create group: ' + (error.message || 'Unknown error'));
+    }
+};
+
+AIAssistant.prototype.dcLoadGroups = async function() {
+    try {
+        // Get groups user is a member of
+        const { data: memberships, error: memError } = await this.supabase
+            .from('group_members')
+            .select('group_id')
+            .eq('user_id', this.userId);
+
+        if (memError) throw memError;
+
+        if (!memberships || memberships.length === 0) {
+            if (this.dcGroupsList) this.dcGroupsList.innerHTML = '<div class="dc-empty">No groups yet. Create one!</div>';
+            return;
+        }
+
+        const groupIds = memberships.map(m => m.group_id);
+
+        const { data: groups, error } = await this.supabase
+            .from('group_chats')
+            .select('*')
+            .in('id', groupIds)
+            .order('last_message_at', { ascending: false });
+
+        if (error) throw error;
+
+        if (this.dcGroupsList) {
+            this.dcGroupsList.innerHTML = (groups || []).map(group => {
+                const initial = (group.name || 'G')[0].toUpperCase();
+                const lastMsg = group.last_message || 'No messages yet';
+                const time = group.last_message_at ? this.dcFormatTimeShort(group.last_message_at) : '';
+
+                return `
+                    <div class="dc-chat-item" data-group-id="${group.id}" data-group-name="${this.escapeHtml(group.name)}">
+                        <div class="dc-user-avatar" style="background:linear-gradient(135deg,#667eea,#764ba2);">${initial}</div>
+                        <div class="dc-chat-preview">
+                            <div class="dc-chat-name">${this.escapeHtml(group.name)}</div>
+                            <div class="dc-chat-last-msg">${this.escapeHtml(lastMsg.substring(0, 50))}</div>
+                        </div>
+                        <div class="dc-chat-time">${time}</div>
+                    </div>
+                `;
+            }).join('');
+
+            this.dcGroupsList.querySelectorAll('.dc-chat-item').forEach(item => {
+                item.addEventListener('click', () => {
+                    this.dcActiveGroupId = item.dataset.groupId;
+                    this.dcActiveChatId = null;
+                    this.dcShowChatView(item.dataset.groupName);
+                    this.dcLoadMessages();
+                    this.dcSubscribeToMessages();
+                });
+            });
+        }
+    } catch (error) {
+        console.error('Load groups error:', error);
+        if (this.dcGroupsList) this.dcGroupsList.innerHTML = '<div class="dc-empty" style="color:#e53e3e;">Failed to load groups</div>';
+    }
+};
+
+// ============================================
+// GROUP MANAGEMENT & PERMISSIONS
+// ============================================
+
+AIAssistant.prototype.dcShowGroupSettings = async function() {
+    if (!this.dcActiveGroupId) return;
+
+    try {
+        // Get group info
+        const { data: group } = await this.supabase
+            .from('group_chats')
+            .select('*')
+            .eq('id', this.dcActiveGroupId)
+            .single();
+
+        // Get members with user info
+        const { data: members } = await this.supabase
+            .from('group_members')
+            .select('*')
+            .eq('group_id', this.dcActiveGroupId);
+
+        if (!members || !group) return;
+
+        const memberIds = members.map(m => m.user_id);
+        const { data: users } = await this.supabase
+            .from('users')
+            .select('id, username, email')
+            .in('id', memberIds);
+
+        const userMap = {};
+        (users || []).forEach(u => { userMap[u.id] = u; });
+
+        const myMembership = members.find(m => m.user_id === this.userId);
+        const isAdmin = myMembership?.role === 'admin' || group.creator_id === this.userId;
+
+        // Build settings modal
+        let modal = document.getElementById('dcGroupSettingsModal');
+        if (!modal) {
+            modal = document.createElement('div');
+            modal.id = 'dcGroupSettingsModal';
+            modal.style.cssText = 'position:fixed;inset:0;z-index:10000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.6);';
+            document.body.appendChild(modal);
+        }
+
+        modal.innerHTML = `
+            <div style="background:var(--bg-primary,#1a1a2e);border-radius:16px;padding:20px;width:90%;max-width:400px;max-height:80vh;overflow-y:auto;color:var(--text-primary,#fff);">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+                    <h3 style="margin:0;font-size:16px;">Group Settings</h3>
+                    <button id="dcGroupSettingsClose" style="background:none;border:none;color:var(--text-primary,#fff);font-size:20px;cursor:pointer;">&times;</button>
+                </div>
+                <div style="font-size:14px;color:var(--text-secondary,#aaa);margin-bottom:12px;">
+                    ${this.escapeHtml(group.name)} &middot; ${members.length} member${members.length !== 1 ? 's' : ''}
+                </div>
+                <div style="font-weight:600;margin-bottom:8px;font-size:13px;">Members</div>
+                ${members.map(m => {
+                    const u = userMap[m.user_id] || {};
+                    const name = u.username || (u.email ? u.email.split('@')[0] : 'User');
+                    const initial = name[0].toUpperCase();
+                    const isCreator = m.user_id === group.creator_id;
+                    const roleLabel = isCreator ? 'Creator' : m.role === 'admin' ? 'Admin' : 'Member';
+                    const isMe = m.user_id === this.userId;
+
+                    let actions = '';
+                    if (isAdmin && !isMe && !isCreator) {
+                        if (m.role === 'member') {
+                            actions += `<button class="dc-friend-btn accept" data-action="promote" data-member-id="${m.id}" style="font-size:11px;padding:3px 8px;">Promote</button>`;
+                        } else if (m.role === 'admin') {
+                            actions += `<button class="dc-friend-btn pending-label" data-action="demote" data-member-id="${m.id}" style="font-size:11px;padding:3px 8px;cursor:pointer;">Demote</button>`;
+                        }
+                        actions += `<button class="dc-friend-btn decline" data-action="kick" data-member-id="${m.id}" data-user-id="${m.user_id}" style="font-size:11px;padding:3px 8px;">Remove</button>`;
+                    }
+
+                    return `
+                        <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.05);">
+                            <div class="dc-user-avatar" style="width:32px;height:32px;font-size:13px;">${initial}</div>
+                            <div style="flex:1;">
+                                <div style="font-size:13px;font-weight:500;">${this.escapeHtml(name)}${isMe ? ' (You)' : ''}</div>
+                                <div style="font-size:11px;color:var(--text-secondary,#888);">${roleLabel}</div>
+                            </div>
+                            <div style="display:flex;gap:4px;">${actions}</div>
+                        </div>
+                    `;
+                }).join('')}
+                ${!isAdmin ? '' : `
+                    <div style="margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.1);">
+                        <button id="dcLeaveGroup" class="dc-friend-btn decline" style="width:100%;padding:8px;font-size:13px;">Leave Group</button>
+                    </div>
+                `}
+                ${isAdmin ? '' : `
+                    <div style="margin-top:16px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.1);">
+                        <button id="dcLeaveGroup" class="dc-friend-btn decline" style="width:100%;padding:8px;font-size:13px;">Leave Group</button>
+                    </div>
+                `}
+            </div>
+        `;
+
+        modal.style.display = 'flex';
+
+        // Bind events
+        document.getElementById('dcGroupSettingsClose')?.addEventListener('click', () => modal.style.display = 'none');
+        modal.addEventListener('click', (e) => { if (e.target === modal) modal.style.display = 'none'; });
+
+        modal.querySelectorAll('[data-action]').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                const action = btn.dataset.action;
+                const memberId = btn.dataset.memberId;
+                try {
+                    if (action === 'promote') {
+                        await this.supabase.from('group_members').update({ role: 'admin' }).eq('id', memberId);
+                        this.showNotification('Success', 'User promoted to admin.');
+                    } else if (action === 'demote') {
+                        await this.supabase.from('group_members').update({ role: 'member' }).eq('id', memberId);
+                        this.showNotification('Success', 'User demoted to member.');
+                    } else if (action === 'kick') {
+                        await this.supabase.from('group_members').delete().eq('id', memberId);
+                        this.showNotification('Success', 'User removed from group.');
+                    }
+                    // Refresh
+                    this.dcShowGroupSettings();
+                } catch (err) {
+                    this.showNotification('Error', 'Action failed: ' + (err.message || ''));
+                }
+            });
+        });
+
+        document.getElementById('dcLeaveGroup')?.addEventListener('click', async () => {
+            if (!confirm('Leave this group?')) return;
+            try {
+                await this.supabase.from('group_members').delete()
+                    .eq('group_id', this.dcActiveGroupId)
+                    .eq('user_id', this.userId);
+                modal.style.display = 'none';
+                this.dcGoBack();
+                this.showNotification('Info', 'You left the group.');
+            } catch (err) {
+                this.showNotification('Error', 'Failed to leave: ' + (err.message || ''));
+            }
+        });
+
+    } catch (error) {
+        console.error('Group settings error:', error);
+        this.showNotification('Error', 'Failed to load group settings.');
+    }
+};
+
+// Block a user
+AIAssistant.prototype.blockUser = async function(userId) {
+    try {
+        // Check for existing friendship
+        const { data: existing } = await this.supabase
+            .from('friends')
+            .select('id')
+            .or(`and(user_id.eq.${this.userId},friend_id.eq.${userId}),and(user_id.eq.${userId},friend_id.eq.${this.userId})`)
+            .limit(1);
+
+        if (existing && existing.length > 0) {
+            await this.supabase.from('friends').update({ status: 'blocked' }).eq('id', existing[0].id);
+        } else {
+            await this.supabase.from('friends').insert({ user_id: this.userId, friend_id: userId, status: 'blocked' });
+        }
+        this.showNotification('Info', 'User blocked.');
+    } catch (error) {
+        console.error('Block user error:', error);
+        this.showNotification('Error', 'Failed to block user.');
+    }
+};
+
+// Unblock a user
+AIAssistant.prototype.unblockUser = async function(userId) {
+    try {
+        await this.supabase.from('friends').delete()
+            .or(`and(user_id.eq.${this.userId},friend_id.eq.${userId}),and(user_id.eq.${userId},friend_id.eq.${this.userId})`)
+            .eq('status', 'blocked');
+        this.showNotification('Info', 'User unblocked.');
+    } catch (error) {
+        console.error('Unblock user error:', error);
+    }
+};
+
+// ============================================
+// FRIENDS SYSTEM
+// ============================================
+
+AIAssistant.prototype.openFriendsPanel = async function() {
+    if (!this.friendsPanel) return;
+    this.friendsPanel.style.display = 'flex';
+    this.switchFriendsTab('all');
+};
+
+AIAssistant.prototype.closeFriendsPanel = function() {
+    if (!this.friendsPanel) return;
+    this.friendsPanel.style.display = 'none';
+};
+
+AIAssistant.prototype.switchFriendsTab = function(tab) {
+    // Update tab buttons
+    if (this.friendsTabAll) this.friendsTabAll.classList.toggle('active', tab === 'all');
+    if (this.friendsTabPending) this.friendsTabPending.classList.toggle('active', tab === 'pending');
+    if (this.friendsTabAdd) this.friendsTabAdd.classList.toggle('active', tab === 'add');
+
+    // Show/hide views
+    if (this.friendsAllView) this.friendsAllView.style.display = tab === 'all' ? 'flex' : 'none';
+    if (this.friendsPendingView) this.friendsPendingView.style.display = tab === 'pending' ? 'flex' : 'none';
+    if (this.friendsAddView) this.friendsAddView.style.display = tab === 'add' ? 'flex' : 'none';
+
+    if (tab === 'all') this.loadFriendsList();
+    if (tab === 'pending') this.loadPendingRequests();
+    if (tab === 'add') this.friendsSearchUsers(); // Auto-load all users
+};
+
+AIAssistant.prototype.loadFriendsData = async function() {
+    try {
+        const { data, error } = await this.supabase
+            .from('friends')
+            .select('*')
+            .eq('status', 'accepted')
+            .or(`user_id.eq.${this.userId},friend_id.eq.${this.userId}`);
+
+        if (error) throw error;
+
+        const friendIds = (data || []).map(f => f.user_id === this.userId ? f.friend_id : f.user_id);
+        if (friendIds.length === 0) {
+            this.friendsData = [];
+            return;
+        }
+
+        const { data: users } = await this.supabase
+            .from('users')
+            .select('id, username, email')
+            .in('id', friendIds);
+
+        this.friendsData = (users || []).map(u => ({
+            id: u.id,
+            name: u.username || u.email.split('@')[0],
+            email: u.email
+        }));
+    } catch (error) {
+        console.error('Load friends data error:', error);
+        this.friendsData = [];
+    }
+};
+
+AIAssistant.prototype.loadFriendsList = async function() {
+    await this.loadFriendsData();
+
+    if (this.friendsData.length === 0) {
+        if (this.friendsList) this.friendsList.innerHTML = '<div class="dc-empty">No friends yet. Go to the "Add" tab to find people!</div>';
+        return;
+    }
+
+    if (this.friendsList) {
+        this.friendsList.innerHTML = this.friendsData.map(friend => {
+            const initial = (friend.name || '?')[0].toUpperCase();
+            return `
+                <div class="dc-user-item" style="padding:10px 14px;">
+                    <div class="dc-user-avatar">${initial}</div>
+                    <div class="dc-user-info">
+                        <div class="dc-user-name">${this.escapeHtml(friend.name)}</div>
+                        <div class="dc-user-email">${this.escapeHtml(friend.email)}</div>
+                    </div>
+                    <div class="dc-friend-actions">
+                        <button class="dc-friend-btn chat" data-action="open-chat" data-user-id="${friend.id}" data-user-name="${this.escapeHtml(friend.name)}">Chat</button>
+                        <button class="dc-friend-btn remove" data-action="remove-friend" data-user-id="${friend.id}" title="Unfriend">Unfriend</button>
+                        <button class="dc-friend-btn decline" data-action="block-user" data-user-id="${friend.id}" title="Block" style="font-size:11px;padding:4px 8px;">Block</button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        this.friendsList.querySelectorAll('[data-action]').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                if (btn.dataset.action === 'open-chat') {
+                    this.closeFriendsPanel();
+                    this.openDirectChat();
+                    setTimeout(() => this.dcStartChat(btn.dataset.userId, btn.dataset.userName), 300);
+                } else if (btn.dataset.action === 'remove-friend') {
+                    if (confirm('Unfriend this user?')) {
+                        await this.removeFriend(btn.dataset.userId);
+                        this.loadFriendsList();
+                    }
+                } else if (btn.dataset.action === 'block-user') {
+                    if (confirm('Block this user? They won\'t be able to message you.')) {
+                        await this.blockUser(btn.dataset.userId);
+                        this.loadFriendsList();
+                    }
+                }
+            });
+        });
+    }
+};
+
+AIAssistant.prototype.loadPendingRequests = async function() {
+    try {
+        // Incoming requests
+        const { data: incoming } = await this.supabase
+            .from('friends')
+            .select('*')
+            .eq('friend_id', this.userId)
+            .eq('status', 'pending');
+
+        // Outgoing requests
+        const { data: outgoing } = await this.supabase
+            .from('friends')
+            .select('*')
+            .eq('user_id', this.userId)
+            .eq('status', 'pending');
+
+        const allPending = [...(incoming || []), ...(outgoing || [])];
+
+        if (allPending.length === 0) {
+            if (this.friendsPendingList) this.friendsPendingList.innerHTML = '<div class="dc-empty">No pending requests</div>';
+            return;
+        }
+
+        const userIds = allPending.map(f => f.user_id === this.userId ? f.friend_id : f.user_id);
+        const { data: users } = await this.supabase
+            .from('users')
+            .select('id, username, email')
+            .in('id', userIds);
+
+        const userMap = {};
+        (users || []).forEach(u => { userMap[u.id] = u; });
+
+        if (this.friendsPendingList) {
+            this.friendsPendingList.innerHTML = allPending.map(req => {
+                const isIncoming = req.friend_id === this.userId;
+                const otherId = isIncoming ? req.user_id : req.friend_id;
+                const otherUser = userMap[otherId] || {};
+                const displayName = otherUser.username || (otherUser.email ? otherUser.email.split('@')[0] : 'User');
+                const initial = displayName[0].toUpperCase();
+
+                let actions = '';
+                if (isIncoming) {
+                    actions = `
+                        <button class="dc-friend-btn accept" data-action="accept" data-id="${req.id}">Accept</button>
+                        <button class="dc-friend-btn decline" data-action="decline" data-id="${req.id}">Decline</button>
+                    `;
+                } else {
+                    actions = `<span class="dc-friend-btn pending-label">Sent</span>`;
+                }
+
+                return `
+                    <div class="dc-user-item" style="padding:10px 14px;">
+                        <div class="dc-user-avatar">${initial}</div>
+                        <div class="dc-user-info">
+                            <div class="dc-user-name">${this.escapeHtml(displayName)}</div>
+                            <div class="dc-user-email">${isIncoming ? 'Wants to be your friend' : 'Request sent'}</div>
+                        </div>
+                        <div class="dc-friend-actions">${actions}</div>
+                    </div>
+                `;
+            }).join('');
+
+            this.friendsPendingList.querySelectorAll('[data-action]').forEach(btn => {
+                btn.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    if (btn.dataset.action === 'accept') {
+                        await this.acceptFriendRequest(btn.dataset.id);
+                    } else if (btn.dataset.action === 'decline') {
+                        await this.declineFriendRequest(btn.dataset.id);
+                    }
+                    this.loadPendingRequests();
+                });
+            });
+        }
+    } catch (error) {
+        console.error('Load pending error:', error);
+    }
+};
+
+AIAssistant.prototype.friendsSearchUsers = async function() {
+    const query = this.friendsSearchInput?.value?.trim();
+
+    try {
+        // If query provided, filter; otherwise show all users
+        let supaQuery = this.supabase
+            .from('users')
+            .select('id, username, email')
+            .neq('id', this.userId)
+            .limit(20);
+
+        if (query && query.length >= 2) {
+            supaQuery = supaQuery.or(`username.ilike.%${query}%,email.ilike.%${query}%`);
+        }
+
+        const { data, error } = await supaQuery;
+
+        if (error) throw error;
+
+        if (!data || data.length === 0) {
+            if (this.friendsSearchResults) this.friendsSearchResults.innerHTML = '<div class="dc-empty" style="padding:12px 16px;font-size:13px;">No users found</div>';
+            return;
+        }
+
+        // Check existing friendships
+        const { data: friendships } = await this.supabase
+            .from('friends')
+            .select('*')
+            .or(`user_id.eq.${this.userId},friend_id.eq.${this.userId}`);
+
+        const friendMap = {};
+        (friendships || []).forEach(f => {
+            const otherId = f.user_id === this.userId ? f.friend_id : f.user_id;
+            friendMap[otherId] = f;
+        });
+
+        if (this.friendsSearchResults) {
+            this.friendsSearchResults.innerHTML = data.map(user => {
+                const initial = (user.username || user.email || '?')[0].toUpperCase();
+                const displayName = user.username || user.email.split('@')[0];
+                const friendship = friendMap[user.id];
+                let actionBtn = '';
+                if (!friendship) {
+                    actionBtn = `<button class="dc-friend-btn add" data-action="add" data-user-id="${user.id}">Add Friend</button>`;
+                } else if (friendship.status === 'pending') {
+                    actionBtn = `<span class="dc-friend-btn pending-label">Pending</span>`;
+                } else if (friendship.status === 'accepted') {
+                    actionBtn = `<span class="dc-friend-btn pending-label" style="background:#48bb78;color:white;">Friends</span>`;
+                }
+
+                return `
+                    <div class="dc-user-item" style="padding:10px 14px;">
+                        <div class="dc-user-avatar">${initial}</div>
+                        <div class="dc-user-info">
+                            <div class="dc-user-name">${this.escapeHtml(displayName)}</div>
+                            <div class="dc-user-email">${this.escapeHtml(user.email)}</div>
+                        </div>
+                        <div class="dc-friend-actions">${actionBtn}</div>
+                    </div>
+                `;
+            }).join('');
+
+            this.friendsSearchResults.querySelectorAll('[data-action="add"]').forEach(btn => {
+                btn.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    await this.sendFriendRequest(btn.dataset.userId);
+                    btn.textContent = 'Pending';
+                    btn.className = 'dc-friend-btn pending-label';
+                });
+            });
+        }
+    } catch (error) {
+        console.error('Friends search error:', error);
+    }
+};
+
+AIAssistant.prototype.sendFriendRequest = async function(friendId) {
+    try {
+        if (!friendId || friendId === this.userId) {
+            this.showNotification('Error', 'Invalid user.');
+            return;
+        }
+
+        // Check if request already exists (either direction)
+        const { data: existing } = await this.supabase
+            .from('friends')
+            .select('id, status')
+            .or(`and(user_id.eq.${this.userId},friend_id.eq.${friendId}),and(user_id.eq.${friendId},friend_id.eq.${this.userId})`)
+            .limit(1);
+
+        if (existing && existing.length > 0) {
+            if (existing[0].status === 'pending') {
+                this.showNotification('Info', 'Friend request already pending.');
+            } else if (existing[0].status === 'accepted') {
+                this.showNotification('Info', 'You are already friends!');
+            }
+            return;
+        }
+
+        const { error } = await this.supabase
+            .from('friends')
+            .insert({ user_id: this.userId, friend_id: friendId, status: 'pending' });
+        if (error) throw error;
+        this.showNotification('Success', 'Friend request sent!');
+    } catch (error) {
+        console.error('Send friend request error:', error);
+        this.showNotification('Error', 'Failed to send friend request: ' + (error.message || 'Unknown error'));
+    }
+};
+
+AIAssistant.prototype.acceptFriendRequest = async function(friendshipId) {
+    try {
+        const { error } = await this.supabase
+            .from('friends')
+            .update({ status: 'accepted' })
+            .eq('id', friendshipId);
+        if (error) throw error;
+    } catch (error) {
+        console.error('Accept friend error:', error);
+    }
+};
+
+AIAssistant.prototype.declineFriendRequest = async function(friendshipId) {
+    try {
+        const { error } = await this.supabase
+            .from('friends')
+            .delete()
+            .eq('id', friendshipId);
+        if (error) throw error;
+    } catch (error) {
+        console.error('Decline friend error:', error);
+    }
+};
+
+AIAssistant.prototype.removeFriend = async function(friendId) {
+    try {
+        await this.supabase
+            .from('friends')
+            .delete()
+            .or(`and(user_id.eq.${this.userId},friend_id.eq.${friendId}),and(user_id.eq.${friendId},friend_id.eq.${this.userId})`);
+    } catch (error) {
+        console.error('Remove friend error:', error);
+    }
+};
+
+// ============================================
+// CONNECTION RECOVERY & MESSAGE SYNC
+// ============================================
+
+// Re-subscribe and reload when connection is restored
+AIAssistant.prototype.dcSetupConnectionRecovery = function() {
+    // Listen for online/offline events
+    window.addEventListener('online', () => {
+        console.log('Connection restored — resyncing chat...');
+        this.showNotification('Info', 'Connection restored.');
+        // Reload current chat messages
+        if (this.dcActiveChatId || this.dcActiveGroupId) {
+            this.dcLoadMessages();
+            this.dcSubscribeToMessages();
+        }
+        // Also refresh chat list
+        if (this.directChatPanel?.style.display === 'flex') {
+            this.dcLoadChats();
+        }
+    });
+
+    window.addEventListener('offline', () => {
+        console.log('Connection lost');
+        this.showNotification('Warning', 'You are offline. Messages will retry when connected.');
+    });
+
+    // Visibility change — resync when tab becomes visible again
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && this.directChatPanel?.style.display === 'flex') {
+            if (this.dcActiveChatId || this.dcActiveGroupId) {
+                this.dcLoadMessages();
+            } else {
+                this.dcLoadChats();
+            }
+        }
+    });
 };

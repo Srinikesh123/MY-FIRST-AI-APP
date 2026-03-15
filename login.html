@@ -503,6 +503,26 @@
                     return;
                 }
 
+                // Create public.users record (in case trigger didn't fire)
+                if (data.user) {
+                    try {
+                        const apiUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+                            ? 'http://localhost:3000/api'
+                            : `${window.location.origin}/api`;
+                        await fetch(`${apiUrl}/users/create`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                userId: data.user.id,
+                                email: email,
+                                username: name
+                            })
+                        });
+                    } catch (e) {
+                        console.warn('Could not create user record (trigger may handle it):', e);
+                    }
+                }
+
                 // If email confirmation is disabled, user is immediately logged in
                 if (data.user && data.session) {
                     localStorage.setItem('supabaseUser', JSON.stringify(data.user));
