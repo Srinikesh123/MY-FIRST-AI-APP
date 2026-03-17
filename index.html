@@ -300,7 +300,10 @@
             
             <!-- User Profile Widget (Bottom Left) -->
             <div id="userProfileWidget" class="user-profile-widget" style="display: none;">
-                <div class="user-profile-avatar">👤</div>
+                <div class="user-profile-avatar" id="userProfileAvatarWrap">
+                    <img id="userProfileAvatarImg" src="" alt="Avatar" style="width:36px;height:36px;border-radius:50%;object-fit:cover;display:none;">
+                    <span id="userProfileAvatarEmoji" style="font-size:24px;">👤</span>
+                </div>
                 <div class="user-profile-info">
                     <div id="userProfileName" class="user-profile-name">Loading...</div>
                     <div id="userProfileTier" class="user-profile-tier">Free</div>
@@ -313,7 +316,20 @@
         <div id="settingsView" class="view">
             <div class="settings-container">
                 <h2>Settings</h2>
-                
+
+                <!-- Profile Picture -->
+                <div class="settings-section">
+                    <h3>🖼️ Profile Picture</h3>
+                    <div class="setting-item" style="flex-direction:column;align-items:center;gap:12px;">
+                        <img id="settingsAvatarPreview" src="" alt="Avatar"
+                             style="width:80px;height:80px;border-radius:50%;object-fit:cover;border:3px solid #667eea;cursor:pointer;"
+                             onclick="document.getElementById('settingsAvatarInput').click()">
+                        <input type="file" id="settingsAvatarInput" accept="image/*" style="display:none;">
+                        <button id="settingsChangeAvatarBtn" class="btn-secondary" style="font-size:13px;">Change Photo</button>
+                        <div id="settingsAvatarMsg" style="font-size:12px;color:#666;display:none;"></div>
+                    </div>
+                </div>
+
                 <!-- Appearance -->
                 <div class="settings-section">
                     <h3>🎨 Appearance</h3>
@@ -674,6 +690,44 @@
         </div>
     </div>
     
+    <!-- ===== INCOMING CALL MODAL ===== -->
+    <div id="incomingCallModal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:10001;align-items:center;justify-content:center;">
+        <div style="background:white;border-radius:20px;padding:36px 28px;text-align:center;max-width:320px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,0.4);">
+            <div style="font-size:48px;margin-bottom:12px;" id="incomingCallIcon">📞</div>
+            <h3 id="incomingCallerName" style="margin:0 0 6px;font-size:20px;color:#333;">Unknown</h3>
+            <p id="incomingCallTypeLabel" style="color:#667eea;font-weight:600;margin:0 0 24px;">Incoming Voice Call</p>
+            <div style="display:flex;justify-content:center;gap:32px;">
+                <button id="rejectCallBtn" title="Decline" style="width:64px;height:64px;border-radius:50%;background:#ef4444;color:white;border:none;cursor:pointer;font-size:28px;box-shadow:0 4px 12px rgba(239,68,68,0.4);">📵</button>
+                <button id="acceptCallBtn" title="Accept" style="width:64px;height:64px;border-radius:50%;background:#22c55e;color:white;border:none;cursor:pointer;font-size:28px;box-shadow:0 4px 12px rgba(34,197,94,0.4);">📞</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== ACTIVE CALL OVERLAY ===== -->
+    <div id="callOverlay" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:#111;z-index:10000;flex-direction:column;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;">
+        <div style="text-align:center;margin-bottom:10px;">
+            <div id="callOverlayAvatar" style="width:100px;height:100px;border-radius:50%;background:linear-gradient(135deg,#667eea,#764ba2);display:flex;align-items:center;justify-content:center;font-size:48px;color:white;margin:0 auto 12px;border:3px solid rgba(255,255,255,0.2);"></div>
+            <div id="callOverlayName" style="color:white;font-size:18px;font-weight:600;">Calling...</div>
+            <div id="callStatusText" style="color:#9ca3af;font-size:13px;margin-top:4px;">Connecting…</div>
+            <div id="callTimer" style="color:#22c55e;font-size:15px;font-weight:700;margin-top:4px;display:none;">0:00</div>
+            <div id="callRemoteMuteIndicator" style="display:none;color:#fbbf24;font-size:12px;margin-top:4px;">🔇 Other user is muted</div>
+        </div>
+        <div id="callVideoContainer" style="position:relative;width:100%;max-width:560px;display:none;">
+            <video id="remoteVideo" autoplay playsinline muted style="width:100%;border-radius:12px;background:#222;min-height:280px;object-fit:cover;"></video>
+            <video id="localVideo"  autoplay playsinline muted style="position:absolute;bottom:10px;right:10px;width:110px;border-radius:8px;background:#333;object-fit:cover;display:none;"></video>
+        </div>
+        <!-- Audio-only element (hidden, always plays remote audio) -->
+        <audio id="remoteAudio" autoplay style="display:none;"></audio>
+        <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:16px;justify-content:center;">
+            <button id="toggleMuteBtn"       style="padding:11px 16px;border-radius:30px;background:#374151;color:white;border:none;cursor:pointer;font-size:13px;">🎤 Mute</button>
+            <button id="toggleVideoBtn"      style="padding:11px 16px;border-radius:30px;background:#374151;color:white;border:none;cursor:pointer;font-size:13px;display:none;">📹 Stop Video</button>
+            <button id="callSwitchToVideoBtn" style="padding:11px 16px;border-radius:30px;background:#374151;color:white;border:none;cursor:pointer;font-size:13px;">📹 Add Video</button>
+            <button id="callScreenShareBtn"  style="padding:11px 16px;border-radius:30px;background:#374151;color:white;border:none;cursor:pointer;font-size:13px;">🖥️ Share Screen</button>
+            <button id="callFlipCamBtn"      style="padding:11px 16px;border-radius:30px;background:#374151;color:white;border:none;cursor:pointer;font-size:13px;">🔄 Flip Cam</button>
+            <button id="hangupBtn"           style="padding:11px 20px;border-radius:30px;background:#ef4444;color:white;border:none;cursor:pointer;font-size:13px;font-weight:700;">📵 End Call</button>
+        </div>
+    </div>
+
     <!-- Direct Chat Panel (User-to-User) -->
     <div id="directChatPanel" class="direct-chat-panel" style="display: none;">
         <div class="dc-header">
@@ -722,7 +776,16 @@
 
         <!-- Active Chat View (DM or Group) -->
         <div id="dcChatView" class="dc-view" style="display: none;">
+            <!-- Call bar — visible only when chatting with an online user -->
+            <div id="dcCallBar" style="display:none;padding:8px 12px;background:#f0fdf4;border-bottom:1px solid #bbf7d0;justify-content:space-between;align-items:center;flex-shrink:0;">
+                <span style="font-size:12px;color:#16a34a;font-weight:600;">🟢 Online</span>
+                <div style="display:flex;gap:8px;">
+                    <button id="dcVoiceCallBtn" title="Voice Call" style="padding:5px 12px;border-radius:20px;background:#22c55e;color:white;border:none;cursor:pointer;font-size:12px;font-weight:600;">📞 Call</button>
+                    <button id="dcVideoCallBtn" title="Video Call" style="padding:5px 12px;border-radius:20px;background:#667eea;color:white;border:none;cursor:pointer;font-size:12px;font-weight:600;">🎥 Video</button>
+                </div>
+            </div>
             <div id="dcMessages" class="dc-messages"></div>
+            <div id="dcTypingIndicator" style="display:none;padding:4px 14px 2px;font-size:12px;color:#9ca3af;font-style:italic;flex-shrink:0;"></div>
             <div class="dc-input-bar">
                 <button id="dcMediaBtn" class="dc-media-btn" title="Attach media">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -794,6 +857,12 @@
         <button onclick="document.getElementById('debugPanel').style.display='none'" style="margin-top: 5px; padding: 2px 5px; font-size: 10px;">Hide</button>
     </div>
     
+    <!-- Message context menu -->
+    <div id="msgContextMenu" style="display:none;position:fixed;z-index:20000;background:white;border:1px solid #e2e8f0;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.15);min-width:140px;overflow:hidden;">
+        <button id="msgCtxCopy"   style="display:block;width:100%;padding:11px 16px;text-align:left;background:none;border:none;cursor:pointer;font-size:13px;color:#374151;">📋 Copy</button>
+        <button id="msgCtxDelete" style="display:block;width:100%;padding:11px 16px;text-align:left;background:none;border:none;cursor:pointer;font-size:13px;color:#ef4444;">🗑️ Delete</button>
+    </div>
+
     <script>
         window.SUPABASE_URL = 'https://vexmydzwlongsqnzamdk.supabase.co';
         window.SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZleG15ZHp3bG9uZ3NxbnphbWRrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU5ODQzNTEsImV4cCI6MjA4MTU2MDM1MX0.2sswoFrrYryzpDircWi2HtRFiE5x5Pp-N_oUYunPO1o';

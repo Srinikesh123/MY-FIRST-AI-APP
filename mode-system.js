@@ -288,16 +288,17 @@
             indicator.id = 'mode-indicator';
             indicator.style.cssText = `
                 position: fixed;
-                top: 10px;
-                right: 10px;
-                padding: 5px 10px;
+                bottom: 90px;
+                left: 16px;
+                padding: 4px 10px;
                 background: #4f46e5;
                 color: white;
-                border-radius: 4px;
-                font-size: 12px;
+                border-radius: 20px;
+                font-size: 11px;
                 font-weight: bold;
-                z-index: 10000;
+                z-index: 500;
                 box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+                pointer-events: none;
             `;
             document.body.appendChild(indicator);
         }

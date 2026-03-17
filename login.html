@@ -305,6 +305,26 @@
     <script>
         let selectedAvatar = null;
         let profilePictureFile = null;
+        let profilePictureDataUrl = null; // compressed base64
+
+        function compressImageToDataUrl(file, maxSize = 80) {
+            return new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.onload = e => {
+                    const img = new Image();
+                    img.onload = () => {
+                        const canvas = document.createElement('canvas');
+                        const scale = Math.min(maxSize / img.width, maxSize / img.height, 1);
+                        canvas.width  = Math.round(img.width  * scale);
+                        canvas.height = Math.round(img.height * scale);
+                        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+                        resolve(canvas.toDataURL('image/jpeg', 0.8));
+                    };
+                    img.src = e.target.result;
+                };
+                reader.readAsDataURL(file);
+            });
+        }
 
         // Tab switching
         document.querySelectorAll('.login-tab').forEach(tab => {
@@ -321,16 +341,14 @@
         });
 
         // Profile picture upload
-        document.getElementById('profilePicture').addEventListener('change', (e) => {
+        document.getElementById('profilePicture').addEventListener('change', async (e) => {
             const file = e.target.files[0];
             if (file) {
                 profilePictureFile = file;
-                const reader = new FileReader();
-                reader.onload = (event) => {
-                    document.getElementById('profilePreview').src = event.target.result;
-                    document.querySelectorAll('.avatar-option').forEach(opt => opt.classList.remove('selected'));
-                };
-                reader.readAsDataURL(file);
+                profilePictureDataUrl = await compressImageToDataUrl(file, 120);
+                document.getElementById('profilePreview').src = profilePictureDataUrl;
+                document.querySelectorAll('.avatar-option').forEach(opt => opt.classList.remove('selected'));
+                selectedAvatar = null;
             }
         });
 
@@ -395,7 +413,7 @@
             selectedAvatar = option.dataset.avatar;
             profilePictureFile = null;
             document.getElementById('profilePicture').value = '';
-            
+
             // Update preview
             const emojiMap = {
                 'smile': '😀',
@@ -404,7 +422,9 @@
                 'wink': '😉'
             };
             const emoji = emojiMap[selectedAvatar] || '😀';
-            profilePreview.src = `data:image/svg+xml,${encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'><circle cx='50' cy='50' r='50' fill='#667eea'/><text x='50' y='65' font-size='40' fill='white' text-anchor='middle'>${emoji}</text></svg>`)}`;
+            const svgUrl = `data:image/svg+xml,${encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100'><circle cx='50' cy='50' r='50' fill='#667eea'/><text x='50' y='65' font-size='40' fill='white' text-anchor='middle'>${emoji}</text></svg>`)}`;
+            profilePreview.src = svgUrl;
+            profilePictureDataUrl = svgUrl; // store so it gets saved
         }
 
         function showError(message) {
@@ -515,7 +535,8 @@
                             body: JSON.stringify({
                                 userId: data.user.id,
                                 email: email,
-                                username: name
+                                username: name,
+                                avatar_url: profilePictureDataUrl || null
                             })
                         });
                     } catch (e) {

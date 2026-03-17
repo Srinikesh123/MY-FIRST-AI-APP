@@ -8,6 +8,7 @@ const { createClient } = require('@supabase/supabase-js');
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
+app.use(express.text({ type: 'text/plain' }));
 
 // ============================================
 // CONFIGURATION
@@ -16,6 +17,12 @@ app.use(express.json({ limit: '50mb' }));
 const supabaseUrl = process.env.SUPABASE_URL || 'https://vexmydzwlongsqnzamdk.supabase.co';
 const supabaseKey = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZleG15ZHpsb25nc3FuemFtZGsiLCJyb2xlIjoiYW5vbiIsImlhdCI6MTczODk3NzU0MiwiZXhwIjoyMDU0NTUzNTQyfQ.VkzL2z2Kz-2v2F8Jq2rKQkL6O8dHqWnXz6kD8hYk3Jk';
 const supabase = createClient(supabaseUrl, supabaseKey);
+
+// Service-role client — bypasses RLS for admin operations
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY;
+const supabaseAdmin = supabaseServiceKey
+    ? createClient(supabaseUrl, supabaseServiceKey)
+    : supabase; // fallback to anon if no service key
 
 const PLAN_LIMITS = {
     free: { messages: 100, images: 20, memories: 50, codeGenerations: 30 },
@@ -542,27 +549,31 @@ Rules:
 
 app.post('/api/users/create', async (req, res) => {
     try {
-        const { userId, email, username } = req.body;
+        const { userId, email, username, avatar_url } = req.body;
         if (!userId || !email) {
             return res.status(400).json({ success: false, error: 'userId and email required' });
         }
 
         const displayName = username || email.split('@')[0];
 
+        const upsertData = {
+            id: userId,
+            email: email,
+            username: displayName,
+            plan: 'free',
+            coins: 0,
+            invites_count: 0,
+            is_admin: false,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+        };
+        if (avatar_url) upsertData.avatar_url = avatar_url;
+
         // Upsert: create if not exists, update email/username if exists
-        const { data, error } = await supabase
+        // Use supabaseAdmin (service key) to bypass RLS — server has no user session
+        const { data, error } = await supabaseAdmin
             .from('users')
-            .upsert({
-                id: userId,
-                email: email,
-                username: displayName,
-                plan: 'free',
-                coins: 0,
-                invites_count: 0,
-                is_admin: false,
-                created_at: new Date().toISOString(),
-                updated_at: new Date().toISOString()
-            }, { onConflict: 'id' });
+            .upsert(upsertData, { onConflict: 'id' });
 
         if (error) {
             console.error('User create error:', error);
@@ -574,6 +585,173 @@ app.post('/api/users/create', async (req, res) => {
     } catch (error) {
         console.error('User create endpoint error:', error);
         return res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// ============================================
+// UPDATE AVATAR
+// ============================================
+
+app.post('/api/users/update-avatar', async (req, res) => {
+    try {
+        const { userId, avatar_url } = req.body;
+        if (!userId || !avatar_url) {
+            return res.status(400).json({ success: false, error: 'userId and avatar_url required' });
+        }
+
+        const { error } = await supabaseAdmin
+            .from('users')
+            .update({ avatar_url, updated_at: new Date().toISOString() })
+            .eq('id', userId);
+
+        if (error) {
+            console.error('Avatar update error:', error);
+            return res.status(500).json({ success: false, error: error.message });
+        }
+
+        return res.json({ success: true });
+    } catch (error) {
+        console.error('Avatar update endpoint error:', error);
+        return res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// ============================================
+// ADMIN ENDPOINTS — require is_admin flag
+// Uses service-role client to bypass RLS
+// ============================================
+
+// Helper: verify the requesting user is an admin
+async function verifyAdmin(adminUserId) {
+    if (!adminUserId) return false;
+    const { data, error } = await supabaseAdmin
+        .from('users')
+        .select('is_admin, email')
+        .eq('id', adminUserId)
+        .single();
+    if (error || !data) return false;
+    const isAdminEmail = (data.email || '').toLowerCase() === 'howtotutorialbysreenikesh@gmail.com';
+    return data.is_admin === true || isAdminEmail;
+}
+
+// GET /api/admin/users — list all users
+app.get('/api/admin/users', async (req, res) => {
+    try {
+        const { userId } = req.query;
+        if (!(await verifyAdmin(userId))) {
+            return res.status(403).json({ error: 'Admin access required' });
+        }
+
+        const { data: users, error } = await supabaseAdmin
+            .from('users')
+            .select('id, email, username, plan, coins, is_admin, created_at')
+            .order('created_at', { ascending: false });
+
+        if (error) {
+            console.error('Admin list users error:', error);
+            return res.status(500).json({ error: error.message });
+        }
+
+        return res.json({ users: users || [] });
+    } catch (error) {
+        console.error('Admin users endpoint error:', error);
+        return res.status(500).json({ error: error.message });
+    }
+});
+
+// POST /api/admin/update-user — update any user's fields
+app.post('/api/admin/update-user', async (req, res) => {
+    try {
+        const { adminUserId, targetUserId, updates } = req.body;
+
+        if (!targetUserId || !updates) {
+            return res.status(400).json({ error: 'targetUserId and updates required' });
+        }
+
+        if (!(await verifyAdmin(adminUserId))) {
+            return res.status(403).json({ error: 'Admin access required' });
+        }
+
+        // Only allow safe fields to be updated
+        const allowed = ['username', 'plan', 'coins', 'is_admin'];
+        const safeUpdates = {};
+        for (const key of allowed) {
+            if (key in updates) safeUpdates[key] = updates[key];
+        }
+        safeUpdates.updated_at = new Date().toISOString();
+
+        const { error } = await supabaseAdmin
+            .from('users')
+            .update(safeUpdates)
+            .eq('id', targetUserId);
+
+        if (error) {
+            console.error('Admin update user error:', error);
+            return res.status(500).json({ error: error.message });
+        }
+
+        console.log(`✅ Admin updated user ${targetUserId}:`, safeUpdates);
+        return res.json({ success: true });
+    } catch (error) {
+        console.error('Admin update-user endpoint error:', error);
+        return res.status(500).json({ error: error.message });
+    }
+});
+
+// DELETE /api/admin/delete-user — remove a user record
+app.delete('/api/admin/delete-user', async (req, res) => {
+    try {
+        const { adminUserId, targetUserId } = req.body;
+
+        if (!targetUserId) {
+            return res.status(400).json({ error: 'targetUserId required' });
+        }
+
+        if (!(await verifyAdmin(adminUserId))) {
+            return res.status(403).json({ error: 'Admin access required' });
+        }
+
+        // Prevent admin from deleting themselves
+        if (adminUserId === targetUserId) {
+            return res.status(400).json({ error: 'Cannot delete your own account' });
+        }
+
+        const { error } = await supabaseAdmin
+            .from('users')
+            .delete()
+            .eq('id', targetUserId);
+
+        if (error) {
+            console.error('Admin delete user error:', error);
+            return res.status(500).json({ error: error.message });
+        }
+
+        console.log(`✅ Admin deleted user ${targetUserId}`);
+        return res.json({ success: true });
+    } catch (error) {
+        console.error('Admin delete-user endpoint error:', error);
+        return res.status(500).json({ error: error.message });
+    }
+});
+
+// ============================================
+// END CALL (called via sendBeacon on page unload)
+// ============================================
+
+app.post('/api/end-call', async (req, res) => {
+    try {
+        // sendBeacon sends text/plain, regular fetch sends application/json
+        let callId;
+        if (typeof req.body === 'string') {
+            try { callId = JSON.parse(req.body).callId; } catch (_) { callId = null; }
+        } else {
+            callId = req.body?.callId;
+        }
+        if (!callId) return res.status(400).json({ error: 'callId required' });
+        await supabaseAdmin.from('calls').update({ status: 'ended' }).eq('id', callId).neq('status', 'ended');
+        return res.json({ success: true });
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
     }
 });
 

@@ -9,7 +9,13 @@
       "Bash(netstat -ano)",
       "Bash(taskkill //F //PID 19344)",
       "Bash(npx kill-port:*)",
-      "Bash(taskkill /F /IM node.exe)"
+      "Bash(taskkill /F /IM node.exe)",
+      "Bash(ls c:/Users/howto/Documents/GitHub/MY-FIRST-AI-APP/*.html)",
+      "Bash(ls c:/Users/howto/Documents/GitHub/MY-FIRST-AI-APP/*.sql)",
+      "Bash(grep -r \"CREATE TABLE.*calls\\\\|CREATE TABLE.*user_profiles\\\\|CREATE TABLE.*user_custom_terms\\\\|CREATE TABLE.*user_relationships\\\\|CREATE TABLE.*user_private_facts\\\\|CREATE TABLE.*user_context\" /c/Users/howto/Documents/GitHub/MY-FIRST-AI-APP/*.sql)",
+      "Bash(grep -n \"avatar_url\" /c/Users/howto/Documents/GitHub/MY-FIRST-AI-APP/*.sql)",
+      "Bash(node -c app.js)",
+      "Bash(node -c server.js)"
     ]
   }
 }

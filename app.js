@@ -294,6 +294,7 @@ this.apiUrl = window.location.hostname === 'localhost' || window.location.hostna
         // Initialize other features
         this.initTextToSpeech();
         this.initSpeechRecognition();
+        this.initCallUI();
         this.checkServerHealth();
         
         // Pre-load games list in background (for instant display)
@@ -328,7 +329,7 @@ this.apiUrl = window.location.hostname === 'localhost' || window.location.hostna
         try {
             const { data, error } = await this.supabase
                 .from('users')
-                .select('plan, coins, invites_count, is_admin, username, email')
+                .select('plan, coins, invites_count, is_admin, username, email, avatar_url')
                 .eq('id', this.userId)
                 .single();
 
@@ -373,6 +374,7 @@ this.apiUrl = window.location.hostname === 'localhost' || window.location.hostna
                 this.userCoins = data.coins || 0;
                 this.userInvites = data.invites_count || 0;
                 this.userName = data.username || data.email?.split('@')[0] || 'User';
+                this.userAvatarUrl = data.avatar_url || null;
                 console.log('✅ USER INFO LOADED - Plan:', this.userPlan, 'Coins:', this.userCoins, 'Name:', this.userName);
                 
                 // Update user profile widget and usage
@@ -835,10 +837,31 @@ this.apiUrl = window.location.hostname === 'localhost' || window.location.hostna
             const tierText = this.userPlan.charAt(0).toUpperCase() + this.userPlan.slice(1);
             this.userProfileTier.textContent = tierText;
             this.userProfileTier.className = `user-profile-tier tier-${this.userPlan}`;
-            
+
             // Update coins display
             if (this.userProfileCoins) {
                 this.userProfileCoins.textContent = `🪙 ${this.userCoins || 0} coins`;
+            }
+
+            // Show avatar image if available
+            const avatarImg   = document.getElementById('userProfileAvatarImg');
+            const avatarEmoji = document.getElementById('userProfileAvatarEmoji');
+            if (avatarImg && avatarEmoji) {
+                if (this.userAvatarUrl) {
+                    avatarImg.src = this.userAvatarUrl;
+                    avatarImg.style.display = 'block';
+                    avatarEmoji.style.display = 'none';
+                } else {
+                    avatarImg.style.display = 'none';
+                    avatarEmoji.style.display = '';
+                }
+            }
+
+            // Sync settings avatar preview
+            const settingsPreview = document.getElementById('settingsAvatarPreview');
+            if (settingsPreview) {
+                settingsPreview.src = this.userAvatarUrl ||
+                    `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><circle cx="40" cy="40" r="40" fill="#667eea"/><text x="40" y="52" font-size="32" fill="white" text-anchor="middle">👤</text></svg>')}`;
             }
         }
     }
@@ -2971,6 +2994,9 @@ Available commands:
     }
 
     loadSettingsToForm() {
+        // Avatar change button
+        this._initAvatarChangeUI();
+
         // Theme
         const themeEl = document.getElementById(`theme${this.settings.theme.charAt(0).toUpperCase() + this.settings.theme.slice(1)}`);
         if (themeEl) themeEl.checked = true;
@@ -3124,6 +3150,65 @@ Available commands:
         this.chatView.classList.add('active');
         this.settingsView.classList.remove('active');
         if (this.userInput) this.userInput.focus();
+    }
+
+    _initAvatarChangeUI() {
+        const input  = document.getElementById('settingsAvatarInput');
+        const btn    = document.getElementById('settingsChangeAvatarBtn');
+        const msg    = document.getElementById('settingsAvatarMsg');
+        if (!input || btn._avatarBound) return;
+        btn._avatarBound = true;
+
+        const compressImg = (file) => new Promise(resolve => {
+            const reader = new FileReader();
+            reader.onload = e => {
+                const img = new Image();
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    const scale = Math.min(120 / img.width, 120 / img.height, 1);
+                    canvas.width  = Math.round(img.width  * scale);
+                    canvas.height = Math.round(img.height * scale);
+                    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+                    resolve(canvas.toDataURL('image/jpeg', 0.8));
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        });
+
+        btn.addEventListener('click', () => input.click());
+
+        input.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file || !this.userId) return;
+
+            msg.textContent = 'Uploading...';
+            msg.style.display = 'block';
+            msg.style.color = '#667eea';
+
+            try {
+                const dataUrl = await compressImg(file);
+
+                // Save to server
+                const resp = await fetch(`${this.apiUrl}/users/update-avatar`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userId: this.userId, avatar_url: dataUrl })
+                });
+                if (!resp.ok) throw new Error('Server error');
+
+                this.userAvatarUrl = dataUrl;
+                this.updateUserProfile();
+
+                msg.textContent = '✅ Profile picture updated!';
+                msg.style.color = '#16a34a';
+                setTimeout(() => { msg.style.display = 'none'; }, 3000);
+            } catch (err) {
+                msg.textContent = '❌ Failed to update. Try again.';
+                msg.style.color = '#ef4444';
+            }
+            input.value = '';
+        });
     }
 
     showSettings() {
@@ -4265,10 +4350,9 @@ AIAssistant.prototype.closeDirectChat = function() {
     this.dcActiveChatId = null;
     this.dcActiveChatUser = null;
     this.dcActiveGroupId = null;
-    if (this.dcSubscription) {
-        this.supabase.removeChannel(this.dcSubscription);
-        this.dcSubscription = null;
-    }
+    if (this.dcSubscription) { this.supabase.removeChannel(this.dcSubscription); this.dcSubscription = null; }
+    if (this._typingCh)      { this.supabase.removeChannel(this._typingCh);      this._typingCh = null; }
+    this._showTypingIndicator(false);
     if (this.dcGlobalSubscription) {
         this.supabase.removeChannel(this.dcGlobalSubscription);
         this.dcGlobalSubscription = null;
@@ -4307,13 +4391,14 @@ AIAssistant.prototype.dcShowSearchView = function() {
 };
 
 AIAssistant.prototype.dcShowChatView = function(userName) {
+    // Refresh call bar when entering a chat
+    this._updateCallBar();
     if (this.dcSearchView) this.dcSearchView.style.display = 'none';
     if (this.dcGroupsView) this.dcGroupsView.style.display = 'none';
     if (this.dcCreateGroupView) this.dcCreateGroupView.style.display = 'none';
     if (this.dcChatView) this.dcChatView.style.display = 'flex';
     if (this.dcTitle) {
         this.dcTitle.textContent = userName || 'Chat';
-        // Add settings gear for groups
         if (this.dcActiveGroupId) {
             this.dcTitle.style.cursor = 'pointer';
             this.dcTitle.title = 'Click for group settings';
@@ -4325,16 +4410,29 @@ AIAssistant.prototype.dcShowChatView = function(userName) {
         }
     }
     if (this.dcBackBtn) this.dcBackBtn.style.visibility = 'visible';
+
+    // Subscribe typing channel for DMs
+    if (!this.dcActiveGroupId && this.dcActiveChatId) {
+        this._subscribeTyping(this.dcActiveChatId);
+    }
+
+    // Wire up typing event on the input (once)
+    if (this.dcMessageInput && !this.dcMessageInput._typingBound) {
+        this.dcMessageInput._typingBound = true;
+        this.dcMessageInput.addEventListener('input', () => this._sendTypingEvent());
+    }
+
+    // Init right-click context menu (once)
+    this._initMsgContextMenu();
 };
 
 AIAssistant.prototype.dcGoBack = function() {
     this.dcActiveChatId = null;
     this.dcActiveChatUser = null;
     this.dcActiveGroupId = null;
-    if (this.dcSubscription) {
-        this.supabase.removeChannel(this.dcSubscription);
-        this.dcSubscription = null;
-    }
+    if (this.dcSubscription) { this.supabase.removeChannel(this.dcSubscription); this.dcSubscription = null; }
+    if (this._typingCh)      { this.supabase.removeChannel(this._typingCh);      this._typingCh = null; }
+    this._showTypingIndicator(false);
     // Return to the correct tab
     const isGroupTab = this.dcTabGroups?.classList.contains('active');
     if (isGroupTab) {
@@ -4568,6 +4666,14 @@ AIAssistant.prototype.dcLoadMessages = async function() {
 
         if (error) throw error;
         this.dcRenderMessages(data || []);
+
+        // Mark received messages as 'seen' (DMs only)
+        if (!this.dcActiveGroupId && this.dcActiveChatId && data?.length) {
+            const unread = data.filter(m => m.sender_id !== this.userId && m.status !== 'seen').map(m => m.id);
+            if (unread.length) {
+                this.supabase.from('direct_messages').update({ status: 'seen' }).in('id', unread).catch(() => {});
+            }
+        }
     } catch (error) {
         console.error('DC load messages error:', error);
     }
@@ -4614,11 +4720,19 @@ AIAssistant.prototype.dcBuildMessageHtml = function(msg) {
         senderHtml = `<div class="dc-msg-sender" style="font-size:11px;font-weight:600;color:#667eea;margin-bottom:2px;">${this.escapeHtml(msg._senderName)}</div>`;
     }
 
+    // Status ticks for sent messages
+    let statusTick = '';
+    if (isSent && !msg.id?.startsWith?.('temp-')) {
+        if (msg.status === 'seen')      statusTick = ' <span style="color:#3b82f6;font-size:10px;">✓✓</span>';
+        else if (msg.status === 'delivered') statusTick = ' <span style="color:#9ca3af;font-size:10px;">✓✓</span>';
+        else                             statusTick = ' <span style="color:#9ca3af;font-size:10px;">✓</span>';
+    }
+
     return `
         <div class="dc-msg ${isSent ? 'sent' : 'received'}${statusClass}" data-msg-id="${msg.id}">
             ${senderHtml}
             ${contentHtml}
-            <div class="dc-msg-time">${time}</div>
+            <div class="dc-msg-time">${time}${statusTick}</div>
         </div>
     `;
 };
@@ -4652,6 +4766,10 @@ AIAssistant.prototype.dcSendMessage = async function() {
     this.dcIsSending = true;
 
     this.dcMessageInput.value = '';
+
+    // Stop typing broadcast when message is sent
+    clearTimeout(this._typingStopTimer);
+    if (this._typingCh) this._typingCh.send({ type: 'broadcast', event: 'stop_typing', payload: { userId: this.userId } }).catch(() => {});
 
     // Detect if text is a URL
     let messageType = 'text';
@@ -4805,6 +4923,8 @@ AIAssistant.prototype.dcSubscribeToMessages = function() {
         this.supabase.removeChannel(this.dcSubscription);
         this.dcSubscription = null;
     }
+    // Polling fallback — ensures messages appear even if realtime isn't enabled on the table
+    this.dcStartMessagePoll();
 
     const isGroup = !!this.dcActiveGroupId;
     const targetId = isGroup ? this.dcActiveGroupId : this.dcActiveChatId;
@@ -5617,4 +5737,1282 @@ AIAssistant.prototype.dcSetupConnectionRecovery = function() {
             }
         }
     });
+};
+
+// ============================================================
+// AUTO-REFRESH POLLING FALLBACK
+// Polls for new messages every 3 s when a chat is open.
+// Supabase realtime is the primary mechanism; this is the backup.
+// ============================================================
+
+AIAssistant.prototype.dcStartMessagePoll = function() {
+    if (this._dcPollInterval) {
+        clearInterval(this._dcPollInterval);
+        this._dcPollInterval = null;
+    }
+    this._dcLastSeenMsgTime = null;
+
+    this._dcPollInterval = setInterval(async () => {
+        if (!this.dcActiveChatId && !this.dcActiveGroupId) return;
+        if (!this.dcMessages) return;
+
+        try {
+            const isGroup = !!this.dcActiveGroupId;
+            const table   = isGroup ? 'group_messages'  : 'direct_messages';
+            const col     = isGroup ? 'group_id'        : 'chat_id';
+            const id      = isGroup ? this.dcActiveGroupId : this.dcActiveChatId;
+
+            let q = this.supabase
+                .from(table)
+                .select('*')
+                .eq(col, id)
+                .order('created_at', { ascending: false })
+                .limit(10);
+
+            if (this._dcLastSeenMsgTime) {
+                q = q.gt('created_at', this._dcLastSeenMsgTime);
+            }
+
+            const { data } = await q;
+            if (!data || data.length === 0) return;
+
+            // Update watermark
+            this._dcLastSeenMsgTime = data[0].created_at;
+
+            // Append only messages not already in the DOM (newest last)
+            const reversed = [...data].reverse();
+            for (const msg of reversed) {
+                if (!this.dcMessages.querySelector(`[data-msg-id="${msg.id}"]`)) {
+                    this.dcAppendSingleMessage(msg);
+                }
+            }
+        } catch (_) { /* silent */ }
+    }, 3000);
+};
+
+// ============================================================
+// VOICE & VIDEO CALLS  (WebRTC + Supabase Realtime signaling)
+// Production-grade: WhatsApp/Discord-level reliability
+// ============================================================
+
+const _ICE_CONFIG = { iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    // TURN relay for strict NATs
+    { urls: 'turn:openrelay.metered.ca:80',  username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
+], iceCandidatePoolSize: 10 };
+
+// ── INIT ──────────────────────────────────────────────────────
+AIAssistant.prototype.initCallUI = function() {
+    // State
+    this._callPeer        = null;
+    this._localStream     = null;
+    this._remoteStream    = null;
+    this._callId          = null;
+    this._callSub         = null;
+    this._candSub         = null;
+    this._renegoCh        = null;
+    this._callStateCh     = null;
+    this._isCaller        = false;
+    this._incomingCall    = null;
+    this._isMuted         = false;
+    this._isVideoOff      = false;
+    this._isScreenSharing = false;
+    this._screenStream    = null;
+    this._savedCamTrack   = null;
+    this._callTimer       = null;
+    this._callStartTime   = null;
+    this._facingMode      = 'user';
+    this._callType        = 'voice';
+    this._renegoInProgress = false;
+    this._callEnding      = false;       // guard against double-end
+    this._heartbeatIv     = null;
+
+    const $ = id => document.getElementById(id);
+    this._el = {
+        voiceBtn:           $('dcVoiceCallBtn'),
+        videoBtn:           $('dcVideoCallBtn'),
+        incomingModal:      $('incomingCallModal'),
+        callerName:         $('incomingCallerName'),
+        callTypeLabel:      $('incomingCallTypeLabel'),
+        callIcon:           $('incomingCallIcon'),
+        acceptBtn:          $('acceptCallBtn'),
+        rejectBtn:          $('rejectCallBtn'),
+        overlay:            $('callOverlay'),
+        overlayAvatar:      $('callOverlayAvatar'),
+        overlayName:        $('callOverlayName'),
+        statusText:         $('callStatusText'),
+        callTimer:          $('callTimer'),
+        remoteMuteIndicator:$('callRemoteMuteIndicator'),
+        videoContainer:     $('callVideoContainer'),
+        localVideo:         $('localVideo'),
+        remoteVideo:        $('remoteVideo'),
+        remoteAudio:        $('remoteAudio'),
+        hangupBtn:          $('hangupBtn'),
+        muteBtn:            $('toggleMuteBtn'),
+        videoToggleBtn:     $('toggleVideoBtn'),
+        switchToVideoBtn:   $('callSwitchToVideoBtn'),
+        screenShareBtn:     $('callScreenShareBtn'),
+        flipCamBtn:         $('callFlipCamBtn'),
+    };
+
+    // Bind buttons
+    if (this._el.voiceBtn)         this._el.voiceBtn.addEventListener('click', () => this.callStart('voice'));
+    if (this._el.videoBtn)         this._el.videoBtn.addEventListener('click', () => this.callStart('video'));
+    if (this._el.acceptBtn)        this._el.acceptBtn.addEventListener('click', () => this.callAccept());
+    if (this._el.rejectBtn)        this._el.rejectBtn.addEventListener('click', () => this.callReject());
+    if (this._el.hangupBtn)        this._el.hangupBtn.addEventListener('click', () => this.callHangup());
+    if (this._el.muteBtn)          this._el.muteBtn.addEventListener('click',   () => this.callToggleMute());
+    if (this._el.videoToggleBtn)   this._el.videoToggleBtn.addEventListener('click', () => this.callToggleVideo());
+    if (this._el.switchToVideoBtn) this._el.switchToVideoBtn.addEventListener('click', () => this.callSwitchToVideo());
+    if (this._el.screenShareBtn)   this._el.screenShareBtn.addEventListener('click', () => this.callShareScreen());
+    if (this._el.flipCamBtn)       this._el.flipCamBtn.addEventListener('click', () => this.callFlipCamera());
+
+    this._subscribeIncomingCalls();
+    this.initPresence();
+
+    // ── PAGE LIFECYCLE ──────────────────────────────────────────
+    // ONLY end the call when the tab/browser is ACTUALLY CLOSING.
+    // Do NOT end on minimize, tab switch, or lock screen.
+    // WebRTC keeps running in background automatically.
+
+    const _beaconEndCall = (callId) => {
+        const blob = new Blob([JSON.stringify({ callId })], { type: 'application/json' });
+        navigator.sendBeacon('/api/end-call', blob);
+    };
+
+    // beforeunload fires ONLY when closing/navigating away — NOT on minimize
+    window.addEventListener('beforeunload', (e) => {
+        if (this._callId) {
+            _beaconEndCall(this._callId);
+            // Don't show confirmation on actual navigation
+        }
+    });
+
+    // pagehide with persisted=false means actual page destruction (tab close)
+    window.addEventListener('pagehide', (e) => {
+        if (this._callId && !e.persisted) {
+            _beaconEndCall(this._callId);
+        }
+    });
+
+    // NOTE: We intentionally do NOT use visibilitychange to end calls.
+    // Minimizing / switching tabs should NOT end the call.
+    // WebRTC audio/video continue flowing in the background.
+};
+
+// ── SUBSCRIBE INCOMING CALLS ─────────────────────────────────
+AIAssistant.prototype._subscribeIncomingCalls = function() {
+    if (!this.supabase || !this.userId) return;
+    this.supabase
+        .channel(`incoming-calls-${this.userId}-${Date.now()}`)
+        .on('postgres_changes', {
+            event: 'INSERT', schema: 'public', table: 'calls',
+            filter: `callee_id=eq.${this.userId}`
+        }, payload => {
+            if (payload.new.status === 'ringing') this._showIncoming(payload.new);
+        })
+        .subscribe();
+};
+
+// ── SHOW INCOMING CALL MODAL ─────────────────────────────────
+AIAssistant.prototype._showIncoming = async function(call) {
+    if (this._callId) return; // already in a call, ignore
+    this._incomingCall = call;
+    let name = 'Unknown';
+    try {
+        const { data } = await this.supabase.from('users').select('username,email').eq('id', call.caller_id).single();
+        name = data?.username || data?.email?.split('@')[0] || 'Unknown';
+    } catch (_) {}
+    if (this._el.callerName)    this._el.callerName.textContent    = name;
+    if (this._el.callTypeLabel) this._el.callTypeLabel.textContent = call.call_type === 'video' ? '🎥 Incoming Video Call' : '📞 Incoming Voice Call';
+    if (this._el.callIcon)      this._el.callIcon.textContent      = call.call_type === 'video' ? '🎥' : '📞';
+    if (this._el.incomingModal) this._el.incomingModal.style.display = 'flex';
+
+    // Watch for caller cancel
+    if (this._incomingWatchSub) { this.supabase.removeChannel(this._incomingWatchSub); }
+    this._incomingWatchSub = this.supabase
+        .channel(`incoming-watch-${call.id}`)
+        .on('postgres_changes', {
+            event: 'UPDATE', schema: 'public', table: 'calls',
+            filter: `id=eq.${call.id}`
+        }, payload => {
+            if (payload.new.status === 'ended' || payload.new.status === 'rejected') {
+                this._incomingCall = null;
+                if (this._el.incomingModal) this._el.incomingModal.style.display = 'none';
+                if (this._incomingWatchSub) { this.supabase.removeChannel(this._incomingWatchSub); this._incomingWatchSub = null; }
+            }
+        })
+        .subscribe();
+};
+
+// ── SETUP PEER CONNECTION ────────────────────────────────────
+AIAssistant.prototype._setupPeerConnection = function() {
+    if (this._callPeer) { this._callPeer.close(); }
+    this._callPeer = new RTCPeerConnection(_ICE_CONFIG);
+
+    // TWO separate streams: one for audio-only, one for video-only
+    // This prevents the BEEE/buzzing audio bug caused by duplicate audio playback
+    this._remoteAudioStream = new MediaStream();  // goes to <audio> element ONLY
+    this._remoteVideoStream = new MediaStream();  // goes to <video muted> element ONLY (no audio!)
+
+    // Wire: audio element gets ONLY audio tracks
+    if (this._el.remoteAudio) {
+        this._el.remoteAudio.srcObject = this._remoteAudioStream;
+    }
+    // Wire: video element gets ONLY video tracks (element is muted in HTML)
+    if (this._el.remoteVideo) {
+        this._el.remoteVideo.srcObject = this._remoteVideoStream;
+    }
+
+    this._callPeer.ontrack = (e) => {
+        console.log('[CALL] Remote track received:', e.track.kind, e.track.id, 'readyState:', e.track.readyState);
+
+        if (e.track.kind === 'audio') {
+            // Remove any existing audio tracks first (strict: only 1 audio track ever)
+            this._remoteAudioStream.getAudioTracks().forEach(old => {
+                this._remoteAudioStream.removeTrack(old);
+            });
+            this._remoteAudioStream.addTrack(e.track);
+            console.log('[CALL] Audio track attached to remoteAudio element');
+
+            // Force play with autoplay policy handling
+            if (this._el.remoteAudio) {
+                this._el.remoteAudio.play().catch(err => {
+                    console.warn('[CALL] Audio autoplay blocked:', err.message);
+                    const resume = () => {
+                        if (this._el.remoteAudio) this._el.remoteAudio.play().catch(() => {});
+                        document.removeEventListener('click', resume);
+                        document.removeEventListener('touchstart', resume);
+                    };
+                    document.addEventListener('click', resume, { once: true });
+                    document.addEventListener('touchstart', resume, { once: true });
+                });
+            }
+        }
+
+        if (e.track.kind === 'video') {
+            // Remove any existing video tracks first (strict: only 1 video track ever)
+            this._remoteVideoStream.getVideoTracks().forEach(old => {
+                this._remoteVideoStream.removeTrack(old);
+            });
+            this._remoteVideoStream.addTrack(e.track);
+            console.log('[CALL] Video track attached to remoteVideo element');
+
+            // Show video container
+            if (this._el.videoContainer) this._el.videoContainer.style.display = 'block';
+            if (this._el.overlayAvatar)  this._el.overlayAvatar.style.display = 'none';
+            if (this._el.remoteVideo) this._el.remoteVideo.play().catch(() => {});
+        }
+
+        // Track mute/unmute events (for when remote replaceTrack swaps video)
+        e.track.onmute = () => {
+            console.log('[CALL] Remote track muted:', e.track.kind);
+            if (e.track.kind === 'video') {
+                // Remote stopped video or screen share ended
+                if (this._remoteVideoStream.getVideoTracks().every(t => t.muted)) {
+                    if (this._callType !== 'video' && !this._isScreenSharing) {
+                        if (this._el.videoContainer) this._el.videoContainer.style.display = 'none';
+                        if (this._el.overlayAvatar)  this._el.overlayAvatar.style.display = 'flex';
+                    }
+                }
+            }
+        };
+        e.track.onunmute = () => {
+            console.log('[CALL] Remote track unmuted:', e.track.kind);
+            if (e.track.kind === 'video') {
+                if (this._el.videoContainer) this._el.videoContainer.style.display = 'block';
+                if (this._el.overlayAvatar)  this._el.overlayAvatar.style.display = 'none';
+                if (this._el.remoteVideo) this._el.remoteVideo.play().catch(() => {});
+            }
+        };
+
+        e.track.onended = () => {
+            console.log('[CALL] Remote track ended:', e.track.kind);
+            if (e.track.kind === 'audio') {
+                try { this._remoteAudioStream.removeTrack(e.track); } catch(_){}
+            }
+            if (e.track.kind === 'video') {
+                try { this._remoteVideoStream.removeTrack(e.track); } catch(_){}
+                if (this._remoteVideoStream.getVideoTracks().length === 0 && this._callType !== 'video') {
+                    if (this._el.videoContainer) this._el.videoContainer.style.display = 'none';
+                    if (this._el.overlayAvatar)  this._el.overlayAvatar.style.display = 'flex';
+                }
+            }
+        };
+    };
+
+    // Connection state monitoring
+    this._callPeer.onconnectionstatechange = () => {
+        const st = this._callPeer?.connectionState;
+        console.log('[CALL] PeerConnection state:', st);
+        if (!st) return;
+        if (st === 'connected') {
+            if (this._el.statusText) this._el.statusText.textContent = 'Connected';
+            // Clear any pending disconnect timeout
+            if (this._disconnectTimeout) { clearTimeout(this._disconnectTimeout); this._disconnectTimeout = null; }
+        } else if (st === 'connecting') {
+            if (this._disconnectTimeout) { clearTimeout(this._disconnectTimeout); this._disconnectTimeout = null; }
+        } else if (st === 'disconnected') {
+            if (this._el.statusText) this._el.statusText.textContent = 'Reconnecting...';
+            this._disconnectTimeout = setTimeout(() => {
+                if (this._callPeer?.connectionState === 'disconnected') {
+                    console.log('[CALL] Still disconnected after 15s, ending call');
+                    this.callHangup();
+                }
+            }, 15000);
+        } else if (st === 'failed') {
+            console.log('[CALL] Connection failed');
+            this.callHangup();
+        }
+    };
+
+    this._callPeer.oniceconnectionstatechange = () => {
+        const st = this._callPeer?.iceConnectionState;
+        console.log('[CALL] ICE state:', st);
+        if (st === 'failed') {
+            console.log('[CALL] ICE failed, restarting...');
+            if (this._callPeer) this._callPeer.restartIce();
+        }
+    };
+};
+
+// ── HELPER: find or create video sender ──────────────────────
+AIAssistant.prototype._getVideoSender = function() {
+    if (!this._callPeer) return null;
+    // First try: sender with video track
+    let sender = this._callPeer.getSenders().find(s => s.track?.kind === 'video');
+    if (sender) return sender;
+    // Second try: transceiver with no track (recvonly we added)
+    const tc = this._callPeer.getTransceivers().find(t =>
+        (t.receiver?.track?.kind === 'video' && (!t.sender.track || t.sender.track.readyState === 'ended'))
+        || t.sender.track === null
+    );
+    if (tc) {
+        if (tc.direction === 'recvonly' || tc.direction === 'inactive') {
+            tc.direction = 'sendrecv';
+        }
+        return tc.sender;
+    }
+    return null;
+};
+
+// ── START CALL (caller side) ─────────────────────────────────
+AIAssistant.prototype.callStart = async function(callType) {
+    if (!this.dcActiveChatUser?.id) { this.showNotification('Error', 'Open a DM chat first to call.'); return; }
+    if (this._callId) { this.showNotification('Error', 'Already in a call.'); return; }
+    this._callType = callType;
+    this._callEnding = false;
+
+    try {
+        // ── 1. Get local media ──
+        console.log('[CALL] Requesting media for', callType, 'call...');
+        const audioOpts = { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1, sampleRate: 48000 };
+        const constraints = callType === 'video'
+            ? { audio: audioOpts, video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, facingMode: 'user' } }
+            : { audio: audioOpts, video: false };
+        this._localStream = await navigator.mediaDevices.getUserMedia(constraints);
+        console.log('[CALL] Got local stream. Audio tracks:', this._localStream.getAudioTracks().length, 'Video tracks:', this._localStream.getVideoTracks().length);
+
+        // ── 2. Create peer connection & add tracks ──
+        this._setupPeerConnection();
+        this._localStream.getTracks().forEach(t => {
+            console.log('[CALL] Adding local track:', t.kind, t.label);
+            this._callPeer.addTrack(t, this._localStream);
+        });
+
+        // For voice calls: add recvonly video transceiver so mid-call video/screen share works
+        if (callType === 'voice') {
+            this._callPeer.addTransceiver('video', { direction: 'recvonly' });
+        }
+
+        // ── 3. Show local video preview ──
+        if (this._el.localVideo) {
+            this._el.localVideo.srcObject = this._localStream;
+            this._el.localVideo.style.display = callType === 'video' ? 'block' : 'none';
+        }
+
+        // ── 4. Create offer ──
+        const offer = await this._callPeer.createOffer();
+        await this._callPeer.setLocalDescription(offer);
+        console.log('[CALL] Offer created');
+
+        // ── 5. Insert call row ──
+        const { data: callRow, error } = await this.supabase.from('calls').insert({
+            caller_id: this.userId,
+            callee_id: this.dcActiveChatUser.id,
+            call_type: callType,
+            status: 'ringing',
+            offer: { type: offer.type, sdp: offer.sdp }
+        }).select().single();
+        if (error) throw error;
+        this._callId = callRow.id;
+        this._isCaller = true;
+        console.log('[CALL] Call created:', this._callId);
+
+        // ── 6. ICE candidates ──
+        this._callPeer.onicecandidate = async e => {
+            if (e.candidate && this._callId) {
+                await this.supabase.from('call_candidates').insert({
+                    call_id: this._callId, sender_id: this.userId, candidate: e.candidate.toJSON()
+                }).catch(() => {});
+            }
+        };
+
+        // ── 7. Watch for answer / rejection / end ──
+        this._callSub = this.supabase
+            .channel(`call-watch-${this._callId}`)
+            .on('postgres_changes', {
+                event: 'UPDATE', schema: 'public', table: 'calls',
+                filter: `id=eq.${this._callId}`
+            }, async payload => {
+                const c = payload.new;
+                if (c.status === 'rejected') {
+                    this.showNotification('Call', 'Call was declined.');
+                    this._callEndLocal(); return;
+                }
+                if (c.status === 'ended') {
+                    this._callEndLocal('Call ended'); return;
+                }
+                // Answer received
+                if (c.answer && this._callPeer && !this._callPeer.remoteDescription) {
+                    console.log('[CALL] Answer received, setting remote description...');
+                    await this._callPeer.setRemoteDescription(new RTCSessionDescription(c.answer));
+                    if (this._el.statusText) this._el.statusText.textContent = 'Connected';
+                    this._startCallTimer();
+                    this._setupRenegotiation(true);
+                    this._setupCallStateBroadcast();
+                    this._startHeartbeat();
+                }
+                // Call type upgrade
+                if (c.call_type === 'video' && this._callType !== 'video') {
+                    this._handleVideoUpgrade();
+                }
+            })
+            .subscribe();
+
+        // ── 8. Watch for callee's ICE candidates ──
+        this._candSub = this.supabase
+            .channel(`cand-caller-${this._callId}`)
+            .on('postgres_changes', {
+                event: 'INSERT', schema: 'public', table: 'call_candidates',
+                filter: `call_id=eq.${this._callId}`
+            }, async payload => {
+                if (payload.new.sender_id !== this.userId && this._callPeer) {
+                    try { await this._callPeer.addIceCandidate(new RTCIceCandidate(payload.new.candidate)); } catch(_){}
+                }
+            })
+            .subscribe();
+
+        // ── 9. Show overlay ──
+        this._callShowOverlay(callType, this.dcActiveChatUser.name, false);
+
+    } catch (err) {
+        console.error('[CALL] callStart error:', err);
+        let msg = err.message || 'Unknown error';
+        if (msg.includes('NotAllowedError') || msg.includes('Permission denied')) {
+            msg = 'Microphone/camera permission denied. Allow access in browser settings.';
+        } else if (msg.includes('NotFoundError') || msg.includes('DevicesNotFoundError')) {
+            msg = 'No microphone found. Please connect a microphone.';
+        } else if (msg.includes('relation') || msg.includes('does not exist')) {
+            msg = 'Calls table not set up. Run ENABLE_REALTIME.sql in Supabase first.';
+        }
+        this.showNotification('Call Failed', msg);
+        this._callEndLocal();
+    }
+};
+
+// ── ACCEPT CALL (callee side) ────────────────────────────────
+AIAssistant.prototype.callAccept = async function() {
+    if (!this._incomingCall) return;
+    const call = this._incomingCall;
+    this._incomingCall = null;
+    this._callEnding = false;
+    if (this._el.incomingModal) this._el.incomingModal.style.display = 'none';
+    if (this._incomingWatchSub) { this.supabase.removeChannel(this._incomingWatchSub); this._incomingWatchSub = null; }
+    this._callType = call.call_type;
+
+    try {
+        // ── 1. Get local media ──
+        console.log('[CALL] Accepting', call.call_type, 'call...');
+        const audioOpts = { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1, sampleRate: 48000 };
+        const constraints = call.call_type === 'video'
+            ? { audio: audioOpts, video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, facingMode: 'user' } }
+            : { audio: audioOpts, video: false };
+        this._localStream = await navigator.mediaDevices.getUserMedia(constraints);
+        console.log('[CALL] Got local stream. Audio:', this._localStream.getAudioTracks().length, 'Video:', this._localStream.getVideoTracks().length);
+
+        // ── 2. Create peer connection & add tracks ──
+        this._setupPeerConnection();
+        this._localStream.getTracks().forEach(t => {
+            console.log('[CALL] Adding local track:', t.kind, t.label);
+            this._callPeer.addTrack(t, this._localStream);
+        });
+
+        // ── 3. Local video preview ──
+        if (this._el.localVideo) {
+            this._el.localVideo.srcObject = this._localStream;
+            this._el.localVideo.style.display = call.call_type === 'video' ? 'block' : 'none';
+        }
+
+        // ── 4. Set remote offer & create answer ──
+        console.log('[CALL] Setting remote offer...');
+        await this._callPeer.setRemoteDescription(new RTCSessionDescription(call.offer));
+        const answer = await this._callPeer.createAnswer();
+        await this._callPeer.setLocalDescription(answer);
+        console.log('[CALL] Answer created');
+
+        this._callId = call.id;
+        this._isCaller = false;
+
+        // ── 5. ICE candidates ──
+        this._callPeer.onicecandidate = async e => {
+            if (e.candidate && this._callId) {
+                await this.supabase.from('call_candidates').insert({
+                    call_id: this._callId, sender_id: this.userId, candidate: e.candidate.toJSON()
+                }).catch(() => {});
+            }
+        };
+
+        // ── 6. Fetch existing ICE candidates caller sent while we were setting up ──
+        const { data: existingCands } = await this.supabase.from('call_candidates')
+            .select('candidate').eq('call_id', this._callId).neq('sender_id', this.userId);
+        if (existingCands) {
+            for (const c of existingCands) {
+                try { await this._callPeer.addIceCandidate(new RTCIceCandidate(c.candidate)); } catch(_){}
+            }
+            console.log('[CALL] Added', existingCands.length, 'existing ICE candidates');
+        }
+
+        // ── 7. Watch for new ICE candidates ──
+        this._candSub = this.supabase
+            .channel(`cand-callee-${this._callId}`)
+            .on('postgres_changes', {
+                event: 'INSERT', schema: 'public', table: 'call_candidates',
+                filter: `call_id=eq.${this._callId}`
+            }, async payload => {
+                if (payload.new.sender_id !== this.userId && this._callPeer) {
+                    try { await this._callPeer.addIceCandidate(new RTCIceCandidate(payload.new.candidate)); } catch(_){}
+                }
+            })
+            .subscribe();
+
+        // ── 8. Watch for call end / type change ──
+        this._callSub = this.supabase
+            .channel(`call-callee-${this._callId}`)
+            .on('postgres_changes', {
+                event: 'UPDATE', schema: 'public', table: 'calls',
+                filter: `id=eq.${this._callId}`
+            }, payload => {
+                const c = payload.new;
+                if (c.status === 'ended') {
+                    this._callEndLocal('Call ended');
+                }
+                if (c.call_type === 'video' && this._callType !== 'video') {
+                    this._handleVideoUpgrade();
+                }
+            })
+            .subscribe();
+
+        // ── 9. Send answer to DB ──
+        await this.supabase.from('calls')
+            .update({ answer: { type: answer.type, sdp: answer.sdp }, status: 'active' })
+            .eq('id', call.id);
+        console.log('[CALL] Answer sent to DB');
+
+        // ── 10. Show overlay & start timer ──
+        const callerLabel = this._el.callerName?.textContent || 'User';
+        this._callShowOverlay(call.call_type, callerLabel, true);
+        this._startCallTimer();
+        this._setupRenegotiation(false);
+        this._setupCallStateBroadcast();
+        this._startHeartbeat();
+
+    } catch (err) {
+        console.error('[CALL] callAccept error:', err);
+        this.showNotification('Error', 'Could not accept call: ' + (err.message || 'Check mic/camera permission'));
+        this._callEndLocal();
+    }
+};
+
+// ── REJECT CALL ──────────────────────────────────────────────
+AIAssistant.prototype.callReject = async function() {
+    if (!this._incomingCall) return;
+    const id = this._incomingCall.id;
+    this._incomingCall = null;
+    if (this._el.incomingModal) this._el.incomingModal.style.display = 'none';
+    if (this._incomingWatchSub) { this.supabase.removeChannel(this._incomingWatchSub); this._incomingWatchSub = null; }
+    await this.supabase.from('calls').update({ status: 'rejected' }).eq('id', id).catch(() => {});
+};
+
+// ── HANG UP ──────────────────────────────────────────────────
+AIAssistant.prototype.callHangup = async function() {
+    if (this._callEnding) return; // prevent double-hangup
+    this._callEnding = true;
+    const callId = this._callId;
+    if (callId) {
+        // Update DB so other user gets notified via realtime
+        await this.supabase.from('calls').update({ status: 'ended' }).eq('id', callId).catch(() => {});
+        // Server backup
+        fetch('/api/end-call', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ callId })
+        }).catch(() => {});
+    }
+    this._callEndLocal('You ended the call');
+};
+
+// ── END CALL LOCAL CLEANUP ───────────────────────────────────
+AIAssistant.prototype._callEndLocal = function(reason) {
+    // Timer
+    if (this._callTimer) { clearInterval(this._callTimer); this._callTimer = null; }
+    this._callStartTime = null;
+    // Heartbeat
+    if (this._heartbeatIv) { clearInterval(this._heartbeatIv); this._heartbeatIv = null; }
+    // Disconnect timeout
+    if (this._disconnectTimeout) { clearTimeout(this._disconnectTimeout); this._disconnectTimeout = null; }
+
+    // Screen share
+    if (this._screenStream) { this._screenStream.getTracks().forEach(t => t.stop()); this._screenStream = null; }
+
+    // Local stream
+    if (this._localStream) { this._localStream.getTracks().forEach(t => t.stop()); this._localStream = null; }
+    // Remote streams (separate audio/video — just release, don't stop)
+    this._remoteAudioStream = null;
+    this._remoteVideoStream = null;
+
+    // Peer connection
+    if (this._callPeer) {
+        this._callPeer.ontrack = null;
+        this._callPeer.onconnectionstatechange = null;
+        this._callPeer.oniceconnectionstatechange = null;
+        this._callPeer.onnegotiationneeded = null;
+        this._callPeer.onicecandidate = null;
+        this._callPeer.close();
+        this._callPeer = null;
+    }
+
+    // Supabase channels
+    if (this._callSub)     { this.supabase.removeChannel(this._callSub); this._callSub = null; }
+    if (this._candSub)     { this.supabase.removeChannel(this._candSub); this._candSub = null; }
+    if (this._renegoCh)    { this.supabase.removeChannel(this._renegoCh); this._renegoCh = null; }
+    if (this._callStateCh) { this.supabase.removeChannel(this._callStateCh); this._callStateCh = null; }
+    if (this._incomingWatchSub) { this.supabase.removeChannel(this._incomingWatchSub); this._incomingWatchSub = null; }
+
+    // Clear media elements
+    if (this._el.localVideo)  this._el.localVideo.srcObject  = null;
+    if (this._el.remoteVideo) this._el.remoteVideo.srcObject = null;
+    if (this._el.remoteAudio) this._el.remoteAudio.srcObject = null;
+    if (this._el.incomingModal) this._el.incomingModal.style.display = 'none';
+
+    // Show "Call Ended" briefly, then close overlay
+    if (this._el.overlay && this._el.overlay.style.display === 'flex') {
+        if (this._el.statusText) this._el.statusText.textContent = reason || 'Call ended';
+        if (this._el.callTimer)  this._el.callTimer.style.display = 'none';
+        setTimeout(() => { if (this._el.overlay) this._el.overlay.style.display = 'none'; }, 1500);
+    }
+
+    // Reset state
+    this._callId           = null;
+    this._isMuted          = false;
+    this._isVideoOff       = false;
+    this._isScreenSharing  = false;
+    this._renegoInProgress = false;
+    this._callEnding       = false;
+    this._facingMode       = 'user';
+    this._callType         = 'voice';
+    this._savedCamTrack    = null;
+
+    // Reset button UI
+    if (this._el.muteBtn) { this._el.muteBtn.textContent = '🎤 Mute'; this._el.muteBtn.style.background = '#374151'; }
+    if (this._el.videoToggleBtn) { this._el.videoToggleBtn.textContent = '📹 Stop Video'; this._el.videoToggleBtn.style.background = '#374151'; }
+    if (this._el.screenShareBtn) { this._el.screenShareBtn.textContent = '🖥️ Share Screen'; this._el.screenShareBtn.style.background = '#374151'; }
+    if (this._el.remoteMuteIndicator) this._el.remoteMuteIndicator.style.display = 'none';
+};
+
+// ── SHOW CALL OVERLAY ────────────────────────────────────────
+AIAssistant.prototype._callShowOverlay = function(callType, name, isCallee) {
+    if (!this._el.overlay) return;
+    const initial = (name || 'U')[0].toUpperCase();
+    if (this._el.overlayAvatar) {
+        this._el.overlayAvatar.textContent = initial;
+        this._el.overlayAvatar.style.display = callType === 'video' ? 'none' : 'flex';
+    }
+    if (this._el.overlayName) this._el.overlayName.textContent = name || 'User';
+    if (this._el.statusText)  this._el.statusText.textContent  = isCallee ? 'Connecting…' : `Calling ${name}…`;
+    if (this._el.videoContainer)   this._el.videoContainer.style.display   = callType === 'video' ? 'block' : 'none';
+    if (this._el.videoToggleBtn)   this._el.videoToggleBtn.style.display   = callType === 'video' ? 'inline-block' : 'none';
+    if (this._el.switchToVideoBtn) this._el.switchToVideoBtn.style.display = callType === 'video' ? 'none' : 'inline-block';
+    if (this._el.callTimer) { this._el.callTimer.textContent = '0:00'; this._el.callTimer.style.display = 'none'; }
+    this._el.overlay.style.display = 'flex';
+};
+
+// ── HEARTBEAT: detect when other user is truly gone ──────────
+AIAssistant.prototype._startHeartbeat = function() {
+    if (this._heartbeatIv) clearInterval(this._heartbeatIv);
+    this._lastRemoteHeartbeat = Date.now();
+
+    // Send heartbeat every 3 seconds
+    this._heartbeatIv = setInterval(() => {
+        if (!this._callStateCh || !this._callId) return;
+        this._callStateCh.send({
+            type: 'broadcast', event: 'heartbeat',
+            payload: { userId: this.userId, ts: Date.now() }
+        }).catch(() => {});
+        // Check if we haven't received remote heartbeat in 20 seconds
+        if (Date.now() - this._lastRemoteHeartbeat > 20000) {
+            console.log('[CALL] No heartbeat from other user for 20s, ending call');
+            this.callHangup();
+        }
+    }, 3000);
+};
+
+// ── CALL STATE BROADCAST (mute/video/screen share sync) ──────
+AIAssistant.prototype._setupCallStateBroadcast = function() {
+    if (!this._callId) return;
+    if (this._callStateCh) { this.supabase.removeChannel(this._callStateCh); }
+
+    this._callStateCh = this.supabase.channel(`call-state-${this._callId}`)
+        .on('broadcast', { event: 'call-state' }, ({ payload }) => {
+            if (!payload || payload.userId === this.userId) return;
+            console.log('[CALL] Remote state:', payload);
+            // Mute indicator
+            if (this._el.remoteMuteIndicator) {
+                this._el.remoteMuteIndicator.style.display = payload.isMuted ? 'block' : 'none';
+            }
+            // Video off → show avatar
+            if (payload.isVideoOff !== undefined && this._callType === 'video') {
+                if (this._el.overlayAvatar) {
+                    this._el.overlayAvatar.style.display = payload.isVideoOff ? 'flex' : 'none';
+                }
+            }
+            // Screen sharing → show video container
+            if (payload.isScreenSharing) {
+                if (this._el.videoContainer) this._el.videoContainer.style.display = 'block';
+                if (this._el.overlayAvatar)  this._el.overlayAvatar.style.display = 'none';
+            }
+            // Switched to video → auto-upgrade
+            if (payload.switchedToVideo && this._callType !== 'video') {
+                this._handleVideoUpgrade();
+            }
+        })
+        .on('broadcast', { event: 'heartbeat' }, ({ payload }) => {
+            if (payload && payload.userId !== this.userId) {
+                this._lastRemoteHeartbeat = Date.now();
+            }
+        })
+        .subscribe();
+};
+
+AIAssistant.prototype._broadcastCallState = function() {
+    if (!this._callStateCh) return;
+    this._callStateCh.send({
+        type: 'broadcast',
+        event: 'call-state',
+        payload: {
+            userId: this.userId,
+            isMuted: this._isMuted,
+            isVideoOff: this._isVideoOff,
+            isScreenSharing: this._isScreenSharing
+        }
+    }).catch(() => {});
+};
+
+// ── HANDLE VIDEO UPGRADE (voice → video) ─────────────────────
+AIAssistant.prototype._handleVideoUpgrade = function() {
+    this._callType = 'video';
+    if (this._el.videoContainer)   this._el.videoContainer.style.display   = 'block';
+    if (this._el.overlayAvatar)    this._el.overlayAvatar.style.display    = 'none';
+    if (this._el.videoToggleBtn)   this._el.videoToggleBtn.style.display   = 'inline-block';
+    if (this._el.switchToVideoBtn) this._el.switchToVideoBtn.style.display = 'none';
+    this._autoAcquireVideo();
+};
+
+// ── AUTO-ACQUIRE VIDEO ───────────────────────────────────────
+AIAssistant.prototype._autoAcquireVideo = async function() {
+    if (!this._callPeer || !this._callId) return;
+    try {
+        console.log('[CALL] Auto-acquiring video...');
+        const videoStream = await navigator.mediaDevices.getUserMedia({
+            video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, facingMode: 'user' }
+        });
+        const videoTrack = videoStream.getVideoTracks()[0];
+        if (!videoTrack) return;
+
+        // Remove any existing video tracks from localStream first (prevent duplicates)
+        if (this._localStream) {
+            this._localStream.getVideoTracks().forEach(old => {
+                this._localStream.removeTrack(old);
+                old.stop();
+            });
+            this._localStream.addTrack(videoTrack);
+        } else {
+            this._localStream = videoStream;
+        }
+
+        // ALWAYS use replaceTrack, never addTrack
+        const sender = this._getVideoSender();
+        if (sender) {
+            await sender.replaceTrack(videoTrack);
+        } else {
+            this._callPeer.addTrack(videoTrack, this._localStream);
+        }
+
+        if (this._el.localVideo) {
+            this._el.localVideo.srcObject = this._localStream;
+            this._el.localVideo.style.display = 'block';
+        }
+        this._isVideoOff = false;
+        this._broadcastCallState();
+        console.log('[CALL] Video acquired successfully');
+    } catch (err) {
+        console.warn('[CALL] Auto-acquire video failed:', err.message);
+    }
+};
+
+// ── TOGGLE MUTE ──────────────────────────────────────────────
+AIAssistant.prototype.callToggleMute = function() {
+    if (!this._localStream) return;
+    this._isMuted = !this._isMuted;
+    this._localStream.getAudioTracks().forEach(t => { t.enabled = !this._isMuted; });
+    console.log('[CALL] Mute:', this._isMuted);
+    if (this._el.muteBtn) {
+        this._el.muteBtn.textContent = this._isMuted ? '🔇 Unmute' : '🎤 Mute';
+        this._el.muteBtn.style.background = this._isMuted ? '#ef4444' : '#374151';
+    }
+    this._broadcastCallState();
+};
+
+// ── TOGGLE VIDEO ─────────────────────────────────────────────
+AIAssistant.prototype.callToggleVideo = function() {
+    if (!this._localStream) return;
+    this._isVideoOff = !this._isVideoOff;
+    this._localStream.getVideoTracks().forEach(t => { t.enabled = !this._isVideoOff; });
+    console.log('[CALL] Video off:', this._isVideoOff);
+    if (this._el.videoToggleBtn) {
+        this._el.videoToggleBtn.textContent = this._isVideoOff ? '📹 Start Video' : '📹 Stop Video';
+        this._el.videoToggleBtn.style.background = this._isVideoOff ? '#ef4444' : '#374151';
+    }
+    if (this._el.localVideo) this._el.localVideo.style.display = this._isVideoOff ? 'none' : 'block';
+    this._broadcastCallState();
+};
+
+// ── CALL TIMER ───────────────────────────────────────────────
+AIAssistant.prototype._startCallTimer = function() {
+    if (this._callTimer) return;
+    this._callStartTime = Date.now();
+    if (this._el.callTimer) this._el.callTimer.style.display = 'block';
+    this._callTimer = setInterval(() => {
+        const secs = Math.floor((Date.now() - this._callStartTime) / 1000);
+        const h = Math.floor(secs / 3600);
+        const m = Math.floor((secs % 3600) / 60);
+        const s = secs % 60;
+        const str = h > 0
+            ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`
+            : `${m}:${String(s).padStart(2,'0')}`;
+        if (this._el.callTimer) this._el.callTimer.textContent = str;
+    }, 1000);
+};
+
+// ── SWITCH VOICE → VIDEO ─────────────────────────────────────
+AIAssistant.prototype.callSwitchToVideo = async function() {
+    if (!this._callPeer || !this._callId) return;
+    try {
+        console.log('[CALL] Switching to video...');
+        const videoStream = await navigator.mediaDevices.getUserMedia({
+            video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, facingMode: 'user' }
+        });
+        const videoTrack = videoStream.getVideoTracks()[0];
+        if (!videoTrack) throw new Error('No camera track');
+
+        // Remove existing video tracks to prevent duplicates
+        if (this._localStream) {
+            this._localStream.getVideoTracks().forEach(old => { this._localStream.removeTrack(old); old.stop(); });
+            this._localStream.addTrack(videoTrack);
+        } else {
+            this._localStream = videoStream;
+        }
+
+        // ALWAYS use replaceTrack
+        const sender = this._getVideoSender();
+        if (sender) {
+            await sender.replaceTrack(videoTrack);
+        } else {
+            this._callPeer.addTrack(videoTrack, this._localStream);
+        }
+
+        if (this._el.localVideo) { this._el.localVideo.srcObject = this._localStream; this._el.localVideo.style.display = 'block'; }
+        if (this._el.videoContainer)   this._el.videoContainer.style.display   = 'block';
+        if (this._el.overlayAvatar)    this._el.overlayAvatar.style.display    = 'none';
+        if (this._el.videoToggleBtn)   this._el.videoToggleBtn.style.display   = 'inline-block';
+        if (this._el.switchToVideoBtn) this._el.switchToVideoBtn.style.display = 'none';
+        this._callType = 'video';
+        this._isVideoOff = false;
+
+        // Update DB + broadcast
+        await this.supabase.from('calls').update({ call_type: 'video' }).eq('id', this._callId).catch(() => {});
+        if (this._callStateCh) {
+            this._callStateCh.send({
+                type: 'broadcast', event: 'call-state',
+                payload: { userId: this.userId, isMuted: this._isMuted, isVideoOff: false, isScreenSharing: false, switchedToVideo: true }
+            }).catch(() => {});
+        }
+        console.log('[CALL] Switched to video');
+    } catch (err) {
+        this.showNotification('Error', 'Could not enable camera: ' + (err.message || 'Check permissions'));
+    }
+};
+
+// ── SCREEN SHARE ─────────────────────────────────────────────
+AIAssistant.prototype.callShareScreen = async function() {
+    if (!this._callPeer || !this._callId) return;
+    if (this._isScreenSharing) { this._stopScreenShare(); return; }
+
+    try {
+        console.log('[CALL] Starting screen share...');
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({
+            video: { cursor: 'always', width: { ideal: 1920 }, height: { ideal: 1080 } },
+            audio: false
+        });
+        const screenTrack = screenStream.getVideoTracks()[0];
+        if (!screenTrack) throw new Error('No screen track');
+
+        // Save current camera track for later restore (keep it alive, don't stop it)
+        this._savedCamTrack = this._localStream?.getVideoTracks()[0] || null;
+
+        // ALWAYS use replaceTrack — never addTrack for screen share
+        const sender = this._getVideoSender();
+        if (sender) {
+            await sender.replaceTrack(screenTrack);
+            console.log('[CALL] Replaced video sender track with screen track');
+        } else {
+            // Last resort: add track (will trigger renegotiation)
+            this._callPeer.addTrack(screenTrack, screenStream);
+            console.log('[CALL] Added screen track as new sender');
+        }
+
+        this._screenStream = screenStream;
+        this._isScreenSharing = true;
+
+        // Show screen preview locally (use a new MediaStream with only the screen track)
+        if (this._el.localVideo) {
+            this._el.localVideo.srcObject = new MediaStream([screenTrack]);
+            this._el.localVideo.style.display = 'block';
+        }
+        if (this._el.screenShareBtn) { this._el.screenShareBtn.textContent = '🖥️ Stop Share'; this._el.screenShareBtn.style.background = '#ef4444'; }
+        if (this._el.videoContainer) this._el.videoContainer.style.display = 'block';
+        if (this._el.overlayAvatar)  this._el.overlayAvatar.style.display  = 'none';
+
+        this._broadcastCallState();
+        console.log('[CALL] Screen sharing started');
+
+        screenTrack.onended = () => this._stopScreenShare();
+    } catch (err) {
+        if (err.name !== 'NotAllowedError') {
+            this.showNotification('Error', 'Screen sharing failed: ' + (err.message || ''));
+        }
+    }
+};
+
+AIAssistant.prototype._stopScreenShare = async function() {
+    if (!this._isScreenSharing) return;
+    console.log('[CALL] Stopping screen share...');
+    this._isScreenSharing = false;
+
+    // Stop screen stream tracks
+    if (this._screenStream) { this._screenStream.getTracks().forEach(t => t.stop()); this._screenStream = null; }
+
+    if (this._el.screenShareBtn) { this._el.screenShareBtn.textContent = '🖥️ Share Screen'; this._el.screenShareBtn.style.background = '#374151'; }
+
+    // Restore camera track via replaceTrack on the SAME sender
+    if (this._callPeer) {
+        // Find the video sender (it currently has the now-stopped screen track)
+        const sender = this._callPeer.getSenders().find(s => s.track === null || s.track?.kind === 'video' || s.track?.readyState === 'ended');
+        if (sender) {
+            if (this._savedCamTrack && this._savedCamTrack.readyState === 'live') {
+                await sender.replaceTrack(this._savedCamTrack).catch(e => console.warn('[CALL] Restore cam err:', e));
+                console.log('[CALL] Restored camera track');
+            } else if (this._callType === 'video') {
+                // Camera track died, get a new one
+                try {
+                    const newCamStream = await navigator.mediaDevices.getUserMedia({
+                        video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, facingMode: 'user' }
+                    });
+                    const newCamTrack = newCamStream.getVideoTracks()[0];
+                    if (newCamTrack) {
+                        await sender.replaceTrack(newCamTrack);
+                        if (this._localStream) {
+                            const old = this._localStream.getVideoTracks()[0];
+                            if (old) { this._localStream.removeTrack(old); }
+                            this._localStream.addTrack(newCamTrack);
+                        }
+                        console.log('[CALL] Got new camera track after screen share');
+                    }
+                } catch(_) {
+                    await sender.replaceTrack(null).catch(() => {});
+                }
+            } else {
+                // Voice call: send null (no video needed)
+                await sender.replaceTrack(null).catch(() => {});
+                console.log('[CALL] Set video sender to null (voice call)');
+            }
+        }
+    }
+    this._savedCamTrack = null;
+
+    // Restore local video preview
+    if (this._el.localVideo) {
+        if (this._callType === 'video' && this._localStream) {
+            this._el.localVideo.srcObject = this._localStream;
+            this._el.localVideo.style.display = 'block';
+        } else {
+            this._el.localVideo.srcObject = null;
+            this._el.localVideo.style.display = 'none';
+        }
+    }
+    if (this._callType !== 'video') {
+        if (this._el.videoContainer) this._el.videoContainer.style.display = 'none';
+        if (this._el.overlayAvatar)  this._el.overlayAvatar.style.display  = 'flex';
+    }
+    this._broadcastCallState();
+};
+
+// ── RENEGOTIATION (perfect negotiation pattern) ──────────────
+AIAssistant.prototype._setupRenegotiation = function(isCaller) {
+    this._isCaller = isCaller;
+    this._renegoInProgress = false;
+    if (!this._callId || !this._callPeer) return;
+
+    if (this._renegoCh) { this.supabase.removeChannel(this._renegoCh); this._renegoCh = null; }
+
+    this._renegoCh = this.supabase.channel(`call-renego-${this._callId}`)
+        .on('broadcast', { event: 'renego-offer' }, async ({ payload }) => {
+            if (!this._callPeer || !payload?.offer || payload.senderId === this.userId) return;
+            try {
+                const isStable = this._callPeer.signalingState === 'stable';
+                if (!isStable) {
+                    if (this._isCaller) return; // impolite peer ignores
+                    await this._callPeer.setLocalDescription({ type: 'rollback' });
+                }
+                await this._callPeer.setRemoteDescription(new RTCSessionDescription(payload.offer));
+                const answer = await this._callPeer.createAnswer();
+                await this._callPeer.setLocalDescription(answer);
+                this._renegoCh.send({ type: 'broadcast', event: 'renego-answer', payload: { answer, senderId: this.userId } }).catch(() => {});
+            } catch (e) { console.warn('[CALL] renego-offer err:', e); }
+        })
+        .on('broadcast', { event: 'renego-answer' }, async ({ payload }) => {
+            if (!this._callPeer || !payload?.answer || payload.senderId === this.userId) return;
+            try {
+                if (this._callPeer.signalingState !== 'have-local-offer') return;
+                await this._callPeer.setRemoteDescription(new RTCSessionDescription(payload.answer));
+                this._renegoInProgress = false;
+            } catch (e) { console.warn('[CALL] renego-answer err:', e); }
+        })
+        .subscribe();
+
+    this._callPeer.onnegotiationneeded = async () => {
+        if (!this._callPeer || !this._renegoCh || this._renegoInProgress) return;
+        if (this._callPeer.signalingState !== 'stable') return;
+        this._renegoInProgress = true;
+        console.log('[CALL] Negotiation needed, creating offer...');
+        try {
+            const offer = await this._callPeer.createOffer();
+            await this._callPeer.setLocalDescription(offer);
+            this._renegoCh.send({ type: 'broadcast', event: 'renego-offer', payload: { offer, senderId: this.userId } }).catch(() => {});
+        } catch (e) {
+            console.warn('[CALL] onnegotiationneeded err:', e);
+            this._renegoInProgress = false;
+        }
+    };
+};
+
+// ── FLIP CAMERA (mobile front/back) ─────────────────────────
+AIAssistant.prototype.callFlipCamera = async function() {
+    if (!this._callPeer || !this._localStream) return;
+    this._facingMode = this._facingMode === 'user' ? 'environment' : 'user';
+    try {
+        const newStream = await navigator.mediaDevices.getUserMedia({
+            audio: false, video: { facingMode: { exact: this._facingMode } }
+        });
+        const newTrack = newStream.getVideoTracks()[0];
+        if (!newTrack) { this._facingMode = this._facingMode === 'user' ? 'environment' : 'user'; return; }
+
+        const oldTrack = this._localStream.getVideoTracks()[0];
+        if (oldTrack) { this._localStream.removeTrack(oldTrack); oldTrack.stop(); }
+        this._localStream.addTrack(newTrack);
+
+        const sender = this._callPeer.getSenders().find(s => s.track?.kind === 'video');
+        if (sender) await sender.replaceTrack(newTrack);
+        if (this._el.localVideo) this._el.localVideo.srcObject = this._localStream;
+    } catch (err) {
+        this._facingMode = this._facingMode === 'user' ? 'environment' : 'user';
+        this.showNotification('Error', 'Could not flip camera: ' + (err.message || 'Not supported'));
+    }
+};
+
+// ============================================================
+// PRESENCE — tracks who is online; shows call bar accordingly
+// ============================================================
+
+AIAssistant.prototype.initPresence = function() {
+    if (!this.supabase || !this.userId) return;
+
+    this._onlineUsers = new Set();
+
+    // Use the userId as the presence key so we can look others up easily
+    this._presenceCh = this.supabase
+        .channel('user-presence', { config: { presence: { key: this.userId } } })
+        .on('presence', { event: 'sync' }, () => {
+            const state = this._presenceCh.presenceState();
+            this._onlineUsers = new Set(Object.keys(state));
+            this._updateCallBar();
+        })
+        .on('presence', { event: 'join' }, ({ key }) => {
+            this._onlineUsers.add(key);
+            this._updateCallBar();
+        })
+        .on('presence', { event: 'leave' }, ({ key }) => {
+            this._onlineUsers.delete(key);
+            this._updateCallBar();
+        })
+        .subscribe(async status => {
+            if (status === 'SUBSCRIBED') {
+                await this._presenceCh.track({ user_id: this.userId, online_at: new Date().toISOString() });
+            }
+        });
+};
+
+// ============================================================
+// TYPING INDICATOR
+// ============================================================
+
+AIAssistant.prototype._subscribeTyping = function(chatId) {
+    if (this._typingCh) { this.supabase.removeChannel(this._typingCh); this._typingCh = null; }
+    if (!chatId) return;
+
+    this._typingCh = this.supabase.channel(`typing-${chatId}`)
+        .on('broadcast', { event: 'typing' }, ({ payload }) => {
+            if (payload?.userId !== this.userId) this._showTypingIndicator(true);
+        })
+        .on('broadcast', { event: 'stop_typing' }, ({ payload }) => {
+            if (payload?.userId !== this.userId) this._showTypingIndicator(false);
+        })
+        .subscribe();
+};
+
+AIAssistant.prototype._showTypingIndicator = function(show) {
+    const el = document.getElementById('dcTypingIndicator');
+    if (!el) return;
+    if (show) {
+        const name = this.dcActiveChatUser?.name || 'User';
+        el.textContent = `${name} is typing…`;
+        el.style.display = 'block';
+        clearTimeout(this._typingHideTimer);
+        this._typingHideTimer = setTimeout(() => this._showTypingIndicator(false), 4000);
+    } else {
+        el.style.display = 'none';
+    }
+};
+
+AIAssistant.prototype._sendTypingEvent = function() {
+    if (!this.dcActiveChatId || !this._typingCh) return;
+    this._typingCh.send({ type: 'broadcast', event: 'typing', payload: { userId: this.userId } }).catch(() => {});
+    clearTimeout(this._typingStopTimer);
+    this._typingStopTimer = setTimeout(() => {
+        if (this._typingCh) this._typingCh.send({ type: 'broadcast', event: 'stop_typing', payload: { userId: this.userId } }).catch(() => {});
+    }, 2000);
+};
+
+// ============================================================
+// MESSAGE CONTEXT MENU (right-click / long-press to copy/delete)
+// ============================================================
+
+AIAssistant.prototype._initMsgContextMenu = function() {
+    if (this._msgCtxBound) return;
+    this._msgCtxBound = true;
+
+    const menu    = document.getElementById('msgContextMenu');
+    const copyBtn = document.getElementById('msgCtxCopy');
+    const delBtn  = document.getElementById('msgCtxDelete');
+    if (!menu || !copyBtn || !delBtn) return;
+
+    let targetMsgId   = null;
+    let targetMsgText = null;
+    let targetEl      = null;
+
+    const show = (x, y, el) => {
+        targetEl      = el;
+        targetMsgId   = el?.dataset?.msgId;
+        targetMsgText = el?.querySelector('div')?.textContent || '';
+        const isSent  = el?.classList.contains('sent');
+        delBtn.style.display = (isSent && targetMsgId && !targetMsgId.startsWith('temp-')) ? 'block' : 'none';
+        menu.style.left    = `${Math.min(x, window.innerWidth - 160)}px`;
+        menu.style.top     = `${Math.min(y, window.innerHeight - 100)}px`;
+        menu.style.display = 'block';
+    };
+    const hide = () => { menu.style.display = 'none'; targetMsgId = null; targetEl = null; };
+
+    // Context menu on dc-messages container (event delegation)
+    document.addEventListener('contextmenu', e => {
+        const msgEl = e.target.closest('.dc-msg');
+        if (!msgEl) return;
+        e.preventDefault();
+        show(e.clientX, e.clientY, msgEl);
+    });
+
+    // Long-press for mobile
+    let longPressTimer = null;
+    document.addEventListener('touchstart', e => {
+        const msgEl = e.target.closest('.dc-msg');
+        if (!msgEl) return;
+        longPressTimer = setTimeout(() => show(e.touches[0].clientX, e.touches[0].clientY, msgEl), 600);
+    }, { passive: true });
+    document.addEventListener('touchend', () => clearTimeout(longPressTimer), { passive: true });
+
+    document.addEventListener('click', e => {
+        if (!menu.contains(e.target)) hide();
+    });
+
+    copyBtn.addEventListener('click', () => {
+        navigator.clipboard.writeText(targetMsgText || '').catch(() => {});
+        hide();
+    });
+
+    delBtn.addEventListener('click', async () => {
+        const id  = targetMsgId;
+        const el2 = targetEl;
+        hide();
+        if (!id) return;
+
+        const isGroup = !!this.dcActiveGroupId;
+        const table   = isGroup ? 'group_messages' : 'direct_messages';
+        el2?.remove();
+        await this.supabase.from(table).delete().eq('id', id).catch(() => {});
+    });
+};
+
+// Show call bar whenever in a DM chat; online indicator updates dynamically
+AIAssistant.prototype._updateCallBar = function() {
+    const bar = document.getElementById('dcCallBar');
+    if (!bar) return;
+
+    // Only show in DM chat view (not groups)
+    const inDmChat = !!(this.dcActiveChatUser?.id && !this.dcActiveGroupId);
+    if (!inDmChat) { bar.style.display = 'none'; return; }
+
+    const otherOnline = !!(this._onlineUsers?.has(this.dcActiveChatUser.id));
+    bar.style.display = 'flex';
+
+    // Update the status label
+    const statusLabel = bar.querySelector('span');
+    if (statusLabel) {
+        statusLabel.textContent = otherOnline ? '🟢 Online' : '⚫ Offline';
+        statusLabel.style.color  = otherOnline ? '#16a34a'  : '#9ca3af';
+    }
 };
