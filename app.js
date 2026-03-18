@@ -295,6 +295,7 @@ this.apiUrl = window.location.hostname === 'localhost' || window.location.hostna
         this.initTextToSpeech();
         this.initSpeechRecognition();
         this.initCallUI();
+        this.initNotifications();
         this.checkServerHealth();
         
         // Pre-load games list in background (for instant display)
@@ -4671,7 +4672,7 @@ AIAssistant.prototype.dcLoadMessages = async function() {
         if (!this.dcActiveGroupId && this.dcActiveChatId && data?.length) {
             const unread = data.filter(m => m.sender_id !== this.userId && m.status !== 'seen').map(m => m.id);
             if (unread.length) {
-                this.supabase.from('direct_messages').update({ status: 'seen' }).in('id', unread).catch(() => {});
+                this.supabase.from('direct_messages').update({ status: 'seen' }).in('id', unread).then(() => {}).catch(() => {});
             }
         }
     } catch (error) {
@@ -4978,9 +4979,14 @@ AIAssistant.prototype.dcSubscribeGlobal = function() {
             schema: 'public',
             table: 'direct_messages'
         }, (payload) => {
+            const msg = payload.new;
             // Refresh chat list when a new message arrives in any chat
             if (this.directChatPanel?.style.display === 'flex' && !this.dcActiveChatId) {
                 this.dcLoadChats();
+            }
+            // Native notification for DMs from other users
+            if (msg && msg.sender_id !== this.userId) {
+                this._notifyNewMessage(msg.sender_id, msg.content, false);
             }
         })
         .on('postgres_changes', {
@@ -4988,8 +4994,13 @@ AIAssistant.prototype.dcSubscribeGlobal = function() {
             schema: 'public',
             table: 'group_messages'
         }, (payload) => {
+            const msg = payload.new;
             if (this.directChatPanel?.style.display === 'flex' && !this.dcActiveGroupId) {
                 this.dcLoadGroups();
+            }
+            // Native notification for group messages from other users
+            if (msg && msg.sender_id !== this.userId) {
+                this._notifyNewMessage(msg.sender_id, msg.content, true);
             }
         })
         .subscribe();
@@ -5791,1069 +5802,541 @@ AIAssistant.prototype.dcStartMessagePoll = function() {
 };
 
 // ============================================================
-// VOICE & VIDEO CALLS  (WebRTC + Supabase Realtime signaling)
-// Production-grade: WhatsApp/Discord-level reliability
+// PUSH NOTIFICATIONS (messages & calls when app not focused)
 // ============================================================
 
-const _ICE_CONFIG = { iceServers: [
+AIAssistant.prototype.initNotifications = async function() {
+    // Register service worker
+    if ('serviceWorker' in navigator) {
+        try {
+            this._swReg = await navigator.serviceWorker.register('/sw.js');
+            console.log('[NOTIF] Service worker registered');
+        } catch (err) {
+            console.warn('[NOTIF] SW registration failed:', err);
+        }
+    }
+
+    // Request permission on first meaningful interaction
+    if ('Notification' in window && Notification.permission === 'default') {
+        // Don't ask immediately — wait for user to click something
+        const askOnce = () => {
+            Notification.requestPermission().then(p => console.log('[NOTIF] Permission:', p));
+            document.removeEventListener('click', askOnce);
+        };
+        // Ask after 5 seconds so user has interacted with the page
+        setTimeout(() => {
+            if (Notification.permission === 'default') {
+                document.addEventListener('click', askOnce, { once: true });
+            }
+        }, 5000);
+    }
+};
+
+// Show a native notification (only when page is NOT focused)
+AIAssistant.prototype._showNativeNotification = function(title, body, tag) {
+    if (!('Notification' in window)) return;
+    if (Notification.permission !== 'granted') return;
+    // Only show if page is hidden/not focused
+    if (document.visibilityState === 'visible' && document.hasFocus()) return;
+
+    try {
+        const notif = new Notification(title, {
+            body: body,
+            icon: '/favicon.ico',
+            badge: '/favicon.ico',
+            tag: tag || 'voidzenzi-' + Date.now(),
+            renotify: true,
+            silent: false
+        });
+        // Auto-close after 8 seconds
+        setTimeout(() => notif.close(), 8000);
+        // Focus app on click
+        notif.onclick = () => {
+            window.focus();
+            notif.close();
+        };
+    } catch (err) {
+        // Fallback: use service worker notification
+        if (this._swReg) {
+            this._swReg.showNotification(title, {
+                body: body,
+                icon: '/favicon.ico',
+                tag: tag || 'voidzenzi-' + Date.now()
+            }).catch(() => {});
+        }
+    }
+};
+
+// Helper: notify for new messages
+AIAssistant.prototype._notifyNewMessage = async function(senderId, content, isGroup) {
+    let senderName = 'Someone';
+    try {
+        const { data } = await this.supabase.from('users').select('username,email').eq('id', senderId).single();
+        senderName = data?.username || data?.email?.split('@')[0] || 'Someone';
+    } catch (_) {}
+    const preview = (content || '').substring(0, 80) + ((content || '').length > 80 ? '...' : '');
+    const prefix = isGroup ? '👥 Group: ' : '💬 ';
+    this._showNativeNotification(`${prefix}${senderName}`, preview, `msg-${senderId}`);
+};
+
+// ============================================================
+// VOICE & VIDEO CALLS — CLEAN REWRITE
+// WebRTC + Supabase Realtime signaling
+// ============================================================
+
+const _ICE = { iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun3.l.google.com:19302' },
-    { urls: 'stun:stun4.l.google.com:19302' },
-    // TURN relay for strict NATs
     { urls: 'turn:openrelay.metered.ca:80',  username: 'openrelayproject', credential: 'openrelayproject' },
     { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
     { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
-], iceCandidatePoolSize: 10 };
+] };
 
-// ── INIT ──────────────────────────────────────────────────────
 AIAssistant.prototype.initCallUI = function() {
-    // State
-    this._callPeer        = null;
-    this._localStream     = null;
-    this._remoteStream    = null;
-    this._callId          = null;
-    this._callSub         = null;
-    this._candSub         = null;
-    this._renegoCh        = null;
-    this._callStateCh     = null;
-    this._isCaller        = false;
-    this._incomingCall    = null;
-    this._isMuted         = false;
-    this._isVideoOff      = false;
+    this._pc = null;           // RTCPeerConnection
+    this._ls = null;           // local MediaStream
+    this._callId = null;
+    this._callSub = null;
+    this._candSub = null;
+    this._renegoCh = null;
+    this._stateCh = null;
+    this._isCaller = false;
+    this._incomingCall = null;
+    this._isMuted = false;
+    this._isVideoOff = false;
     this._isScreenSharing = false;
-    this._screenStream    = null;
-    this._savedCamTrack   = null;
-    this._callTimer       = null;
-    this._callStartTime   = null;
-    this._facingMode      = 'user';
-    this._callType        = 'voice';
-    this._renegoInProgress = false;
-    this._callEnding      = false;       // guard against double-end
-    this._heartbeatIv     = null;
+    this._screenStream = null;
+    this._savedCamTrack = null;
+    this._callTimer = null;
+    this._callStartTime = null;
+    this._facingMode = 'user';
+    this._callType = 'voice';
+    this._renegoLock = false;
 
     const $ = id => document.getElementById(id);
     this._el = {
-        voiceBtn:           $('dcVoiceCallBtn'),
-        videoBtn:           $('dcVideoCallBtn'),
-        incomingModal:      $('incomingCallModal'),
-        callerName:         $('incomingCallerName'),
-        callTypeLabel:      $('incomingCallTypeLabel'),
-        callIcon:           $('incomingCallIcon'),
-        acceptBtn:          $('acceptCallBtn'),
-        rejectBtn:          $('rejectCallBtn'),
-        overlay:            $('callOverlay'),
-        overlayAvatar:      $('callOverlayAvatar'),
-        overlayName:        $('callOverlayName'),
-        statusText:         $('callStatusText'),
-        callTimer:          $('callTimer'),
-        remoteMuteIndicator:$('callRemoteMuteIndicator'),
-        videoContainer:     $('callVideoContainer'),
-        localVideo:         $('localVideo'),
-        remoteVideo:        $('remoteVideo'),
-        remoteAudio:        $('remoteAudio'),
-        hangupBtn:          $('hangupBtn'),
-        muteBtn:            $('toggleMuteBtn'),
-        videoToggleBtn:     $('toggleVideoBtn'),
-        switchToVideoBtn:   $('callSwitchToVideoBtn'),
-        screenShareBtn:     $('callScreenShareBtn'),
-        flipCamBtn:         $('callFlipCamBtn'),
+        voiceBtn: $('dcVoiceCallBtn'), videoBtn: $('dcVideoCallBtn'),
+        incomingModal: $('incomingCallModal'), callerName: $('incomingCallerName'),
+        callTypeLabel: $('incomingCallTypeLabel'), callIcon: $('incomingCallIcon'),
+        acceptBtn: $('acceptCallBtn'), rejectBtn: $('rejectCallBtn'),
+        overlay: $('callOverlay'), overlayAvatar: $('callOverlayAvatar'),
+        overlayName: $('callOverlayName'), statusText: $('callStatusText'),
+        callTimer: $('callTimer'), remoteMuteIndicator: $('callRemoteMuteIndicator'),
+        videoContainer: $('callVideoContainer'), localVideo: $('localVideo'),
+        remoteVideo: $('remoteVideo'), remoteAudio: $('remoteAudio'),
+        hangupBtn: $('hangupBtn'), muteBtn: $('toggleMuteBtn'),
+        videoToggleBtn: $('toggleVideoBtn'), switchToVideoBtn: $('callSwitchToVideoBtn'),
+        screenShareBtn: $('callScreenShareBtn'), flipCamBtn: $('callFlipCamBtn'),
     };
 
-    // Bind buttons
-    if (this._el.voiceBtn)         this._el.voiceBtn.addEventListener('click', () => this.callStart('voice'));
-    if (this._el.videoBtn)         this._el.videoBtn.addEventListener('click', () => this.callStart('video'));
-    if (this._el.acceptBtn)        this._el.acceptBtn.addEventListener('click', () => this.callAccept());
-    if (this._el.rejectBtn)        this._el.rejectBtn.addEventListener('click', () => this.callReject());
-    if (this._el.hangupBtn)        this._el.hangupBtn.addEventListener('click', () => this.callHangup());
-    if (this._el.muteBtn)          this._el.muteBtn.addEventListener('click',   () => this.callToggleMute());
-    if (this._el.videoToggleBtn)   this._el.videoToggleBtn.addEventListener('click', () => this.callToggleVideo());
-    if (this._el.switchToVideoBtn) this._el.switchToVideoBtn.addEventListener('click', () => this.callSwitchToVideo());
-    if (this._el.screenShareBtn)   this._el.screenShareBtn.addEventListener('click', () => this.callShareScreen());
-    if (this._el.flipCamBtn)       this._el.flipCamBtn.addEventListener('click', () => this.callFlipCamera());
+    if (this._el.voiceBtn)         this._el.voiceBtn.onclick  = () => this.callStart('voice');
+    if (this._el.videoBtn)         this._el.videoBtn.onclick  = () => this.callStart('video');
+    if (this._el.acceptBtn)        this._el.acceptBtn.onclick = () => this.callAccept();
+    if (this._el.rejectBtn)        this._el.rejectBtn.onclick = () => this.callReject();
+    if (this._el.hangupBtn)        this._el.hangupBtn.onclick = () => this.callHangup();
+    if (this._el.muteBtn)          this._el.muteBtn.onclick   = () => this.callToggleMute();
+    if (this._el.videoToggleBtn)   this._el.videoToggleBtn.onclick   = () => this.callToggleVideo();
+    if (this._el.switchToVideoBtn) this._el.switchToVideoBtn.onclick = () => this.callSwitchToVideo();
+    if (this._el.screenShareBtn)   this._el.screenShareBtn.onclick   = () => this.callShareScreen();
+    if (this._el.flipCamBtn)       this._el.flipCamBtn.onclick       = () => this.callFlipCamera();
 
     this._subscribeIncomingCalls();
     this.initPresence();
 
-    // ── PAGE LIFECYCLE ──────────────────────────────────────────
-    // ONLY end the call when the tab/browser is ACTUALLY CLOSING.
-    // Do NOT end on minimize, tab switch, or lock screen.
-    // WebRTC keeps running in background automatically.
-
-    const _beaconEndCall = (callId) => {
-        const blob = new Blob([JSON.stringify({ callId })], { type: 'application/json' });
-        navigator.sendBeacon('/api/end-call', blob);
-    };
-
-    // beforeunload fires ONLY when closing/navigating away — NOT on minimize
-    window.addEventListener('beforeunload', (e) => {
-        if (this._callId) {
-            _beaconEndCall(this._callId);
-            // Don't show confirmation on actual navigation
-        }
-    });
-
-    // pagehide with persisted=false means actual page destruction (tab close)
-    window.addEventListener('pagehide', (e) => {
-        if (this._callId && !e.persisted) {
-            _beaconEndCall(this._callId);
-        }
-    });
-
-    // NOTE: We intentionally do NOT use visibilitychange to end calls.
-    // Minimizing / switching tabs should NOT end the call.
-    // WebRTC audio/video continue flowing in the background.
+    // End call ONLY when tab actually closes (NOT on minimize/tab switch)
+    const _beacon = (id) => navigator.sendBeacon('/api/end-call', new Blob([JSON.stringify({callId:id})],{type:'application/json'}));
+    window.addEventListener('beforeunload', () => { if (this._callId) _beacon(this._callId); });
+    window.addEventListener('pagehide', (e) => { if (this._callId && !e.persisted) _beacon(this._callId); });
 };
 
-// ── SUBSCRIBE INCOMING CALLS ─────────────────────────────────
+// ── INCOMING CALLS ───────────────────────────────────────────
 AIAssistant.prototype._subscribeIncomingCalls = function() {
     if (!this.supabase || !this.userId) return;
-    this.supabase
-        .channel(`incoming-calls-${this.userId}-${Date.now()}`)
-        .on('postgres_changes', {
-            event: 'INSERT', schema: 'public', table: 'calls',
-            filter: `callee_id=eq.${this.userId}`
-        }, payload => {
-            if (payload.new.status === 'ringing') this._showIncoming(payload.new);
-        })
+    this.supabase.channel(`inc-${this.userId}-${Date.now()}`)
+        .on('postgres_changes', { event:'INSERT', schema:'public', table:'calls', filter:`callee_id=eq.${this.userId}` },
+            p => { if (p.new.status === 'ringing') this._showIncoming(p.new); })
         .subscribe();
 };
 
-// ── SHOW INCOMING CALL MODAL ─────────────────────────────────
 AIAssistant.prototype._showIncoming = async function(call) {
-    if (this._callId) return; // already in a call, ignore
+    if (this._callId) return;
     this._incomingCall = call;
     let name = 'Unknown';
-    try {
-        const { data } = await this.supabase.from('users').select('username,email').eq('id', call.caller_id).single();
-        name = data?.username || data?.email?.split('@')[0] || 'Unknown';
-    } catch (_) {}
+    try { const {data} = await this.supabase.from('users').select('username,email').eq('id',call.caller_id).single(); name = data?.username || data?.email?.split('@')[0] || 'Unknown'; } catch(_){}
     if (this._el.callerName)    this._el.callerName.textContent    = name;
-    if (this._el.callTypeLabel) this._el.callTypeLabel.textContent = call.call_type === 'video' ? '🎥 Incoming Video Call' : '📞 Incoming Voice Call';
-    if (this._el.callIcon)      this._el.callIcon.textContent      = call.call_type === 'video' ? '🎥' : '📞';
+    if (this._el.callTypeLabel) this._el.callTypeLabel.textContent = call.call_type==='video' ? '🎥 Incoming Video Call' : '📞 Incoming Voice Call';
+    if (this._el.callIcon)      this._el.callIcon.textContent      = call.call_type==='video' ? '🎥' : '📞';
     if (this._el.incomingModal) this._el.incomingModal.style.display = 'flex';
-
-    // Watch for caller cancel
-    if (this._incomingWatchSub) { this.supabase.removeChannel(this._incomingWatchSub); }
-    this._incomingWatchSub = this.supabase
-        .channel(`incoming-watch-${call.id}`)
-        .on('postgres_changes', {
-            event: 'UPDATE', schema: 'public', table: 'calls',
-            filter: `id=eq.${call.id}`
-        }, payload => {
-            if (payload.new.status === 'ended' || payload.new.status === 'rejected') {
-                this._incomingCall = null;
-                if (this._el.incomingModal) this._el.incomingModal.style.display = 'none';
-                if (this._incomingWatchSub) { this.supabase.removeChannel(this._incomingWatchSub); this._incomingWatchSub = null; }
-            }
-        })
+    this._showNativeNotification(`📞 Incoming ${call.call_type==='video'?'Video':'Voice'} Call`, `${name} is calling you`, 'incoming-call');
+    if (this._incomingWatchSub) this.supabase.removeChannel(this._incomingWatchSub);
+    this._incomingWatchSub = this.supabase.channel(`iw-${call.id}`)
+        .on('postgres_changes', { event:'UPDATE', schema:'public', table:'calls', filter:`id=eq.${call.id}` },
+            p => { if (p.new.status==='ended'||p.new.status==='rejected') { this._incomingCall=null; if(this._el.incomingModal) this._el.incomingModal.style.display='none'; if(this._incomingWatchSub){this.supabase.removeChannel(this._incomingWatchSub);this._incomingWatchSub=null;} } })
         .subscribe();
 };
 
-// ── SETUP PEER CONNECTION ────────────────────────────────────
-AIAssistant.prototype._setupPeerConnection = function() {
-    if (this._callPeer) { this._callPeer.close(); }
-    this._callPeer = new RTCPeerConnection(_ICE_CONFIG);
+// ── PEER CONNECTION ──────────────────────────────────────────
+AIAssistant.prototype._makePc = function() {
+    if (this._pc) { try{this._pc.close();}catch(_){} }
+    this._pc = new RTCPeerConnection(_ICE);
 
-    // TWO separate streams: one for audio-only, one for video-only
-    // This prevents the BEEE/buzzing audio bug caused by duplicate audio playback
-    this._remoteAudioStream = new MediaStream();  // goes to <audio> element ONLY
-    this._remoteVideoStream = new MediaStream();  // goes to <video muted> element ONLY (no audio!)
-
-    // Wire: audio element gets ONLY audio tracks
-    if (this._el.remoteAudio) {
-        this._el.remoteAudio.srcObject = this._remoteAudioStream;
-    }
-    // Wire: video element gets ONLY video tracks (element is muted in HTML)
-    if (this._el.remoteVideo) {
-        this._el.remoteVideo.srcObject = this._remoteVideoStream;
-    }
-
-    this._callPeer.ontrack = (e) => {
-        console.log('[CALL] Remote track received:', e.track.kind, e.track.id, 'readyState:', e.track.readyState);
-
+    // ontrack: wire audio to <audio>, video to <video muted>
+    // Use e.streams[0] so replaceTrack auto-updates the remote side
+    this._pc.ontrack = (e) => {
+        console.log('[CALL] ontrack:', e.track.kind, e.streams.length);
         if (e.track.kind === 'audio') {
-            // Remove any existing audio tracks first (strict: only 1 audio track ever)
-            this._remoteAudioStream.getAudioTracks().forEach(old => {
-                this._remoteAudioStream.removeTrack(old);
-            });
-            this._remoteAudioStream.addTrack(e.track);
-            console.log('[CALL] Audio track attached to remoteAudio element');
-
-            // Force play with autoplay policy handling
+            const s = e.streams[0] || new MediaStream([e.track]);
             if (this._el.remoteAudio) {
-                this._el.remoteAudio.play().catch(err => {
-                    console.warn('[CALL] Audio autoplay blocked:', err.message);
-                    const resume = () => {
-                        if (this._el.remoteAudio) this._el.remoteAudio.play().catch(() => {});
-                        document.removeEventListener('click', resume);
-                        document.removeEventListener('touchstart', resume);
-                    };
-                    document.addEventListener('click', resume, { once: true });
-                    document.addEventListener('touchstart', resume, { once: true });
-                });
+                this._el.remoteAudio.srcObject = s;
+                const play = () => this._el.remoteAudio && this._el.remoteAudio.play().catch(() => {});
+                play(); setTimeout(play, 300); setTimeout(play, 1000);
+                // Autoplay fallback
+                const tap = () => { play(); document.removeEventListener('click',tap); document.removeEventListener('touchstart',tap); };
+                document.addEventListener('click', tap, {once:true});
+                document.addEventListener('touchstart', tap, {once:true});
             }
         }
-
         if (e.track.kind === 'video') {
-            // Remove any existing video tracks first (strict: only 1 video track ever)
-            this._remoteVideoStream.getVideoTracks().forEach(old => {
-                this._remoteVideoStream.removeTrack(old);
-            });
-            this._remoteVideoStream.addTrack(e.track);
-            console.log('[CALL] Video track attached to remoteVideo element');
-
-            // Show video container
+            const s = e.streams[0] || new MediaStream([e.track]);
+            if (this._el.remoteVideo) { this._el.remoteVideo.srcObject = s; this._el.remoteVideo.play().catch(()=>{}); }
             if (this._el.videoContainer) this._el.videoContainer.style.display = 'block';
             if (this._el.overlayAvatar)  this._el.overlayAvatar.style.display = 'none';
-            if (this._el.remoteVideo) this._el.remoteVideo.play().catch(() => {});
         }
-
-        // Track mute/unmute events (for when remote replaceTrack swaps video)
-        e.track.onmute = () => {
-            console.log('[CALL] Remote track muted:', e.track.kind);
-            if (e.track.kind === 'video') {
-                // Remote stopped video or screen share ended
-                if (this._remoteVideoStream.getVideoTracks().every(t => t.muted)) {
-                    if (this._callType !== 'video' && !this._isScreenSharing) {
-                        if (this._el.videoContainer) this._el.videoContainer.style.display = 'none';
-                        if (this._el.overlayAvatar)  this._el.overlayAvatar.style.display = 'flex';
-                    }
-                }
-            }
-        };
         e.track.onunmute = () => {
-            console.log('[CALL] Remote track unmuted:', e.track.kind);
-            if (e.track.kind === 'video') {
-                if (this._el.videoContainer) this._el.videoContainer.style.display = 'block';
-                if (this._el.overlayAvatar)  this._el.overlayAvatar.style.display = 'none';
-                if (this._el.remoteVideo) this._el.remoteVideo.play().catch(() => {});
-            }
-        };
-
-        e.track.onended = () => {
-            console.log('[CALL] Remote track ended:', e.track.kind);
-            if (e.track.kind === 'audio') {
-                try { this._remoteAudioStream.removeTrack(e.track); } catch(_){}
-            }
-            if (e.track.kind === 'video') {
-                try { this._remoteVideoStream.removeTrack(e.track); } catch(_){}
-                if (this._remoteVideoStream.getVideoTracks().length === 0 && this._callType !== 'video') {
-                    if (this._el.videoContainer) this._el.videoContainer.style.display = 'none';
-                    if (this._el.overlayAvatar)  this._el.overlayAvatar.style.display = 'flex';
-                }
-            }
+            if (e.track.kind==='video') { if(this._el.videoContainer)this._el.videoContainer.style.display='block'; if(this._el.overlayAvatar)this._el.overlayAvatar.style.display='none'; if(this._el.remoteVideo)this._el.remoteVideo.play().catch(()=>{}); }
+            if (e.track.kind==='audio' && this._el.remoteAudio) this._el.remoteAudio.play().catch(()=>{});
         };
     };
 
-    // Connection state monitoring
-    this._callPeer.onconnectionstatechange = () => {
-        const st = this._callPeer?.connectionState;
-        console.log('[CALL] PeerConnection state:', st);
-        if (!st) return;
-        if (st === 'connected') {
-            if (this._el.statusText) this._el.statusText.textContent = 'Connected';
-            // Clear any pending disconnect timeout
-            if (this._disconnectTimeout) { clearTimeout(this._disconnectTimeout); this._disconnectTimeout = null; }
-        } else if (st === 'connecting') {
-            if (this._disconnectTimeout) { clearTimeout(this._disconnectTimeout); this._disconnectTimeout = null; }
-        } else if (st === 'disconnected') {
-            if (this._el.statusText) this._el.statusText.textContent = 'Reconnecting...';
-            this._disconnectTimeout = setTimeout(() => {
-                if (this._callPeer?.connectionState === 'disconnected') {
-                    console.log('[CALL] Still disconnected after 15s, ending call');
-                    this.callHangup();
-                }
-            }, 15000);
-        } else if (st === 'failed') {
-            console.log('[CALL] Connection failed');
-            this.callHangup();
-        }
+    this._pc.onconnectionstatechange = () => {
+        const s = this._pc?.connectionState; console.log('[CALL] conn:', s);
+        if (s==='connected') { if(this._el.statusText) this._el.statusText.textContent='Connected'; if(this._dcTimeout){clearTimeout(this._dcTimeout);this._dcTimeout=null;} }
+        else if (s==='connecting') { if(this._dcTimeout){clearTimeout(this._dcTimeout);this._dcTimeout=null;} }
+        else if (s==='disconnected') { if(this._el.statusText) this._el.statusText.textContent='Reconnecting...'; this._dcTimeout=setTimeout(()=>{if(this._pc?.connectionState==='disconnected')this.callHangup();},15000); }
+        else if (s==='failed') this.callHangup();
     };
-
-    this._callPeer.oniceconnectionstatechange = () => {
-        const st = this._callPeer?.iceConnectionState;
-        console.log('[CALL] ICE state:', st);
-        if (st === 'failed') {
-            console.log('[CALL] ICE failed, restarting...');
-            if (this._callPeer) this._callPeer.restartIce();
-        }
-    };
+    this._pc.oniceconnectionstatechange = () => { if(this._pc?.iceConnectionState==='failed') this._pc.restartIce(); };
 };
 
-// ── HELPER: find or create video sender ──────────────────────
-AIAssistant.prototype._getVideoSender = function() {
-    if (!this._callPeer) return null;
-    // First try: sender with video track
-    let sender = this._callPeer.getSenders().find(s => s.track?.kind === 'video');
-    if (sender) return sender;
-    // Second try: transceiver with no track (recvonly we added)
-    const tc = this._callPeer.getTransceivers().find(t =>
-        (t.receiver?.track?.kind === 'video' && (!t.sender.track || t.sender.track.readyState === 'ended'))
-        || t.sender.track === null
-    );
-    if (tc) {
-        if (tc.direction === 'recvonly' || tc.direction === 'inactive') {
-            tc.direction = 'sendrecv';
-        }
-        return tc.sender;
-    }
+// ── VIDEO SENDER HELPER ──────────────────────────────────────
+AIAssistant.prototype._vidSender = function() {
+    if (!this._pc) return null;
+    let s = this._pc.getSenders().find(x => x.track?.kind === 'video');
+    if (s) return s;
+    const tc = this._pc.getTransceivers().find(t => (t.receiver?.track?.kind==='video' && (!t.sender.track||t.sender.track.readyState==='ended')) || t.sender.track===null);
+    if (tc) { if(tc.direction==='recvonly'||tc.direction==='inactive') tc.direction='sendrecv'; return tc.sender; }
     return null;
 };
 
-// ── START CALL (caller side) ─────────────────────────────────
+// ── MEDIA HELPER ─────────────────────────────────────────────
+AIAssistant.prototype._getMedia = function(type) {
+    const a = { echoCancellation:true, noiseSuppression:true, autoGainControl:true, channelCount:1, sampleRate:48000 };
+    return type === 'video'
+        ? navigator.mediaDevices.getUserMedia({ audio:a, video:{ width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30}, facingMode:'user' } })
+        : navigator.mediaDevices.getUserMedia({ audio:a, video:false });
+};
+
+// ── START CALL ───────────────────────────────────────────────
 AIAssistant.prototype.callStart = async function(callType) {
-    if (!this.dcActiveChatUser?.id) { this.showNotification('Error', 'Open a DM chat first to call.'); return; }
-    if (this._callId) { this.showNotification('Error', 'Already in a call.'); return; }
+    if (!this.dcActiveChatUser?.id) { this.showNotification('Error','Open a DM chat first.'); return; }
+    if (this._callId) { this.showNotification('Error','Already in a call.'); return; }
     this._callType = callType;
-    this._callEnding = false;
-
     try {
-        // ── 1. Get local media ──
-        console.log('[CALL] Requesting media for', callType, 'call...');
-        const audioOpts = { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1, sampleRate: 48000 };
-        const constraints = callType === 'video'
-            ? { audio: audioOpts, video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, facingMode: 'user' } }
-            : { audio: audioOpts, video: false };
-        this._localStream = await navigator.mediaDevices.getUserMedia(constraints);
-        console.log('[CALL] Got local stream. Audio tracks:', this._localStream.getAudioTracks().length, 'Video tracks:', this._localStream.getVideoTracks().length);
-
-        // ── 2. Create peer connection & add tracks ──
-        this._setupPeerConnection();
-        this._localStream.getTracks().forEach(t => {
-            console.log('[CALL] Adding local track:', t.kind, t.label);
-            this._callPeer.addTrack(t, this._localStream);
-        });
-
-        // For voice calls: add recvonly video transceiver so mid-call video/screen share works
-        if (callType === 'voice') {
-            this._callPeer.addTransceiver('video', { direction: 'recvonly' });
-        }
-
-        // ── 3. Show local video preview ──
-        if (this._el.localVideo) {
-            this._el.localVideo.srcObject = this._localStream;
-            this._el.localVideo.style.display = callType === 'video' ? 'block' : 'none';
-        }
-
-        // ── 4. Create offer ──
-        const offer = await this._callPeer.createOffer();
-        await this._callPeer.setLocalDescription(offer);
-        console.log('[CALL] Offer created');
-
-        // ── 5. Insert call row ──
-        const { data: callRow, error } = await this.supabase.from('calls').insert({
-            caller_id: this.userId,
-            callee_id: this.dcActiveChatUser.id,
-            call_type: callType,
-            status: 'ringing',
-            offer: { type: offer.type, sdp: offer.sdp }
-        }).select().single();
+        this._ls = await this._getMedia(callType);
+        console.log('[CALL] Got stream. audio:',this._ls.getAudioTracks().length,'video:',this._ls.getVideoTracks().length);
+        this._makePc();
+        this._ls.getTracks().forEach(t => this._pc.addTrack(t, this._ls));
+        if (callType==='voice') this._pc.addTransceiver('video',{direction:'recvonly'});
+        if (this._el.localVideo) { this._el.localVideo.srcObject=this._ls; this._el.localVideo.style.display=callType==='video'?'block':'none'; }
+        const offer = await this._pc.createOffer();
+        await this._pc.setLocalDescription(offer);
+        const {data:row,error} = await this.supabase.from('calls').insert({ caller_id:this.userId, callee_id:this.dcActiveChatUser.id, call_type:callType, status:'ringing', offer:{type:offer.type,sdp:offer.sdp} }).select().single();
         if (error) throw error;
-        this._callId = callRow.id;
-        this._isCaller = true;
-        console.log('[CALL] Call created:', this._callId);
-
-        // ── 6. ICE candidates ──
-        this._callPeer.onicecandidate = async e => {
-            if (e.candidate && this._callId) {
-                await this.supabase.from('call_candidates').insert({
-                    call_id: this._callId, sender_id: this.userId, candidate: e.candidate.toJSON()
-                }).catch(() => {});
-            }
-        };
-
-        // ── 7. Watch for answer / rejection / end ──
-        this._callSub = this.supabase
-            .channel(`call-watch-${this._callId}`)
-            .on('postgres_changes', {
-                event: 'UPDATE', schema: 'public', table: 'calls',
-                filter: `id=eq.${this._callId}`
-            }, async payload => {
-                const c = payload.new;
-                if (c.status === 'rejected') {
-                    this.showNotification('Call', 'Call was declined.');
-                    this._callEndLocal(); return;
+        this._callId = row.id; this._isCaller = true;
+        this._pc.onicecandidate = async e => { if(e.candidate&&this._callId) await this.supabase.from('call_candidates').insert({call_id:this._callId,sender_id:this.userId,candidate:e.candidate.toJSON()}).catch(()=>{}); };
+        // Watch for answer/reject/end
+        this._callSub = this.supabase.channel(`cw-${this._callId}`)
+            .on('postgres_changes',{event:'UPDATE',schema:'public',table:'calls',filter:`id=eq.${this._callId}`}, async p => {
+                const c=p.new;
+                if (c.status==='rejected') { this.showNotification('Call','Declined.'); this._endLocal(); return; }
+                if (c.status==='ended')    { this._endLocal('Call ended'); return; }
+                if (c.answer && this._pc && !this._pc.remoteDescription) {
+                    await this._pc.setRemoteDescription(new RTCSessionDescription(c.answer));
+                    if(this._el.statusText) this._el.statusText.textContent='Connected';
+                    this._startCallTimer(); this._setupRenego(true); this._setupBroadcast();
                 }
-                if (c.status === 'ended') {
-                    this._callEndLocal('Call ended'); return;
-                }
-                // Answer received
-                if (c.answer && this._callPeer && !this._callPeer.remoteDescription) {
-                    console.log('[CALL] Answer received, setting remote description...');
-                    await this._callPeer.setRemoteDescription(new RTCSessionDescription(c.answer));
-                    if (this._el.statusText) this._el.statusText.textContent = 'Connected';
-                    this._startCallTimer();
-                    this._setupRenegotiation(true);
-                    this._setupCallStateBroadcast();
-                    this._startHeartbeat();
-                }
-                // Call type upgrade
-                if (c.call_type === 'video' && this._callType !== 'video') {
-                    this._handleVideoUpgrade();
-                }
-            })
-            .subscribe();
-
-        // ── 8. Watch for callee's ICE candidates ──
-        this._candSub = this.supabase
-            .channel(`cand-caller-${this._callId}`)
-            .on('postgres_changes', {
-                event: 'INSERT', schema: 'public', table: 'call_candidates',
-                filter: `call_id=eq.${this._callId}`
-            }, async payload => {
-                if (payload.new.sender_id !== this.userId && this._callPeer) {
-                    try { await this._callPeer.addIceCandidate(new RTCIceCandidate(payload.new.candidate)); } catch(_){}
-                }
-            })
-            .subscribe();
-
-        // ── 9. Show overlay ──
+                if (c.call_type==='video' && this._callType!=='video') this._upgradeToVideo();
+            }).subscribe();
+        this._candSub = this.supabase.channel(`cc-${this._callId}`)
+            .on('postgres_changes',{event:'INSERT',schema:'public',table:'call_candidates',filter:`call_id=eq.${this._callId}`}, async p => {
+                if(p.new.sender_id!==this.userId&&this._pc) try{await this._pc.addIceCandidate(new RTCIceCandidate(p.new.candidate));}catch(_){}
+            }).subscribe();
         this._callShowOverlay(callType, this.dcActiveChatUser.name, false);
-
-    } catch (err) {
-        console.error('[CALL] callStart error:', err);
-        let msg = err.message || 'Unknown error';
-        if (msg.includes('NotAllowedError') || msg.includes('Permission denied')) {
-            msg = 'Microphone/camera permission denied. Allow access in browser settings.';
-        } else if (msg.includes('NotFoundError') || msg.includes('DevicesNotFoundError')) {
-            msg = 'No microphone found. Please connect a microphone.';
-        } else if (msg.includes('relation') || msg.includes('does not exist')) {
-            msg = 'Calls table not set up. Run ENABLE_REALTIME.sql in Supabase first.';
-        }
-        this.showNotification('Call Failed', msg);
-        this._callEndLocal();
+    } catch(err) {
+        console.error('[CALL] start err:', err);
+        this.showNotification('Call Failed', err.message?.includes('NotAllowed')?'Mic/camera denied':err.message||'Error');
+        this._endLocal();
     }
 };
 
-// ── ACCEPT CALL (callee side) ────────────────────────────────
+// ── ACCEPT CALL ──────────────────────────────────────────────
 AIAssistant.prototype.callAccept = async function() {
     if (!this._incomingCall) return;
-    const call = this._incomingCall;
-    this._incomingCall = null;
-    this._callEnding = false;
+    const call = this._incomingCall; this._incomingCall = null;
     if (this._el.incomingModal) this._el.incomingModal.style.display = 'none';
-    if (this._incomingWatchSub) { this.supabase.removeChannel(this._incomingWatchSub); this._incomingWatchSub = null; }
+    if (this._incomingWatchSub) { this.supabase.removeChannel(this._incomingWatchSub); this._incomingWatchSub=null; }
     this._callType = call.call_type;
-
     try {
-        // ── 1. Get local media ──
-        console.log('[CALL] Accepting', call.call_type, 'call...');
-        const audioOpts = { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1, sampleRate: 48000 };
-        const constraints = call.call_type === 'video'
-            ? { audio: audioOpts, video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, facingMode: 'user' } }
-            : { audio: audioOpts, video: false };
-        this._localStream = await navigator.mediaDevices.getUserMedia(constraints);
-        console.log('[CALL] Got local stream. Audio:', this._localStream.getAudioTracks().length, 'Video:', this._localStream.getVideoTracks().length);
-
-        // ── 2. Create peer connection & add tracks ──
-        this._setupPeerConnection();
-        this._localStream.getTracks().forEach(t => {
-            console.log('[CALL] Adding local track:', t.kind, t.label);
-            this._callPeer.addTrack(t, this._localStream);
-        });
-
-        // ── 3. Local video preview ──
-        if (this._el.localVideo) {
-            this._el.localVideo.srcObject = this._localStream;
-            this._el.localVideo.style.display = call.call_type === 'video' ? 'block' : 'none';
-        }
-
-        // ── 4. Set remote offer & create answer ──
-        console.log('[CALL] Setting remote offer...');
-        await this._callPeer.setRemoteDescription(new RTCSessionDescription(call.offer));
-        const answer = await this._callPeer.createAnswer();
-        await this._callPeer.setLocalDescription(answer);
-        console.log('[CALL] Answer created');
-
-        this._callId = call.id;
-        this._isCaller = false;
-
-        // ── 5. ICE candidates ──
-        this._callPeer.onicecandidate = async e => {
-            if (e.candidate && this._callId) {
-                await this.supabase.from('call_candidates').insert({
-                    call_id: this._callId, sender_id: this.userId, candidate: e.candidate.toJSON()
-                }).catch(() => {});
-            }
-        };
-
-        // ── 6. Fetch existing ICE candidates caller sent while we were setting up ──
-        const { data: existingCands } = await this.supabase.from('call_candidates')
-            .select('candidate').eq('call_id', this._callId).neq('sender_id', this.userId);
-        if (existingCands) {
-            for (const c of existingCands) {
-                try { await this._callPeer.addIceCandidate(new RTCIceCandidate(c.candidate)); } catch(_){}
-            }
-            console.log('[CALL] Added', existingCands.length, 'existing ICE candidates');
-        }
-
-        // ── 7. Watch for new ICE candidates ──
-        this._candSub = this.supabase
-            .channel(`cand-callee-${this._callId}`)
-            .on('postgres_changes', {
-                event: 'INSERT', schema: 'public', table: 'call_candidates',
-                filter: `call_id=eq.${this._callId}`
-            }, async payload => {
-                if (payload.new.sender_id !== this.userId && this._callPeer) {
-                    try { await this._callPeer.addIceCandidate(new RTCIceCandidate(payload.new.candidate)); } catch(_){}
-                }
-            })
-            .subscribe();
-
-        // ── 8. Watch for call end / type change ──
-        this._callSub = this.supabase
-            .channel(`call-callee-${this._callId}`)
-            .on('postgres_changes', {
-                event: 'UPDATE', schema: 'public', table: 'calls',
-                filter: `id=eq.${this._callId}`
-            }, payload => {
-                const c = payload.new;
-                if (c.status === 'ended') {
-                    this._callEndLocal('Call ended');
-                }
-                if (c.call_type === 'video' && this._callType !== 'video') {
-                    this._handleVideoUpgrade();
-                }
-            })
-            .subscribe();
-
-        // ── 9. Send answer to DB ──
-        await this.supabase.from('calls')
-            .update({ answer: { type: answer.type, sdp: answer.sdp }, status: 'active' })
-            .eq('id', call.id);
-        console.log('[CALL] Answer sent to DB');
-
-        // ── 10. Show overlay & start timer ──
-        const callerLabel = this._el.callerName?.textContent || 'User';
+        this._ls = await this._getMedia(call.call_type);
+        this._makePc();
+        this._ls.getTracks().forEach(t => this._pc.addTrack(t, this._ls));
+        if (this._el.localVideo) { this._el.localVideo.srcObject=this._ls; this._el.localVideo.style.display=call.call_type==='video'?'block':'none'; }
+        await this._pc.setRemoteDescription(new RTCSessionDescription(call.offer));
+        const answer = await this._pc.createAnswer();
+        await this._pc.setLocalDescription(answer);
+        this._callId = call.id; this._isCaller = false;
+        this._pc.onicecandidate = async e => { if(e.candidate&&this._callId) await this.supabase.from('call_candidates').insert({call_id:this._callId,sender_id:this.userId,candidate:e.candidate.toJSON()}).catch(()=>{}); };
+        // Fetch ICE candidates already sent by caller
+        const {data:ec} = await this.supabase.from('call_candidates').select('candidate').eq('call_id',this._callId).neq('sender_id',this.userId);
+        if (ec) for (const c of ec) { try{await this._pc.addIceCandidate(new RTCIceCandidate(c.candidate));}catch(_){} }
+        this._candSub = this.supabase.channel(`ca-${this._callId}`)
+            .on('postgres_changes',{event:'INSERT',schema:'public',table:'call_candidates',filter:`call_id=eq.${this._callId}`}, async p => {
+                if(p.new.sender_id!==this.userId&&this._pc) try{await this._pc.addIceCandidate(new RTCIceCandidate(p.new.candidate));}catch(_){}
+            }).subscribe();
+        this._callSub = this.supabase.channel(`ce-${this._callId}`)
+            .on('postgres_changes',{event:'UPDATE',schema:'public',table:'calls',filter:`id=eq.${this._callId}`}, p => {
+                if(p.new.status==='ended') this._endLocal('Call ended');
+                if(p.new.call_type==='video'&&this._callType!=='video') this._upgradeToVideo();
+            }).subscribe();
+        await this.supabase.from('calls').update({answer:{type:answer.type,sdp:answer.sdp},status:'active'}).eq('id',call.id);
+        const callerLabel = this._el.callerName?.textContent||'User';
         this._callShowOverlay(call.call_type, callerLabel, true);
-        this._startCallTimer();
-        this._setupRenegotiation(false);
-        this._setupCallStateBroadcast();
-        this._startHeartbeat();
-
-    } catch (err) {
-        console.error('[CALL] callAccept error:', err);
-        this.showNotification('Error', 'Could not accept call: ' + (err.message || 'Check mic/camera permission'));
-        this._callEndLocal();
+        this._startCallTimer(); this._setupRenego(false); this._setupBroadcast();
+    } catch(err) {
+        console.error('[CALL] accept err:', err);
+        this.showNotification('Error','Could not accept: '+(err.message||'Check mic'));
+        this._endLocal();
     }
 };
 
-// ── REJECT CALL ──────────────────────────────────────────────
+// ── REJECT / HANGUP ──────────────────────────────────────────
 AIAssistant.prototype.callReject = async function() {
     if (!this._incomingCall) return;
-    const id = this._incomingCall.id;
-    this._incomingCall = null;
+    const id = this._incomingCall.id; this._incomingCall = null;
     if (this._el.incomingModal) this._el.incomingModal.style.display = 'none';
-    if (this._incomingWatchSub) { this.supabase.removeChannel(this._incomingWatchSub); this._incomingWatchSub = null; }
-    await this.supabase.from('calls').update({ status: 'rejected' }).eq('id', id).catch(() => {});
+    if (this._incomingWatchSub) { this.supabase.removeChannel(this._incomingWatchSub); this._incomingWatchSub=null; }
+    await this.supabase.from('calls').update({status:'rejected'}).eq('id',id);
 };
 
-// ── HANG UP ──────────────────────────────────────────────────
-AIAssistant.prototype.callHangup = async function() {
-    if (this._callEnding) return; // prevent double-hangup
-    this._callEnding = true;
-    const callId = this._callId;
-    if (callId) {
-        // Update DB so other user gets notified via realtime
-        await this.supabase.from('calls').update({ status: 'ended' }).eq('id', callId).catch(() => {});
-        // Server backup
-        fetch('/api/end-call', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ callId })
-        }).catch(() => {});
+AIAssistant.prototype.callHangup = function() {
+    const id = this._callId;
+    this._endLocal('You ended the call');
+    if (id) {
+        this.supabase.from('calls').update({status:'ended'}).eq('id',id).then(()=>{}).catch(()=>{});
+        fetch('/api/end-call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({callId:id})}).catch(()=>{});
     }
-    this._callEndLocal('You ended the call');
 };
 
-// ── END CALL LOCAL CLEANUP ───────────────────────────────────
-AIAssistant.prototype._callEndLocal = function(reason) {
-    // Timer
-    if (this._callTimer) { clearInterval(this._callTimer); this._callTimer = null; }
-    this._callStartTime = null;
-    // Heartbeat
-    if (this._heartbeatIv) { clearInterval(this._heartbeatIv); this._heartbeatIv = null; }
-    // Disconnect timeout
-    if (this._disconnectTimeout) { clearTimeout(this._disconnectTimeout); this._disconnectTimeout = null; }
-
-    // Screen share
-    if (this._screenStream) { this._screenStream.getTracks().forEach(t => t.stop()); this._screenStream = null; }
-
-    // Local stream
-    if (this._localStream) { this._localStream.getTracks().forEach(t => t.stop()); this._localStream = null; }
-    // Remote streams (separate audio/video — just release, don't stop)
-    this._remoteAudioStream = null;
-    this._remoteVideoStream = null;
-
-    // Peer connection
-    if (this._callPeer) {
-        this._callPeer.ontrack = null;
-        this._callPeer.onconnectionstatechange = null;
-        this._callPeer.oniceconnectionstatechange = null;
-        this._callPeer.onnegotiationneeded = null;
-        this._callPeer.onicecandidate = null;
-        this._callPeer.close();
-        this._callPeer = null;
-    }
-
-    // Supabase channels
-    if (this._callSub)     { this.supabase.removeChannel(this._callSub); this._callSub = null; }
-    if (this._candSub)     { this.supabase.removeChannel(this._candSub); this._candSub = null; }
-    if (this._renegoCh)    { this.supabase.removeChannel(this._renegoCh); this._renegoCh = null; }
-    if (this._callStateCh) { this.supabase.removeChannel(this._callStateCh); this._callStateCh = null; }
-    if (this._incomingWatchSub) { this.supabase.removeChannel(this._incomingWatchSub); this._incomingWatchSub = null; }
-
-    // Clear media elements
+// ── LOCAL CLEANUP ────────────────────────────────────────────
+AIAssistant.prototype._endLocal = function(reason) {
+    if (!this._callId && !this._pc && !this._ls) { if(this._el.overlay) this._el.overlay.style.display='none'; return; }
+    console.log('[CALL] _endLocal:', reason);
+    if (this._callTimer) { clearInterval(this._callTimer); this._callTimer=null; } this._callStartTime=null;
+    if (this._dcTimeout)  { clearTimeout(this._dcTimeout); this._dcTimeout=null; }
+    if (this._screenStream) { this._screenStream.getTracks().forEach(t=>t.stop()); this._screenStream=null; }
+    if (this._ls) { this._ls.getTracks().forEach(t=>t.stop()); this._ls=null; }
+    if (this._pc) { this._pc.ontrack=null; this._pc.onconnectionstatechange=null; this._pc.oniceconnectionstatechange=null; this._pc.onnegotiationneeded=null; this._pc.onicecandidate=null; this._pc.close(); this._pc=null; }
+    if (this._callSub) { this.supabase.removeChannel(this._callSub); this._callSub=null; }
+    if (this._candSub) { this.supabase.removeChannel(this._candSub); this._candSub=null; }
+    if (this._renegoCh){ this.supabase.removeChannel(this._renegoCh);this._renegoCh=null; }
+    if (this._stateCh) { this.supabase.removeChannel(this._stateCh); this._stateCh=null; }
+    if (this._incomingWatchSub) { this.supabase.removeChannel(this._incomingWatchSub); this._incomingWatchSub=null; }
     if (this._el.localVideo)  this._el.localVideo.srcObject  = null;
     if (this._el.remoteVideo) this._el.remoteVideo.srcObject = null;
-    if (this._el.remoteAudio) this._el.remoteAudio.srcObject = null;
+    if (this._el.remoteAudio) { this._el.remoteAudio.srcObject = null; this._el.remoteAudio.pause(); }
     if (this._el.incomingModal) this._el.incomingModal.style.display = 'none';
-
-    // Show "Call Ended" briefly, then close overlay
-    if (this._el.overlay && this._el.overlay.style.display === 'flex') {
-        if (this._el.statusText) this._el.statusText.textContent = reason || 'Call ended';
-        if (this._el.callTimer)  this._el.callTimer.style.display = 'none';
-        setTimeout(() => { if (this._el.overlay) this._el.overlay.style.display = 'none'; }, 1500);
+    if (this._el.overlay && this._el.overlay.style.display==='flex') {
+        if(this._el.statusText) this._el.statusText.textContent = reason||'Call ended';
+        if(this._el.callTimer)  this._el.callTimer.style.display = 'none';
+        setTimeout(()=>{ if(this._el.overlay) this._el.overlay.style.display='none'; }, 1500);
     }
-
-    // Reset state
-    this._callId           = null;
-    this._isMuted          = false;
-    this._isVideoOff       = false;
-    this._isScreenSharing  = false;
-    this._renegoInProgress = false;
-    this._callEnding       = false;
-    this._facingMode       = 'user';
-    this._callType         = 'voice';
-    this._savedCamTrack    = null;
-
-    // Reset button UI
-    if (this._el.muteBtn) { this._el.muteBtn.textContent = '🎤 Mute'; this._el.muteBtn.style.background = '#374151'; }
-    if (this._el.videoToggleBtn) { this._el.videoToggleBtn.textContent = '📹 Stop Video'; this._el.videoToggleBtn.style.background = '#374151'; }
-    if (this._el.screenShareBtn) { this._el.screenShareBtn.textContent = '🖥️ Share Screen'; this._el.screenShareBtn.style.background = '#374151'; }
-    if (this._el.remoteMuteIndicator) this._el.remoteMuteIndicator.style.display = 'none';
+    this._callId=null; this._isMuted=false; this._isVideoOff=false; this._isScreenSharing=false;
+    this._renegoLock=false; this._facingMode='user'; this._callType='voice'; this._savedCamTrack=null;
+    if(this._el.muteBtn){this._el.muteBtn.textContent='🎤 Mute';this._el.muteBtn.style.background='#374151';}
+    if(this._el.videoToggleBtn){this._el.videoToggleBtn.textContent='📹 Stop Video';this._el.videoToggleBtn.style.background='#374151';}
+    if(this._el.screenShareBtn){this._el.screenShareBtn.textContent='🖥️ Share Screen';this._el.screenShareBtn.style.background='#374151';}
+    if(this._el.remoteMuteIndicator) this._el.remoteMuteIndicator.style.display='none';
 };
 
-// ── SHOW CALL OVERLAY ────────────────────────────────────────
-AIAssistant.prototype._callShowOverlay = function(callType, name, isCallee) {
+// ── OVERLAY ──────────────────────────────────────────────────
+AIAssistant.prototype._callShowOverlay = function(type, name, isCallee) {
     if (!this._el.overlay) return;
-    const initial = (name || 'U')[0].toUpperCase();
-    if (this._el.overlayAvatar) {
-        this._el.overlayAvatar.textContent = initial;
-        this._el.overlayAvatar.style.display = callType === 'video' ? 'none' : 'flex';
-    }
-    if (this._el.overlayName) this._el.overlayName.textContent = name || 'User';
-    if (this._el.statusText)  this._el.statusText.textContent  = isCallee ? 'Connecting…' : `Calling ${name}…`;
-    if (this._el.videoContainer)   this._el.videoContainer.style.display   = callType === 'video' ? 'block' : 'none';
-    if (this._el.videoToggleBtn)   this._el.videoToggleBtn.style.display   = callType === 'video' ? 'inline-block' : 'none';
-    if (this._el.switchToVideoBtn) this._el.switchToVideoBtn.style.display = callType === 'video' ? 'none' : 'inline-block';
-    if (this._el.callTimer) { this._el.callTimer.textContent = '0:00'; this._el.callTimer.style.display = 'none'; }
+    if (this._el.overlayAvatar) { this._el.overlayAvatar.textContent=(name||'U')[0].toUpperCase(); this._el.overlayAvatar.style.display=type==='video'?'none':'flex'; }
+    if (this._el.overlayName) this._el.overlayName.textContent = name||'User';
+    if (this._el.statusText)  this._el.statusText.textContent  = isCallee?'Connecting…':`Calling ${name}…`;
+    if (this._el.videoContainer)   this._el.videoContainer.style.display   = type==='video'?'block':'none';
+    if (this._el.videoToggleBtn)   this._el.videoToggleBtn.style.display   = type==='video'?'inline-block':'none';
+    if (this._el.switchToVideoBtn) this._el.switchToVideoBtn.style.display = type==='video'?'none':'inline-block';
+    if (this._el.callTimer) { this._el.callTimer.textContent='0:00'; this._el.callTimer.style.display='none'; }
     this._el.overlay.style.display = 'flex';
 };
 
-// ── HEARTBEAT: detect when other user is truly gone ──────────
-AIAssistant.prototype._startHeartbeat = function() {
-    if (this._heartbeatIv) clearInterval(this._heartbeatIv);
-    this._lastRemoteHeartbeat = Date.now();
-
-    // Send heartbeat every 3 seconds
-    this._heartbeatIv = setInterval(() => {
-        if (!this._callStateCh || !this._callId) return;
-        this._callStateCh.send({
-            type: 'broadcast', event: 'heartbeat',
-            payload: { userId: this.userId, ts: Date.now() }
-        }).catch(() => {});
-        // Check if we haven't received remote heartbeat in 20 seconds
-        if (Date.now() - this._lastRemoteHeartbeat > 20000) {
-            console.log('[CALL] No heartbeat from other user for 20s, ending call');
-            this.callHangup();
-        }
-    }, 3000);
-};
-
-// ── CALL STATE BROADCAST (mute/video/screen share sync) ──────
-AIAssistant.prototype._setupCallStateBroadcast = function() {
-    if (!this._callId) return;
-    if (this._callStateCh) { this.supabase.removeChannel(this._callStateCh); }
-
-    this._callStateCh = this.supabase.channel(`call-state-${this._callId}`)
-        .on('broadcast', { event: 'call-state' }, ({ payload }) => {
-            if (!payload || payload.userId === this.userId) return;
-            console.log('[CALL] Remote state:', payload);
-            // Mute indicator
-            if (this._el.remoteMuteIndicator) {
-                this._el.remoteMuteIndicator.style.display = payload.isMuted ? 'block' : 'none';
-            }
-            // Video off → show avatar
-            if (payload.isVideoOff !== undefined && this._callType === 'video') {
-                if (this._el.overlayAvatar) {
-                    this._el.overlayAvatar.style.display = payload.isVideoOff ? 'flex' : 'none';
-                }
-            }
-            // Screen sharing → show video container
-            if (payload.isScreenSharing) {
-                if (this._el.videoContainer) this._el.videoContainer.style.display = 'block';
-                if (this._el.overlayAvatar)  this._el.overlayAvatar.style.display = 'none';
-            }
-            // Switched to video → auto-upgrade
-            if (payload.switchedToVideo && this._callType !== 'video') {
-                this._handleVideoUpgrade();
-            }
-        })
-        .on('broadcast', { event: 'heartbeat' }, ({ payload }) => {
-            if (payload && payload.userId !== this.userId) {
-                this._lastRemoteHeartbeat = Date.now();
-            }
-        })
-        .subscribe();
-};
-
-AIAssistant.prototype._broadcastCallState = function() {
-    if (!this._callStateCh) return;
-    this._callStateCh.send({
-        type: 'broadcast',
-        event: 'call-state',
-        payload: {
-            userId: this.userId,
-            isMuted: this._isMuted,
-            isVideoOff: this._isVideoOff,
-            isScreenSharing: this._isScreenSharing
-        }
-    }).catch(() => {});
-};
-
-// ── HANDLE VIDEO UPGRADE (voice → video) ─────────────────────
-AIAssistant.prototype._handleVideoUpgrade = function() {
-    this._callType = 'video';
-    if (this._el.videoContainer)   this._el.videoContainer.style.display   = 'block';
-    if (this._el.overlayAvatar)    this._el.overlayAvatar.style.display    = 'none';
-    if (this._el.videoToggleBtn)   this._el.videoToggleBtn.style.display   = 'inline-block';
-    if (this._el.switchToVideoBtn) this._el.switchToVideoBtn.style.display = 'none';
-    this._autoAcquireVideo();
-};
-
-// ── AUTO-ACQUIRE VIDEO ───────────────────────────────────────
-AIAssistant.prototype._autoAcquireVideo = async function() {
-    if (!this._callPeer || !this._callId) return;
-    try {
-        console.log('[CALL] Auto-acquiring video...');
-        const videoStream = await navigator.mediaDevices.getUserMedia({
-            video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, facingMode: 'user' }
-        });
-        const videoTrack = videoStream.getVideoTracks()[0];
-        if (!videoTrack) return;
-
-        // Remove any existing video tracks from localStream first (prevent duplicates)
-        if (this._localStream) {
-            this._localStream.getVideoTracks().forEach(old => {
-                this._localStream.removeTrack(old);
-                old.stop();
-            });
-            this._localStream.addTrack(videoTrack);
-        } else {
-            this._localStream = videoStream;
-        }
-
-        // ALWAYS use replaceTrack, never addTrack
-        const sender = this._getVideoSender();
-        if (sender) {
-            await sender.replaceTrack(videoTrack);
-        } else {
-            this._callPeer.addTrack(videoTrack, this._localStream);
-        }
-
-        if (this._el.localVideo) {
-            this._el.localVideo.srcObject = this._localStream;
-            this._el.localVideo.style.display = 'block';
-        }
-        this._isVideoOff = false;
-        this._broadcastCallState();
-        console.log('[CALL] Video acquired successfully');
-    } catch (err) {
-        console.warn('[CALL] Auto-acquire video failed:', err.message);
-    }
-};
-
-// ── TOGGLE MUTE ──────────────────────────────────────────────
-AIAssistant.prototype.callToggleMute = function() {
-    if (!this._localStream) return;
-    this._isMuted = !this._isMuted;
-    this._localStream.getAudioTracks().forEach(t => { t.enabled = !this._isMuted; });
-    console.log('[CALL] Mute:', this._isMuted);
-    if (this._el.muteBtn) {
-        this._el.muteBtn.textContent = this._isMuted ? '🔇 Unmute' : '🎤 Mute';
-        this._el.muteBtn.style.background = this._isMuted ? '#ef4444' : '#374151';
-    }
-    this._broadcastCallState();
-};
-
-// ── TOGGLE VIDEO ─────────────────────────────────────────────
-AIAssistant.prototype.callToggleVideo = function() {
-    if (!this._localStream) return;
-    this._isVideoOff = !this._isVideoOff;
-    this._localStream.getVideoTracks().forEach(t => { t.enabled = !this._isVideoOff; });
-    console.log('[CALL] Video off:', this._isVideoOff);
-    if (this._el.videoToggleBtn) {
-        this._el.videoToggleBtn.textContent = this._isVideoOff ? '📹 Start Video' : '📹 Stop Video';
-        this._el.videoToggleBtn.style.background = this._isVideoOff ? '#ef4444' : '#374151';
-    }
-    if (this._el.localVideo) this._el.localVideo.style.display = this._isVideoOff ? 'none' : 'block';
-    this._broadcastCallState();
-};
-
-// ── CALL TIMER ───────────────────────────────────────────────
+// ── TIMER ────────────────────────────────────────────────────
 AIAssistant.prototype._startCallTimer = function() {
     if (this._callTimer) return;
     this._callStartTime = Date.now();
     if (this._el.callTimer) this._el.callTimer.style.display = 'block';
     this._callTimer = setInterval(() => {
-        const secs = Math.floor((Date.now() - this._callStartTime) / 1000);
-        const h = Math.floor(secs / 3600);
-        const m = Math.floor((secs % 3600) / 60);
-        const s = secs % 60;
-        const str = h > 0
-            ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`
-            : `${m}:${String(s).padStart(2,'0')}`;
-        if (this._el.callTimer) this._el.callTimer.textContent = str;
+        const s = Math.floor((Date.now()-this._callStartTime)/1000);
+        const str = Math.floor(s/3600)>0 ? `${Math.floor(s/3600)}:${String(Math.floor((s%3600)/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}` : `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
+        if(this._el.callTimer) this._el.callTimer.textContent = str;
     }, 1000);
 };
 
-// ── SWITCH VOICE → VIDEO ─────────────────────────────────────
+// ── BROADCAST (mute/video/screen sync) ───────────────────────
+AIAssistant.prototype._setupBroadcast = function() {
+    if (!this._callId) return;
+    if (this._stateCh) this.supabase.removeChannel(this._stateCh);
+    this._stateCh = this.supabase.channel(`cs-${this._callId}`)
+        .on('broadcast',{event:'cs'}, ({payload:p}) => {
+            if(!p||p.uid===this.userId) return;
+            if(this._el.remoteMuteIndicator) this._el.remoteMuteIndicator.style.display = p.muted?'block':'none';
+            if(p.vidOff!==undefined && this._callType==='video' && this._el.overlayAvatar) this._el.overlayAvatar.style.display=p.vidOff?'flex':'none';
+            if(p.screen) { if(this._el.videoContainer)this._el.videoContainer.style.display='block'; if(this._el.overlayAvatar)this._el.overlayAvatar.style.display='none'; }
+            if(p.screenOff && this._callType!=='video') { if(this._el.videoContainer)this._el.videoContainer.style.display='none'; if(this._el.overlayAvatar)this._el.overlayAvatar.style.display='flex'; }
+            if(p.toVideo && this._callType!=='video') this._upgradeToVideo();
+        }).subscribe();
+};
+AIAssistant.prototype._bcast = function(extra) {
+    if(!this._stateCh) return;
+    this._stateCh.send({type:'broadcast',event:'cs',payload:{uid:this.userId,muted:this._isMuted,vidOff:this._isVideoOff,screen:this._isScreenSharing,...(extra||{})}}).catch(()=>{});
+};
+
+// ── TOGGLE MUTE ──────────────────────────────────────────────
+AIAssistant.prototype.callToggleMute = function() {
+    if(!this._ls) return;
+    this._isMuted = !this._isMuted;
+    this._ls.getAudioTracks().forEach(t=>{t.enabled=!this._isMuted;});
+    if(this._el.muteBtn){this._el.muteBtn.textContent=this._isMuted?'🔇 Unmute':'🎤 Mute';this._el.muteBtn.style.background=this._isMuted?'#ef4444':'#374151';}
+    this._bcast();
+};
+
+// ── TOGGLE VIDEO ─────────────────────────────────────────────
+AIAssistant.prototype.callToggleVideo = function() {
+    if(!this._ls) return;
+    this._isVideoOff = !this._isVideoOff;
+    this._ls.getVideoTracks().forEach(t=>{t.enabled=!this._isVideoOff;});
+    if(this._el.videoToggleBtn){this._el.videoToggleBtn.textContent=this._isVideoOff?'📹 Start Video':'📹 Stop Video';this._el.videoToggleBtn.style.background=this._isVideoOff?'#ef4444':'#374151';}
+    if(this._el.localVideo) this._el.localVideo.style.display = this._isVideoOff?'none':'block';
+    this._bcast();
+};
+
+// ── SWITCH TO VIDEO ──────────────────────────────────────────
 AIAssistant.prototype.callSwitchToVideo = async function() {
-    if (!this._callPeer || !this._callId) return;
+    if(!this._pc||!this._callId) return;
     try {
-        console.log('[CALL] Switching to video...');
-        const videoStream = await navigator.mediaDevices.getUserMedia({
-            video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, facingMode: 'user' }
-        });
-        const videoTrack = videoStream.getVideoTracks()[0];
-        if (!videoTrack) throw new Error('No camera track');
+        const vs = await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720},frameRate:{ideal:30},facingMode:'user'}});
+        const vt = vs.getVideoTracks()[0]; if(!vt) throw new Error('No camera');
+        if(this._ls){this._ls.getVideoTracks().forEach(o=>{this._ls.removeTrack(o);o.stop();}); this._ls.addTrack(vt);} else this._ls=vs;
+        const s=this._vidSender(); if(s) await s.replaceTrack(vt); else this._pc.addTrack(vt,this._ls);
+        if(this._el.localVideo){this._el.localVideo.srcObject=this._ls;this._el.localVideo.style.display='block';}
+        if(this._el.videoContainer) this._el.videoContainer.style.display='block';
+        if(this._el.overlayAvatar) this._el.overlayAvatar.style.display='none';
+        if(this._el.videoToggleBtn) this._el.videoToggleBtn.style.display='inline-block';
+        if(this._el.switchToVideoBtn) this._el.switchToVideoBtn.style.display='none';
+        this._callType='video'; this._isVideoOff=false;
+        await this.supabase.from('calls').update({call_type:'video'}).eq('id',this._callId);
+        this._bcast({toVideo:true});
+    } catch(err) { this.showNotification('Error','Could not enable camera: '+err.message); }
+};
 
-        // Remove existing video tracks to prevent duplicates
-        if (this._localStream) {
-            this._localStream.getVideoTracks().forEach(old => { this._localStream.removeTrack(old); old.stop(); });
-            this._localStream.addTrack(videoTrack);
-        } else {
-            this._localStream = videoStream;
-        }
-
-        // ALWAYS use replaceTrack
-        const sender = this._getVideoSender();
-        if (sender) {
-            await sender.replaceTrack(videoTrack);
-        } else {
-            this._callPeer.addTrack(videoTrack, this._localStream);
-        }
-
-        if (this._el.localVideo) { this._el.localVideo.srcObject = this._localStream; this._el.localVideo.style.display = 'block'; }
-        if (this._el.videoContainer)   this._el.videoContainer.style.display   = 'block';
-        if (this._el.overlayAvatar)    this._el.overlayAvatar.style.display    = 'none';
-        if (this._el.videoToggleBtn)   this._el.videoToggleBtn.style.display   = 'inline-block';
-        if (this._el.switchToVideoBtn) this._el.switchToVideoBtn.style.display = 'none';
-        this._callType = 'video';
-        this._isVideoOff = false;
-
-        // Update DB + broadcast
-        await this.supabase.from('calls').update({ call_type: 'video' }).eq('id', this._callId).catch(() => {});
-        if (this._callStateCh) {
-            this._callStateCh.send({
-                type: 'broadcast', event: 'call-state',
-                payload: { userId: this.userId, isMuted: this._isMuted, isVideoOff: false, isScreenSharing: false, switchedToVideo: true }
-            }).catch(() => {});
-        }
-        console.log('[CALL] Switched to video');
-    } catch (err) {
-        this.showNotification('Error', 'Could not enable camera: ' + (err.message || 'Check permissions'));
-    }
+AIAssistant.prototype._upgradeToVideo = function() {
+    this._callType='video';
+    if(this._el.videoContainer) this._el.videoContainer.style.display='block';
+    if(this._el.overlayAvatar)  this._el.overlayAvatar.style.display='none';
+    if(this._el.videoToggleBtn) this._el.videoToggleBtn.style.display='inline-block';
+    if(this._el.switchToVideoBtn) this._el.switchToVideoBtn.style.display='none';
+    // Auto get camera
+    navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720},frameRate:{ideal:30},facingMode:'user'}}).then(vs => {
+        const vt=vs.getVideoTracks()[0]; if(!vt) return;
+        if(this._ls){this._ls.getVideoTracks().forEach(o=>{this._ls.removeTrack(o);o.stop();}); this._ls.addTrack(vt);} else this._ls=vs;
+        const s=this._vidSender(); if(s) s.replaceTrack(vt).catch(()=>{}); else if(this._pc) this._pc.addTrack(vt,this._ls);
+        if(this._el.localVideo){this._el.localVideo.srcObject=this._ls;this._el.localVideo.style.display='block';}
+        this._isVideoOff=false; this._bcast();
+    }).catch(e => console.warn('[CALL] auto-video fail:', e.message));
 };
 
 // ── SCREEN SHARE ─────────────────────────────────────────────
 AIAssistant.prototype.callShareScreen = async function() {
-    if (!this._callPeer || !this._callId) return;
-    if (this._isScreenSharing) { this._stopScreenShare(); return; }
-
+    if(!this._pc||!this._callId) return;
+    if(this._isScreenSharing) { this._stopScreen(); return; }
     try {
-        console.log('[CALL] Starting screen share...');
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({
-            video: { cursor: 'always', width: { ideal: 1920 }, height: { ideal: 1080 } },
-            audio: false
-        });
-        const screenTrack = screenStream.getVideoTracks()[0];
-        if (!screenTrack) throw new Error('No screen track');
-
-        // Save current camera track for later restore (keep it alive, don't stop it)
-        this._savedCamTrack = this._localStream?.getVideoTracks()[0] || null;
-
-        // ALWAYS use replaceTrack — never addTrack for screen share
-        const sender = this._getVideoSender();
-        if (sender) {
-            await sender.replaceTrack(screenTrack);
-            console.log('[CALL] Replaced video sender track with screen track');
-        } else {
-            // Last resort: add track (will trigger renegotiation)
-            this._callPeer.addTrack(screenTrack, screenStream);
-            console.log('[CALL] Added screen track as new sender');
-        }
-
-        this._screenStream = screenStream;
-        this._isScreenSharing = true;
-
-        // Show screen preview locally (use a new MediaStream with only the screen track)
-        if (this._el.localVideo) {
-            this._el.localVideo.srcObject = new MediaStream([screenTrack]);
-            this._el.localVideo.style.display = 'block';
-        }
-        if (this._el.screenShareBtn) { this._el.screenShareBtn.textContent = '🖥️ Stop Share'; this._el.screenShareBtn.style.background = '#ef4444'; }
-        if (this._el.videoContainer) this._el.videoContainer.style.display = 'block';
-        if (this._el.overlayAvatar)  this._el.overlayAvatar.style.display  = 'none';
-
-        this._broadcastCallState();
-        console.log('[CALL] Screen sharing started');
-
-        screenTrack.onended = () => this._stopScreenShare();
-    } catch (err) {
-        if (err.name !== 'NotAllowedError') {
-            this.showNotification('Error', 'Screen sharing failed: ' + (err.message || ''));
-        }
-    }
+        const ss = await navigator.mediaDevices.getDisplayMedia({video:{cursor:'always',width:{ideal:1920},height:{ideal:1080}},audio:false});
+        const st = ss.getVideoTracks()[0]; if(!st) throw new Error('No screen');
+        this._savedCamTrack = this._ls?.getVideoTracks()[0]||null;
+        const s=this._vidSender(); if(s) await s.replaceTrack(st); else this._pc.addTrack(st,ss);
+        this._screenStream=ss; this._isScreenSharing=true;
+        if(this._el.localVideo){this._el.localVideo.srcObject=new MediaStream([st]);this._el.localVideo.style.display='block';}
+        if(this._el.screenShareBtn){this._el.screenShareBtn.textContent='🖥️ Stop Share';this._el.screenShareBtn.style.background='#ef4444';}
+        if(this._el.videoContainer) this._el.videoContainer.style.display='block';
+        if(this._el.overlayAvatar) this._el.overlayAvatar.style.display='none';
+        this._bcast();
+        st.onended = () => this._stopScreen();
+    } catch(err) { if(err.name!=='NotAllowedError') this.showNotification('Error','Screen share failed: '+err.message); }
 };
 
-AIAssistant.prototype._stopScreenShare = async function() {
-    if (!this._isScreenSharing) return;
-    console.log('[CALL] Stopping screen share...');
-    this._isScreenSharing = false;
-
-    // Stop screen stream tracks
-    if (this._screenStream) { this._screenStream.getTracks().forEach(t => t.stop()); this._screenStream = null; }
-
-    if (this._el.screenShareBtn) { this._el.screenShareBtn.textContent = '🖥️ Share Screen'; this._el.screenShareBtn.style.background = '#374151'; }
-
-    // Restore camera track via replaceTrack on the SAME sender
-    if (this._callPeer) {
-        // Find the video sender (it currently has the now-stopped screen track)
-        const sender = this._callPeer.getSenders().find(s => s.track === null || s.track?.kind === 'video' || s.track?.readyState === 'ended');
-        if (sender) {
-            if (this._savedCamTrack && this._savedCamTrack.readyState === 'live') {
-                await sender.replaceTrack(this._savedCamTrack).catch(e => console.warn('[CALL] Restore cam err:', e));
-                console.log('[CALL] Restored camera track');
-            } else if (this._callType === 'video') {
-                // Camera track died, get a new one
-                try {
-                    const newCamStream = await navigator.mediaDevices.getUserMedia({
-                        video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, facingMode: 'user' }
-                    });
-                    const newCamTrack = newCamStream.getVideoTracks()[0];
-                    if (newCamTrack) {
-                        await sender.replaceTrack(newCamTrack);
-                        if (this._localStream) {
-                            const old = this._localStream.getVideoTracks()[0];
-                            if (old) { this._localStream.removeTrack(old); }
-                            this._localStream.addTrack(newCamTrack);
-                        }
-                        console.log('[CALL] Got new camera track after screen share');
-                    }
-                } catch(_) {
-                    await sender.replaceTrack(null).catch(() => {});
-                }
-            } else {
-                // Voice call: send null (no video needed)
-                await sender.replaceTrack(null).catch(() => {});
-                console.log('[CALL] Set video sender to null (voice call)');
-            }
+AIAssistant.prototype._stopScreen = async function() {
+    if(!this._isScreenSharing) return;
+    this._isScreenSharing=false;
+    if(this._screenStream){this._screenStream.getTracks().forEach(t=>t.stop());this._screenStream=null;}
+    if(this._el.screenShareBtn){this._el.screenShareBtn.textContent='🖥️ Share Screen';this._el.screenShareBtn.style.background='#374151';}
+    if(this._pc) {
+        const s = this._pc.getSenders().find(x=>x.track===null||x.track?.kind==='video'||x.track?.readyState==='ended');
+        if(s) {
+            if(this._savedCamTrack?.readyState==='live') { await s.replaceTrack(this._savedCamTrack).catch(()=>{}); }
+            else if(this._callType==='video') { try{const ns=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'}});const nt=ns.getVideoTracks()[0];if(nt){await s.replaceTrack(nt);if(this._ls){this._ls.getVideoTracks().forEach(o=>this._ls.removeTrack(o));this._ls.addTrack(nt);}}}catch(_){await s.replaceTrack(null).catch(()=>{});} }
+            else { await s.replaceTrack(null).catch(()=>{}); }
         }
     }
-    this._savedCamTrack = null;
-
-    // Restore local video preview
-    if (this._el.localVideo) {
-        if (this._callType === 'video' && this._localStream) {
-            this._el.localVideo.srcObject = this._localStream;
-            this._el.localVideo.style.display = 'block';
-        } else {
-            this._el.localVideo.srcObject = null;
-            this._el.localVideo.style.display = 'none';
-        }
-    }
-    if (this._callType !== 'video') {
-        if (this._el.videoContainer) this._el.videoContainer.style.display = 'none';
-        if (this._el.overlayAvatar)  this._el.overlayAvatar.style.display  = 'flex';
-    }
-    this._broadcastCallState();
+    this._savedCamTrack=null;
+    if(this._el.localVideo){if(this._callType==='video'&&this._ls){this._el.localVideo.srcObject=this._ls;this._el.localVideo.style.display='block';}else{this._el.localVideo.srcObject=null;this._el.localVideo.style.display='none';}}
+    if(this._callType!=='video'){if(this._el.videoContainer)this._el.videoContainer.style.display='none';if(this._el.overlayAvatar)this._el.overlayAvatar.style.display='flex';}
+    this._bcast({screenOff:true});
 };
 
-// ── RENEGOTIATION (perfect negotiation pattern) ──────────────
-AIAssistant.prototype._setupRenegotiation = function(isCaller) {
-    this._isCaller = isCaller;
-    this._renegoInProgress = false;
-    if (!this._callId || !this._callPeer) return;
-
-    if (this._renegoCh) { this.supabase.removeChannel(this._renegoCh); this._renegoCh = null; }
-
-    this._renegoCh = this.supabase.channel(`call-renego-${this._callId}`)
-        .on('broadcast', { event: 'renego-offer' }, async ({ payload }) => {
-            if (!this._callPeer || !payload?.offer || payload.senderId === this.userId) return;
-            try {
-                const isStable = this._callPeer.signalingState === 'stable';
-                if (!isStable) {
-                    if (this._isCaller) return; // impolite peer ignores
-                    await this._callPeer.setLocalDescription({ type: 'rollback' });
-                }
-                await this._callPeer.setRemoteDescription(new RTCSessionDescription(payload.offer));
-                const answer = await this._callPeer.createAnswer();
-                await this._callPeer.setLocalDescription(answer);
-                this._renegoCh.send({ type: 'broadcast', event: 'renego-answer', payload: { answer, senderId: this.userId } }).catch(() => {});
-            } catch (e) { console.warn('[CALL] renego-offer err:', e); }
+// ── RENEGOTIATION ────────────────────────────────────────────
+AIAssistant.prototype._setupRenego = function(isCaller) {
+    this._isCaller=isCaller; this._renegoLock=false;
+    if(!this._callId||!this._pc) return;
+    if(this._renegoCh){this.supabase.removeChannel(this._renegoCh);this._renegoCh=null;}
+    this._renegoCh = this.supabase.channel(`rn-${this._callId}`)
+        .on('broadcast',{event:'ro'}, async ({payload:p}) => {
+            if(!this._pc||!p?.offer||p.sid===this.userId) return;
+            try { if(this._pc.signalingState!=='stable'){if(this._isCaller)return;await this._pc.setLocalDescription({type:'rollback'});} await this._pc.setRemoteDescription(new RTCSessionDescription(p.offer)); const a=await this._pc.createAnswer(); await this._pc.setLocalDescription(a); this._renegoCh.send({type:'broadcast',event:'ra',payload:{answer:a,sid:this.userId}}).catch(()=>{}); } catch(e){console.warn('renego-o err:',e);}
         })
-        .on('broadcast', { event: 'renego-answer' }, async ({ payload }) => {
-            if (!this._callPeer || !payload?.answer || payload.senderId === this.userId) return;
-            try {
-                if (this._callPeer.signalingState !== 'have-local-offer') return;
-                await this._callPeer.setRemoteDescription(new RTCSessionDescription(payload.answer));
-                this._renegoInProgress = false;
-            } catch (e) { console.warn('[CALL] renego-answer err:', e); }
-        })
-        .subscribe();
-
-    this._callPeer.onnegotiationneeded = async () => {
-        if (!this._callPeer || !this._renegoCh || this._renegoInProgress) return;
-        if (this._callPeer.signalingState !== 'stable') return;
-        this._renegoInProgress = true;
-        console.log('[CALL] Negotiation needed, creating offer...');
-        try {
-            const offer = await this._callPeer.createOffer();
-            await this._callPeer.setLocalDescription(offer);
-            this._renegoCh.send({ type: 'broadcast', event: 'renego-offer', payload: { offer, senderId: this.userId } }).catch(() => {});
-        } catch (e) {
-            console.warn('[CALL] onnegotiationneeded err:', e);
-            this._renegoInProgress = false;
-        }
+        .on('broadcast',{event:'ra'}, async ({payload:p}) => {
+            if(!this._pc||!p?.answer||p.sid===this.userId) return;
+            try { if(this._pc.signalingState!=='have-local-offer') return; await this._pc.setRemoteDescription(new RTCSessionDescription(p.answer)); this._renegoLock=false; } catch(e){console.warn('renego-a err:',e);}
+        }).subscribe();
+    this._pc.onnegotiationneeded = async () => {
+        if(!this._pc||!this._renegoCh||this._renegoLock||this._pc.signalingState!=='stable') return;
+        this._renegoLock=true;
+        try { const o=await this._pc.createOffer(); await this._pc.setLocalDescription(o); this._renegoCh.send({type:'broadcast',event:'ro',payload:{offer:o,sid:this.userId}}).catch(()=>{}); } catch(e){this._renegoLock=false;}
     };
 };
 
-// ── FLIP CAMERA (mobile front/back) ─────────────────────────
+// ── FLIP CAMERA ──────────────────────────────────────────────
 AIAssistant.prototype.callFlipCamera = async function() {
-    if (!this._callPeer || !this._localStream) return;
-    this._facingMode = this._facingMode === 'user' ? 'environment' : 'user';
+    if(!this._pc||!this._ls) return;
+    this._facingMode = this._facingMode==='user'?'environment':'user';
     try {
-        const newStream = await navigator.mediaDevices.getUserMedia({
-            audio: false, video: { facingMode: { exact: this._facingMode } }
-        });
-        const newTrack = newStream.getVideoTracks()[0];
-        if (!newTrack) { this._facingMode = this._facingMode === 'user' ? 'environment' : 'user'; return; }
-
-        const oldTrack = this._localStream.getVideoTracks()[0];
-        if (oldTrack) { this._localStream.removeTrack(oldTrack); oldTrack.stop(); }
-        this._localStream.addTrack(newTrack);
-
-        const sender = this._callPeer.getSenders().find(s => s.track?.kind === 'video');
-        if (sender) await sender.replaceTrack(newTrack);
-        if (this._el.localVideo) this._el.localVideo.srcObject = this._localStream;
-    } catch (err) {
-        this._facingMode = this._facingMode === 'user' ? 'environment' : 'user';
-        this.showNotification('Error', 'Could not flip camera: ' + (err.message || 'Not supported'));
-    }
+        const ns = await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{exact:this._facingMode}}});
+        const nt = ns.getVideoTracks()[0]; if(!nt){this._facingMode=this._facingMode==='user'?'environment':'user';return;}
+        const ot=this._ls.getVideoTracks()[0]; if(ot){this._ls.removeTrack(ot);ot.stop();} this._ls.addTrack(nt);
+        const s=this._pc.getSenders().find(x=>x.track?.kind==='video'); if(s) await s.replaceTrack(nt);
+        if(this._el.localVideo) this._el.localVideo.srcObject=this._ls;
+    } catch(err) { this._facingMode=this._facingMode==='user'?'environment':'user'; this.showNotification('Error','Flip failed: '+err.message); }
 };
 
 // ============================================================
@@ -6993,7 +6476,7 @@ AIAssistant.prototype._initMsgContextMenu = function() {
         const isGroup = !!this.dcActiveGroupId;
         const table   = isGroup ? 'group_messages' : 'direct_messages';
         el2?.remove();
-        await this.supabase.from(table).delete().eq('id', id).catch(() => {});
+        await this.supabase.from(table).delete().eq('id', id);
     });
 };
 
