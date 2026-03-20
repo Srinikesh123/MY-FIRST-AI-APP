@@ -20,6 +20,8 @@ self.addEventListener('push', (event) => {
             badge: '/favicon.ico',
             tag: data.tag || 'voidzenzi-notification',
             renotify: true,
+            requireInteraction: !!data.requireInteraction,
+            vibrate: data.vibrate || [200, 100, 200],
             data: data.url || '/'
         })
     );

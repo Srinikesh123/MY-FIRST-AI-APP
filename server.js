@@ -5,6 +5,25 @@ const path = require('path');
 const Groq = require('groq-sdk');
 const { createClient } = require('@supabase/supabase-js');
 
+// Web Push (optional — needs VAPID keys in .env)
+let webPush = null;
+try {
+    webPush = require('web-push');
+    if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
+        webPush.setVapidDetails(
+            'mailto:' + (process.env.VAPID_EMAIL || 'admin@voidzenzi.com'),
+            process.env.VAPID_PUBLIC_KEY,
+            process.env.VAPID_PRIVATE_KEY
+        );
+        console.log('✅ Web Push (VAPID) initialized');
+    } else {
+        console.log('⚠️  VAPID keys not set — push notifications disabled. Add VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_EMAIL to .env');
+        webPush = null;
+    }
+} catch(_) {
+    console.log('⚠️  web-push not installed — run: npm install web-push');
+}
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
@@ -14,15 +33,19 @@ app.use(express.text({ type: 'text/plain' }));
 // CONFIGURATION
 // ============================================
 
-const supabaseUrl = process.env.SUPABASE_URL || 'https://vexmydzwlongsqnzamdk.supabase.co';
-const supabaseKey = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZleG15ZHpsb25nc3FuemFtZGsiLCJyb2xlIjoiYW5vbiIsImlhdCI6MTczODk3NzU0MiwiZXhwIjoyMDU0NTUzNTQyfQ.VkzL2z2Kz-2v2F8Jq2rKQkL6O8dHqWnXz6kD8hYk3Jk';
-const supabase = createClient(supabaseUrl, supabaseKey);
+const supabaseUrl     = process.env.SUPABASE_URL;
+const supabaseKey     = process.env.SUPABASE_ANON_KEY;
+const supabaseService = process.env.SUPABASE_SERVICE_KEY;
 
-// Service-role client — bypasses RLS for admin operations
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY;
-const supabaseAdmin = supabaseServiceKey
-    ? createClient(supabaseUrl, supabaseServiceKey)
-    : supabase; // fallback to anon if no service key
+if (!supabaseUrl || !supabaseKey) {
+    console.error('❌ Missing SUPABASE_URL or SUPABASE_ANON_KEY — set them in Render environment variables');
+    process.exit(1);
+}
+
+const supabase      = createClient(supabaseUrl, supabaseKey);
+const supabaseAdmin = supabaseService
+    ? createClient(supabaseUrl, supabaseService)
+    : supabase;
 
 const PLAN_LIMITS = {
     free: { messages: 100, images: 20, memories: 50, codeGenerations: 30 },
@@ -731,6 +754,90 @@ app.delete('/api/admin/delete-user', async (req, res) => {
     } catch (error) {
         console.error('Admin delete-user endpoint error:', error);
         return res.status(500).json({ error: error.message });
+    }
+});
+
+// ============================================
+// ============================================
+// PUBLIC CONFIG — only safe/public values (anon key is fine client-side)
+// The SERVICE key and GROQ key are NEVER sent here
+// ============================================
+
+app.get('/api/config', (req, res) => {
+    res.json({
+        supabaseUrl:     process.env.SUPABASE_URL,
+        supabaseAnonKey: process.env.SUPABASE_ANON_KEY,
+    });
+});
+
+// ============================================
+// WEB PUSH — subscribe + send
+// ============================================
+
+// Client fetches the VAPID public key to create a push subscription
+app.get('/api/push/vapid-key', (req, res) => {
+    res.json({ key: process.env.VAPID_PUBLIC_KEY || null });
+});
+
+// Save a user's push subscription
+app.post('/api/push/subscribe', async (req, res) => {
+    try {
+        const { userId, subscription } = req.body;
+        if (!userId || !subscription) return res.status(400).json({ error: 'Missing userId or subscription' });
+        const { error } = await supabaseAdmin.from('push_subscriptions')
+            .upsert({ user_id: userId, subscription, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
+        return res.json({ success: !error });
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+
+// Internal helper — send push to a user (fire-and-forget)
+async function sendPushToUser(userId, payload) {
+    if (!webPush) return;
+    try {
+        const { data } = await supabaseAdmin.from('push_subscriptions').select('subscription').eq('user_id', userId).single();
+        if (data?.subscription) {
+            await webPush.sendNotification(data.subscription, JSON.stringify(payload));
+        }
+    } catch (e) {
+        // subscription expired or user not subscribed — remove stale entry
+        if (e.statusCode === 410) {
+            await supabaseAdmin.from('push_subscriptions').delete().eq('user_id', userId).catch(() => {});
+        }
+    }
+}
+
+// Start call — insert row into calls table AND push-notify the callee
+app.post('/api/start-call', async (req, res) => {
+    try {
+        const { callerId, calleeId, callType, offer } = req.body;
+        if (!callerId || !calleeId || !callType || !offer) return res.status(400).json({ error: 'Missing fields' });
+
+        const { data: row, error } = await supabaseAdmin.from('calls').insert({
+            caller_id: callerId, callee_id: calleeId, call_type: callType, status: 'ringing', offer
+        }).select().single();
+        if (error) return res.status(500).json({ error: error.message });
+
+        // Send push to callee (non-blocking)
+        (async () => {
+            try {
+                const { data: caller } = await supabaseAdmin.from('users').select('username,email').eq('id', callerId).single();
+                const name = caller?.username || caller?.email?.split('@')[0] || 'Someone';
+                await sendPushToUser(calleeId, {
+                    title: callType === 'video' ? '📹 Incoming Video Call' : '📞 Incoming Voice Call',
+                    body: `${name} is calling you — open voidzenzi to answer`,
+                    tag: 'incoming-call',
+                    requireInteraction: true,
+                    vibrate: [500, 200, 500, 200, 500],
+                    url: '/'
+                });
+            } catch(e) { /* non-fatal */ }
+        })();
+
+        return res.json({ success: true, callId: row.id, callRow: row });
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
     }
 });
 

@@ -296,6 +296,8 @@ this.apiUrl = window.location.hostname === 'localhost' || window.location.hostna
         this.initSpeechRecognition();
         this.initCallUI();
         this.initNotifications();
+        this.initPushNotifications().catch(() => {});
+        this.initBook();
         this.checkServerHealth();
         
         // Pre-load games list in background (for instant display)
@@ -2820,15 +2822,27 @@ Available commands:
     // ============================================
     // SETTINGS MANAGEMENT (STRICT SUPABASE)
     // ============================================
+    _settingsKey() { return `voidzenzi_settings_${this.userId}`; }
+
     async loadSettingsFromSupabase() {
         console.log('⚙️ LOADING SETTINGS - userId:', this.userId);
-        
+
         // CRITICAL: Must have userId
         if (!this.supabase || !this.userId) {
             console.warn('❌ Cannot load settings: missing Supabase client or userId');
             this.settings = this.getDefaultSettings();
             return;
         }
+
+        // Apply cached settings instantly so UI doesn't flash defaults while Supabase loads
+        try {
+            const cached = localStorage.getItem(this._settingsKey());
+            if (cached) {
+                this.settings = { ...this.getDefaultSettings(), ...JSON.parse(cached) };
+                this.applySettings();
+                console.log('⚙️ Applied cached settings from localStorage');
+            }
+        } catch(_) {}
 
         try {
             // CRITICAL: Load settings for THIS user only
@@ -2869,6 +2883,8 @@ Available commands:
             if (data && data.settings) {
                 console.log('✅ SETTINGS LOADED FROM DB');
                 this.settings = { ...this.getDefaultSettings(), ...data.settings };
+                // Update localStorage cache so next load is instant
+                try { localStorage.setItem(this._settingsKey(), JSON.stringify(this.settings)); } catch(_) {}
             } else {
                 console.log('ℹ️ No settings found, using defaults');
                 // No settings found, use defaults and save them
@@ -2892,8 +2908,12 @@ Available commands:
 
     async saveSettingsToSupabase() {
         console.log('💾 SAVING SETTINGS - userId:', this.userId);
-        console.log('💾 SETTINGS DATA:', JSON.stringify(this.settings, null, 2));
-        
+
+        // Always save to localStorage immediately so next load is instant
+        try {
+            if (this.userId) localStorage.setItem(this._settingsKey(), JSON.stringify(this.settings));
+        } catch(_) {}
+
         // CRITICAL: Must have userId
         if (!this.supabase) {
             console.error('❌ Cannot save settings: missing Supabase client');
@@ -5913,6 +5933,8 @@ AIAssistant.prototype.initCallUI = function() {
     this._facingMode = 'user';
     this._callType = 'voice';
     this._renegoLock = false;
+    this._iceRestarted = false;
+    this._bgEndTimer = null;
 
     const $ = id => document.getElementById(id);
     this._el = {
@@ -5944,10 +5966,30 @@ AIAssistant.prototype.initCallUI = function() {
     this._subscribeIncomingCalls();
     this.initPresence();
 
-    // End call ONLY when tab actually closes (NOT on minimize/tab switch)
-    const _beacon = (id) => navigator.sendBeacon('/api/end-call', new Blob([JSON.stringify({callId:id})],{type:'application/json'}));
-    window.addEventListener('beforeunload', () => { if (this._callId) _beacon(this._callId); });
-    window.addEventListener('pagehide', (e) => { if (this._callId && !e.persisted) _beacon(this._callId); });
+    // End call when tab/window is TRULY closed.
+    // IMPORTANT: pagehide with !persisted fires on mobile when user locks screen or
+    // switches apps — that must NOT end the call. Only fire beacon on real unload.
+    const _beacon = (id) => {
+        navigator.sendBeacon('/api/end-call', new Blob([JSON.stringify({callId:id})],{type:'application/json'}));
+    };
+    let _realUnload = false;
+    window.addEventListener('beforeunload', () => { _realUnload = true; if (this._callId) _beacon(this._callId); });
+    window.addEventListener('pagehide', (e) => { if (this._callId && !e.persisted && _realUnload) _beacon(this._callId); });
+
+    // Mobile: if app stays in background > 4 minutes, end call gracefully
+    this._bgEndTimer = null;
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden && this._callId) {
+            this._bgEndTimer = setTimeout(() => {
+                if (document.hidden && this._callId) {
+                    fetch('/api/end-call', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({callId:this._callId})}).catch(()=>{});
+                    this._endLocal('Call ended (went offline)');
+                }
+            }, 240000); // 4 minutes
+        } else if (!document.hidden) {
+            if (this._bgEndTimer) { clearTimeout(this._bgEndTimer); this._bgEndTimer = null; }
+        }
+    });
 };
 
 // ── INCOMING CALLS ───────────────────────────────────────────
@@ -5959,6 +6001,62 @@ AIAssistant.prototype._subscribeIncomingCalls = function() {
         .subscribe();
 };
 
+// ── WEB PUSH SETUP ───────────────────────────────────────────
+function _urlB64ToUint8(base64String) {
+    const padding = '='.repeat((4 - base64String.length % 4) % 4);
+    const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+    const raw = atob(base64);
+    return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+}
+
+AIAssistant.prototype.initPushNotifications = async function() {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+    try {
+        const reg = await navigator.serviceWorker.register('/sw.js');
+        const perm = await Notification.requestPermission();
+        if (perm !== 'granted') return;
+
+        // Fetch VAPID public key from server
+        const keyResp = await fetch('/api/push/vapid-key');
+        const { key } = await keyResp.json();
+        if (!key) return; // VAPID not configured on server
+
+        let sub = await reg.pushManager.getSubscription();
+        if (!sub) {
+            sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: _urlB64ToUint8(key) });
+        }
+        await fetch('/api/push/subscribe', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ userId:this.userId, subscription:sub.toJSON() }) });
+    } catch(e) {
+        console.warn('[Push] setup failed:', e.message);
+    }
+};
+
+// ── RINGTONE (Web Audio — no external file needed) ───────────
+AIAssistant.prototype._playRingtone = function() {
+    if (this._ringtoneTimer) return;
+    const ring = () => {
+        try {
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            [[480, 0, 0.4], [620, 0.4, 0.4], [480, 0.8, 0.4], [620, 1.2, 0.4]].forEach(([freq, when, dur]) => {
+                const osc = ctx.createOscillator(), gain = ctx.createGain();
+                osc.connect(gain); gain.connect(ctx.destination);
+                osc.type = 'sine'; osc.frequency.value = freq;
+                gain.gain.setValueAtTime(0.25, ctx.currentTime + when);
+                gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + when + dur);
+                osc.start(ctx.currentTime + when); osc.stop(ctx.currentTime + when + dur);
+                osc.onended = () => { try { ctx.close(); } catch(_) {} };
+            });
+        } catch(_) {}
+    };
+    ring();
+    this._ringtoneTimer = setInterval(ring, 3000);
+};
+
+AIAssistant.prototype._stopRingtone = function() {
+    if (this._ringtoneTimer) { clearInterval(this._ringtoneTimer); this._ringtoneTimer = null; }
+};
+
+// ── INCOMING CALL DISPLAY ────────────────────────────────────
 AIAssistant.prototype._showIncoming = async function(call) {
     if (this._callId) return;
     this._incomingCall = call;
@@ -5968,11 +6066,12 @@ AIAssistant.prototype._showIncoming = async function(call) {
     if (this._el.callTypeLabel) this._el.callTypeLabel.textContent = call.call_type==='video' ? '🎥 Incoming Video Call' : '📞 Incoming Voice Call';
     if (this._el.callIcon)      this._el.callIcon.textContent      = call.call_type==='video' ? '🎥' : '📞';
     if (this._el.incomingModal) this._el.incomingModal.style.display = 'flex';
+    this._playRingtone();
     this._showNativeNotification(`📞 Incoming ${call.call_type==='video'?'Video':'Voice'} Call`, `${name} is calling you`, 'incoming-call');
     if (this._incomingWatchSub) this.supabase.removeChannel(this._incomingWatchSub);
     this._incomingWatchSub = this.supabase.channel(`iw-${call.id}`)
         .on('postgres_changes', { event:'UPDATE', schema:'public', table:'calls', filter:`id=eq.${call.id}` },
-            p => { if (p.new.status==='ended'||p.new.status==='rejected') { this._incomingCall=null; if(this._el.incomingModal) this._el.incomingModal.style.display='none'; if(this._incomingWatchSub){this.supabase.removeChannel(this._incomingWatchSub);this._incomingWatchSub=null;} } })
+            p => { if (p.new.status==='ended'||p.new.status==='rejected') { this._stopRingtone(); this._incomingCall=null; if(this._el.incomingModal) this._el.incomingModal.style.display='none'; if(this._incomingWatchSub){this.supabase.removeChannel(this._incomingWatchSub);this._incomingWatchSub=null;} } })
         .subscribe();
 };
 
@@ -5989,12 +6088,14 @@ AIAssistant.prototype._makePc = function() {
             const s = e.streams[0] || new MediaStream([e.track]);
             if (this._el.remoteAudio) {
                 this._el.remoteAudio.srcObject = s;
-                const play = () => this._el.remoteAudio && this._el.remoteAudio.play().catch(() => {});
-                play(); setTimeout(play, 300); setTimeout(play, 1000);
-                // Autoplay fallback
-                const tap = () => { play(); document.removeEventListener('click',tap); document.removeEventListener('touchstart',tap); };
-                document.addEventListener('click', tap, {once:true});
-                document.addEventListener('touchstart', tap, {once:true});
+                this._el.remoteAudio.volume = 0.7; // lower volume reduces echo/feedback risk
+                const play = () => { if (this._el.remoteAudio) this._el.remoteAudio.play().catch(() => {}); };
+                play(); setTimeout(play, 200); setTimeout(play, 800); setTimeout(play, 2000);
+                // Fallback: play on next user interaction (handles browser autoplay block)
+                const tap = () => { play(); };
+                document.addEventListener('click',    tap, {once:true, capture:true});
+                document.addEventListener('touchstart', tap, {once:true, capture:true});
+                document.addEventListener('keydown',  tap, {once:true, capture:true});
             }
         }
         if (e.track.kind === 'video') {
@@ -6005,18 +6106,46 @@ AIAssistant.prototype._makePc = function() {
         }
         e.track.onunmute = () => {
             if (e.track.kind==='video') { if(this._el.videoContainer)this._el.videoContainer.style.display='block'; if(this._el.overlayAvatar)this._el.overlayAvatar.style.display='none'; if(this._el.remoteVideo)this._el.remoteVideo.play().catch(()=>{}); }
-            if (e.track.kind==='audio' && this._el.remoteAudio) this._el.remoteAudio.play().catch(()=>{});
+            if (e.track.kind==='audio' && this._el.remoteAudio) { this._el.remoteAudio.volume=0.7; this._el.remoteAudio.play().catch(()=>{}); }
         };
     };
 
     this._pc.onconnectionstatechange = () => {
         const s = this._pc?.connectionState; console.log('[CALL] conn:', s);
-        if (s==='connected') { if(this._el.statusText) this._el.statusText.textContent='Connected'; if(this._dcTimeout){clearTimeout(this._dcTimeout);this._dcTimeout=null;} }
+        if (s==='connected') {
+            if(this._el.statusText) this._el.statusText.textContent='Connected';
+            if(this._dcTimeout){clearTimeout(this._dcTimeout);this._dcTimeout=null;}
+            this._iceRestarted = false;
+        }
         else if (s==='connecting') { if(this._dcTimeout){clearTimeout(this._dcTimeout);this._dcTimeout=null;} }
-        else if (s==='disconnected') { if(this._el.statusText) this._el.statusText.textContent='Reconnecting...'; this._dcTimeout=setTimeout(()=>{if(this._pc?.connectionState==='disconnected')this.callHangup();},15000); }
-        else if (s==='failed') this.callHangup();
+        else if (s==='disconnected') {
+            if(this._el.statusText) this._el.statusText.textContent='Reconnecting...';
+            if(this._dcTimeout) clearTimeout(this._dcTimeout);
+            // Try ICE restart immediately, give 30s to recover before hanging up
+            if(this._pc) this._pc.restartIce();
+            this._dcTimeout = setTimeout(()=>{
+                if(this._pc?.connectionState==='disconnected'||this._pc?.connectionState==='failed') this.callHangup();
+            }, 30000);
+        }
+        else if (s==='failed') {
+            // Try one ICE restart before giving up
+            if (!this._iceRestarted && this._pc) {
+                this._iceRestarted = true;
+                if(this._el.statusText) this._el.statusText.textContent='Reconnecting...';
+                this._pc.restartIce();
+                if(this._dcTimeout) clearTimeout(this._dcTimeout);
+                this._dcTimeout = setTimeout(()=>{
+                    if(this._pc?.connectionState==='failed') this.callHangup();
+                }, 20000);
+            } else {
+                this.callHangup();
+            }
+        }
     };
-    this._pc.oniceconnectionstatechange = () => { if(this._pc?.iceConnectionState==='failed') this._pc.restartIce(); };
+    this._pc.oniceconnectionstatechange = () => {
+        const s = this._pc?.iceConnectionState;
+        if(s==='failed' && !this._iceRestarted) { this._iceRestarted=true; this._pc.restartIce(); }
+    };
 };
 
 // ── VIDEO SENDER HELPER ──────────────────────────────────────
@@ -6031,10 +6160,13 @@ AIAssistant.prototype._vidSender = function() {
 
 // ── MEDIA HELPER ─────────────────────────────────────────────
 AIAssistant.prototype._getMedia = function(type) {
-    const a = { echoCancellation:true, noiseSuppression:true, autoGainControl:true, channelCount:1, sampleRate:48000 };
+    // autoGainControl OFF for voice: prevents mic amplifying speaker echo into a feedback loop
+    // autoGainControl ON for video: better quality when using headset/camera
+    const voiceAudio = { echoCancellation:true, noiseSuppression:true, autoGainControl:false, channelCount:1 };
+    const videoAudio = { echoCancellation:true, noiseSuppression:true, autoGainControl:true,  channelCount:1 };
     return type === 'video'
-        ? navigator.mediaDevices.getUserMedia({ audio:a, video:{ width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30}, facingMode:'user' } })
-        : navigator.mediaDevices.getUserMedia({ audio:a, video:false });
+        ? navigator.mediaDevices.getUserMedia({ audio:videoAudio, video:{ width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30}, facingMode:'user' } })
+        : navigator.mediaDevices.getUserMedia({ audio:voiceAudio, video:false });
 };
 
 // ── START CALL ───────────────────────────────────────────────
@@ -6043,17 +6175,20 @@ AIAssistant.prototype.callStart = async function(callType) {
     if (this._callId) { this.showNotification('Error','Already in a call.'); return; }
     this._callType = callType;
     try {
+        // Unlock remoteAudio during user-gesture so browser allows future play() calls
+        if (this._el.remoteAudio) { this._el.remoteAudio.muted = false; this._el.remoteAudio.play().catch(() => {}); }
         this._ls = await this._getMedia(callType);
         console.log('[CALL] Got stream. audio:',this._ls.getAudioTracks().length,'video:',this._ls.getVideoTracks().length);
         this._makePc();
         this._ls.getTracks().forEach(t => this._pc.addTrack(t, this._ls));
-        if (callType==='voice') this._pc.addTransceiver('video',{direction:'recvonly'});
         if (this._el.localVideo) { this._el.localVideo.srcObject=this._ls; this._el.localVideo.style.display=callType==='video'?'block':'none'; }
         const offer = await this._pc.createOffer();
         await this._pc.setLocalDescription(offer);
-        const {data:row,error} = await this.supabase.from('calls').insert({ caller_id:this.userId, callee_id:this.dcActiveChatUser.id, call_type:callType, status:'ringing', offer:{type:offer.type,sdp:offer.sdp} }).select().single();
-        if (error) throw error;
-        this._callId = row.id; this._isCaller = true;
+        // Insert via server so push notification fires to callee even when app is closed
+        const resp = await fetch('/api/start-call', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ callerId:this.userId, calleeId:this.dcActiveChatUser.id, callType, offer:{type:offer.type,sdp:offer.sdp} }) });
+        const result = await resp.json();
+        if (!result.success) throw new Error(result.error || 'Failed to create call');
+        this._callId = result.callId; this._isCaller = true;
         this._pc.onicecandidate = async e => { if(e.candidate&&this._callId) await this.supabase.from('call_candidates').insert({call_id:this._callId,sender_id:this.userId,candidate:e.candidate.toJSON()}).catch(()=>{}); };
         // Watch for answer/reject/end
         this._callSub = this.supabase.channel(`cw-${this._callId}`)
@@ -6083,11 +6218,14 @@ AIAssistant.prototype.callStart = async function(callType) {
 // ── ACCEPT CALL ──────────────────────────────────────────────
 AIAssistant.prototype.callAccept = async function() {
     if (!this._incomingCall) return;
+    this._stopRingtone();
     const call = this._incomingCall; this._incomingCall = null;
     if (this._el.incomingModal) this._el.incomingModal.style.display = 'none';
     if (this._incomingWatchSub) { this.supabase.removeChannel(this._incomingWatchSub); this._incomingWatchSub=null; }
     this._callType = call.call_type;
     try {
+        // Unlock remoteAudio during user-gesture so browser allows future play() calls
+        if (this._el.remoteAudio) { this._el.remoteAudio.muted = false; this._el.remoteAudio.play().catch(() => {}); }
         this._ls = await this._getMedia(call.call_type);
         this._makePc();
         this._ls.getTracks().forEach(t => this._pc.addTrack(t, this._ls));
@@ -6123,6 +6261,7 @@ AIAssistant.prototype.callAccept = async function() {
 // ── REJECT / HANGUP ──────────────────────────────────────────
 AIAssistant.prototype.callReject = async function() {
     if (!this._incomingCall) return;
+    this._stopRingtone();
     const id = this._incomingCall.id; this._incomingCall = null;
     if (this._el.incomingModal) this._el.incomingModal.style.display = 'none';
     if (this._incomingWatchSub) { this.supabase.removeChannel(this._incomingWatchSub); this._incomingWatchSub=null; }
@@ -6140,10 +6279,13 @@ AIAssistant.prototype.callHangup = function() {
 
 // ── LOCAL CLEANUP ────────────────────────────────────────────
 AIAssistant.prototype._endLocal = function(reason) {
+    this._stopRingtone();
     if (!this._callId && !this._pc && !this._ls) { if(this._el.overlay) this._el.overlay.style.display='none'; return; }
     console.log('[CALL] _endLocal:', reason);
-    if (this._callTimer) { clearInterval(this._callTimer); this._callTimer=null; } this._callStartTime=null;
+    if (this._callTimer)  { clearInterval(this._callTimer); this._callTimer=null; } this._callStartTime=null;
     if (this._dcTimeout)  { clearTimeout(this._dcTimeout); this._dcTimeout=null; }
+    if (this._bgEndTimer) { clearTimeout(this._bgEndTimer); this._bgEndTimer=null; }
+    this._iceRestarted = false;
     if (this._screenStream) { this._screenStream.getTracks().forEach(t=>t.stop()); this._screenStream=null; }
     if (this._ls) { this._ls.getTracks().forEach(t=>t.stop()); this._ls=null; }
     if (this._pc) { this._pc.ontrack=null; this._pc.onconnectionstatechange=null; this._pc.oniceconnectionstatechange=null; this._pc.onnegotiationneeded=null; this._pc.onicecandidate=null; this._pc.close(); this._pc=null; }
@@ -6163,23 +6305,24 @@ AIAssistant.prototype._endLocal = function(reason) {
     }
     this._callId=null; this._isMuted=false; this._isVideoOff=false; this._isScreenSharing=false;
     this._renegoLock=false; this._facingMode='user'; this._callType='voice'; this._savedCamTrack=null;
-    if(this._el.muteBtn){this._el.muteBtn.textContent='🎤 Mute';this._el.muteBtn.style.background='#374151';}
-    if(this._el.videoToggleBtn){this._el.videoToggleBtn.textContent='📹 Stop Video';this._el.videoToggleBtn.style.background='#374151';}
-    if(this._el.screenShareBtn){this._el.screenShareBtn.textContent='🖥️ Share Screen';this._el.screenShareBtn.style.background='#374151';}
+    if(this._el.muteBtn){this._el.muteBtn.textContent='🎤';this._el.muteBtn.style.background='#374151';}
+    if(this._el.videoToggleBtn){this._el.videoToggleBtn.textContent='📹';this._el.videoToggleBtn.style.background='#374151';}
+    if(this._el.screenShareBtn){this._el.screenShareBtn.textContent='🖥️';this._el.screenShareBtn.style.background='#374151';}
     if(this._el.remoteMuteIndicator) this._el.remoteMuteIndicator.style.display='none';
 };
 
 // ── OVERLAY ──────────────────────────────────────────────────
 AIAssistant.prototype._callShowOverlay = function(type, name, isCallee) {
     if (!this._el.overlay) return;
-    if (this._el.overlayAvatar) { this._el.overlayAvatar.textContent=(name||'U')[0].toUpperCase(); this._el.overlayAvatar.style.display=type==='video'?'none':'flex'; }
+    if (this._el.overlayAvatar) { this._el.overlayAvatar.textContent=(name||'U')[0].toUpperCase(); this._el.overlayAvatar.style.display='flex'; }
     if (this._el.overlayName) this._el.overlayName.textContent = name||'User';
     if (this._el.statusText)  this._el.statusText.textContent  = isCallee?'Connecting…':`Calling ${name}…`;
     if (this._el.videoContainer)   this._el.videoContainer.style.display   = type==='video'?'block':'none';
-    if (this._el.videoToggleBtn)   this._el.videoToggleBtn.style.display   = type==='video'?'inline-block':'none';
-    if (this._el.switchToVideoBtn) this._el.switchToVideoBtn.style.display = type==='video'?'none':'inline-block';
+    // toggleVideoBtn: icon-only, shown only in video calls; switchToVideoBtn shown in voice calls
+    if (this._el.videoToggleBtn)   this._el.videoToggleBtn.style.display   = type==='video'?'flex':'none';
+    if (this._el.switchToVideoBtn) this._el.switchToVideoBtn.style.display = type==='video'?'none':'flex';
     if (this._el.callTimer) { this._el.callTimer.textContent='0:00'; this._el.callTimer.style.display='none'; }
-    this._el.overlay.style.display = 'flex';
+    this._el.overlay.style.display = 'block'; // block so it stacks vertically
 };
 
 // ── TIMER ────────────────────────────────────────────────────
@@ -6218,7 +6361,7 @@ AIAssistant.prototype.callToggleMute = function() {
     if(!this._ls) return;
     this._isMuted = !this._isMuted;
     this._ls.getAudioTracks().forEach(t=>{t.enabled=!this._isMuted;});
-    if(this._el.muteBtn){this._el.muteBtn.textContent=this._isMuted?'🔇 Unmute':'🎤 Mute';this._el.muteBtn.style.background=this._isMuted?'#ef4444':'#374151';}
+    if(this._el.muteBtn){this._el.muteBtn.textContent=this._isMuted?'🔇':'🎤';this._el.muteBtn.style.background=this._isMuted?'#ef4444':'#374151';}
     this._bcast();
 };
 
@@ -6227,7 +6370,7 @@ AIAssistant.prototype.callToggleVideo = function() {
     if(!this._ls) return;
     this._isVideoOff = !this._isVideoOff;
     this._ls.getVideoTracks().forEach(t=>{t.enabled=!this._isVideoOff;});
-    if(this._el.videoToggleBtn){this._el.videoToggleBtn.textContent=this._isVideoOff?'📹 Start Video':'📹 Stop Video';this._el.videoToggleBtn.style.background=this._isVideoOff?'#ef4444':'#374151';}
+    if(this._el.videoToggleBtn){this._el.videoToggleBtn.textContent=this._isVideoOff?'▶️':'📹';this._el.videoToggleBtn.style.background=this._isVideoOff?'#ef4444':'#374151';}
     if(this._el.localVideo) this._el.localVideo.style.display = this._isVideoOff?'none':'block';
     this._bcast();
 };
@@ -6243,7 +6386,7 @@ AIAssistant.prototype.callSwitchToVideo = async function() {
         if(this._el.localVideo){this._el.localVideo.srcObject=this._ls;this._el.localVideo.style.display='block';}
         if(this._el.videoContainer) this._el.videoContainer.style.display='block';
         if(this._el.overlayAvatar) this._el.overlayAvatar.style.display='none';
-        if(this._el.videoToggleBtn) this._el.videoToggleBtn.style.display='inline-block';
+        if(this._el.videoToggleBtn) this._el.videoToggleBtn.style.display='flex';
         if(this._el.switchToVideoBtn) this._el.switchToVideoBtn.style.display='none';
         this._callType='video'; this._isVideoOff=false;
         await this.supabase.from('calls').update({call_type:'video'}).eq('id',this._callId);
@@ -6255,7 +6398,7 @@ AIAssistant.prototype._upgradeToVideo = function() {
     this._callType='video';
     if(this._el.videoContainer) this._el.videoContainer.style.display='block';
     if(this._el.overlayAvatar)  this._el.overlayAvatar.style.display='none';
-    if(this._el.videoToggleBtn) this._el.videoToggleBtn.style.display='inline-block';
+    if(this._el.videoToggleBtn) this._el.videoToggleBtn.style.display='flex';
     if(this._el.switchToVideoBtn) this._el.switchToVideoBtn.style.display='none';
     // Auto get camera
     navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720},frameRate:{ideal:30},facingMode:'user'}}).then(vs => {
@@ -6278,7 +6421,7 @@ AIAssistant.prototype.callShareScreen = async function() {
         const s=this._vidSender(); if(s) await s.replaceTrack(st); else this._pc.addTrack(st,ss);
         this._screenStream=ss; this._isScreenSharing=true;
         if(this._el.localVideo){this._el.localVideo.srcObject=new MediaStream([st]);this._el.localVideo.style.display='block';}
-        if(this._el.screenShareBtn){this._el.screenShareBtn.textContent='🖥️ Stop Share';this._el.screenShareBtn.style.background='#ef4444';}
+        if(this._el.screenShareBtn){this._el.screenShareBtn.textContent='⏹️';this._el.screenShareBtn.style.background='#ef4444';}
         if(this._el.videoContainer) this._el.videoContainer.style.display='block';
         if(this._el.overlayAvatar) this._el.overlayAvatar.style.display='none';
         this._bcast();
@@ -6290,7 +6433,7 @@ AIAssistant.prototype._stopScreen = async function() {
     if(!this._isScreenSharing) return;
     this._isScreenSharing=false;
     if(this._screenStream){this._screenStream.getTracks().forEach(t=>t.stop());this._screenStream=null;}
-    if(this._el.screenShareBtn){this._el.screenShareBtn.textContent='🖥️ Share Screen';this._el.screenShareBtn.style.background='#374151';}
+    if(this._el.screenShareBtn){this._el.screenShareBtn.textContent='🖥️';this._el.screenShareBtn.style.background='#374151';}
     if(this._pc) {
         const s = this._pc.getSenders().find(x=>x.track===null||x.track?.kind==='video'||x.track?.readyState==='ended');
         if(s) {
@@ -6497,5 +6640,195 @@ AIAssistant.prototype._updateCallBar = function() {
     if (statusLabel) {
         statusLabel.textContent = otherOnline ? '🟢 Online' : '⚫ Offline';
         statusLabel.style.color  = otherOnline ? '#16a34a'  : '#9ca3af';
+    }
+};
+
+// ============================================================
+// BOOK VIEWER — flip-book with page-turn animation
+// ============================================================
+
+AIAssistant.prototype.initBook = function() {
+    this._bookPages   = [];
+    this._bookIndex   = 0;
+
+    const btn = document.getElementById('bookBtn');
+    if (btn) btn.onclick = () => this.showBook();
+
+    const closeBtn = document.getElementById('bookCloseBtn');
+    if (closeBtn) closeBtn.onclick = () => this.hideBook();
+
+    const prevBtn = document.getElementById('bookPrevBtn');
+    if (prevBtn) prevBtn.onclick = () => this._bookFlip(-1);
+
+    const nextBtn = document.getElementById('bookNextBtn');
+    if (nextBtn) nextBtn.onclick = () => this._bookFlip(1);
+
+    // Admin controls
+    const addBtn = document.getElementById('bookAdminAddBtn');
+    if (addBtn) addBtn.onclick = () => {
+        const m = document.getElementById('bookAddModal');
+        if (m) m.style.display = 'flex';
+    };
+    const cancelBtn = document.getElementById('bookAddCancelBtn');
+    if (cancelBtn) cancelBtn.onclick = () => {
+        const m = document.getElementById('bookAddModal');
+        if (m) m.style.display = 'none';
+    };
+    const saveBtn = document.getElementById('bookAddSaveBtn');
+    if (saveBtn) saveBtn.onclick = () => this._bookSavePage();
+
+    // Keyboard navigation
+    document.addEventListener('keydown', (e) => {
+        const panel = document.getElementById('bookPanel');
+        if (!panel || panel.style.display === 'none') return;
+        if (e.key === 'ArrowRight') this._bookFlip(1);
+        if (e.key === 'ArrowLeft')  this._bookFlip(-1);
+        if (e.key === 'Escape')     this.hideBook();
+    });
+};
+
+AIAssistant.prototype.showBook = async function() {
+    const panel = document.getElementById('bookPanel');
+    if (!panel) return;
+    panel.style.display = 'flex';
+    await this._bookLoadPages();
+
+    // Show admin controls if user is admin
+    const addBtn = document.getElementById('bookAdminAddBtn');
+    if (addBtn) addBtn.style.display = this.isAdmin ? 'block' : 'none';
+};
+
+AIAssistant.prototype.hideBook = function() {
+    const panel = document.getElementById('bookPanel');
+    if (panel) panel.style.display = 'none';
+};
+
+AIAssistant.prototype._bookLoadPages = async function() {
+    try {
+        const { data, error } = await this.supabase.from('book_pages').select('*').order('page_order', { ascending: true });
+        if (error) throw error;
+        this._bookPages = data || [];
+    } catch(e) {
+        this._bookPages = [];
+    }
+    this._bookIndex = 0;
+    this._bookRender();
+};
+
+AIAssistant.prototype._bookRender = function() {
+    const pages  = this._bookPages;
+    const idx    = this._bookIndex;
+    const img    = document.getElementById('bookPageImg');
+    const cap    = document.getElementById('bookPageCaption');
+    const num    = document.getElementById('bookPageNum');
+    const none   = document.getElementById('bookNoPages');
+
+    if (!img) return;
+
+    if (!pages.length) {
+        img.style.display  = 'none';
+        if (none) { none.style.display = 'flex'; }
+        if (cap)  cap.style.display = 'none';
+        if (num)  num.textContent   = 'No pages';
+        return;
+    }
+
+    if (none) none.style.display = 'none';
+    img.style.display = 'block';
+
+    const page = pages[idx];
+    img.src = page.image_url || '';
+    if (cap) {
+        cap.textContent   = page.caption || '';
+        cap.style.display = page.caption ? 'block' : 'none';
+    }
+    if (num) num.textContent = `Page ${idx + 1} of ${pages.length}`;
+
+    // Disable/style nav buttons
+    const prev = document.getElementById('bookPrevBtn');
+    const next = document.getElementById('bookNextBtn');
+    if (prev) prev.style.opacity = idx === 0 ? '0.3' : '1';
+    if (next) next.style.opacity = idx === pages.length - 1 ? '0.3' : '1';
+};
+
+AIAssistant.prototype._bookFlip = function(dir) {
+    const pages = this._bookPages;
+    if (!pages.length) return;
+    const newIdx = this._bookIndex + dir;
+    if (newIdx < 0 || newIdx >= pages.length) return;
+
+    const page = document.getElementById('bookPage');
+    if (!page) { this._bookIndex = newIdx; this._bookRender(); return; }
+
+    // Apply flip-out animation
+    const outClass = dir > 0 ? 'book-flip-out-left'  : 'book-flip-out-right';
+    const inClass  = dir > 0 ? 'book-flip-in-right'  : 'book-flip-in-left';
+    page.classList.remove('book-flip-out-left','book-flip-out-right','book-flip-in-right','book-flip-in-left');
+    page.classList.add(outClass);
+
+    setTimeout(() => {
+        this._bookIndex = newIdx;
+        this._bookRender();
+        page.classList.remove(outClass);
+        page.classList.add(inClass);
+        setTimeout(() => page.classList.remove(inClass), 300);
+    }, 280);
+};
+
+AIAssistant.prototype._bookSavePage = async function() {
+    const fileInput = document.getElementById('bookPageFileInput');
+    const capInput  = document.getElementById('bookPageCaptionInput');
+    if (!fileInput?.files[0]) { this.showNotification('Error', 'Please select an image file'); return; }
+
+    const saveBtn = document.getElementById('bookAddSaveBtn');
+    if (saveBtn) { saveBtn.textContent = 'Saving…'; saveBtn.disabled = true; }
+
+    try {
+        const dataUrl = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            const canvas = document.createElement('canvas');
+            const ctx    = canvas.getContext('2d');
+            const imgEl  = new Image();
+            reader.onload = e => { imgEl.src = e.target.result; };
+            imgEl.onload = () => {
+                // Compress to max 1200px wide/tall, JPEG 85%
+                const MAX = 1200;
+                let w = imgEl.naturalWidth, h = imgEl.naturalHeight;
+                if (w > MAX || h > MAX) {
+                    const ratio = Math.min(MAX / w, MAX / h);
+                    w = Math.round(w * ratio); h = Math.round(h * ratio);
+                }
+                canvas.width = w; canvas.height = h;
+                ctx.drawImage(imgEl, 0, 0, w, h);
+                resolve(canvas.toDataURL('image/jpeg', 0.85));
+            };
+            imgEl.onerror = reject;
+            reader.readAsDataURL(fileInput.files[0]);
+        });
+
+        const nextOrder = this._bookPages.length > 0
+            ? Math.max(...this._bookPages.map(p => p.page_order)) + 1
+            : 0;
+
+        const { error } = await this.supabase.from('book_pages').insert({
+            page_order: nextOrder,
+            image_url: dataUrl,
+            caption: capInput?.value?.trim() || ''
+        });
+        if (error) throw error;
+
+        // Reset and close modal
+        fileInput.value = '';
+        if (capInput) capInput.value = '';
+        const m = document.getElementById('bookAddModal');
+        if (m) m.style.display = 'none';
+        await this._bookLoadPages();
+        this._bookIndex = this._bookPages.length - 1;
+        this._bookRender();
+        this.showNotification('Book', 'Page added!');
+    } catch(e) {
+        this.showNotification('Error', 'Failed to save page: ' + (e.message || ''));
+    } finally {
+        if (saveBtn) { saveBtn.textContent = 'Add Page'; saveBtn.disabled = false; }
     }
 };

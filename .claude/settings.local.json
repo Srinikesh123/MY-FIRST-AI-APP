@@ -15,7 +15,11 @@
       "Bash(grep -r \"CREATE TABLE.*calls\\\\|CREATE TABLE.*user_profiles\\\\|CREATE TABLE.*user_custom_terms\\\\|CREATE TABLE.*user_relationships\\\\|CREATE TABLE.*user_private_facts\\\\|CREATE TABLE.*user_context\" /c/Users/howto/Documents/GitHub/MY-FIRST-AI-APP/*.sql)",
       "Bash(grep -n \"avatar_url\" /c/Users/howto/Documents/GitHub/MY-FIRST-AI-APP/*.sql)",
       "Bash(node -c app.js)",
-      "Bash(node -c server.js)"
+      "Bash(node -c server.js)",
+      "Bash(npm install:*)",
+      "Bash(\"c:/Users/howto/Documents/GitHub/MY-FIRST-AI-APP/PUSH_BOOK_SETUP.sql\":*)",
+      "Bash(node --check \"c:/Users/howto/Documents/GitHub/MY-FIRST-AI-APP/app.js\")",
+      "Bash(node --check \"c:/Users/howto/Documents/GitHub/MY-FIRST-AI-APP/server.js\")"
     ]
   }
 }
