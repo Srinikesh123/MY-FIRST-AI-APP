@@ -5932,6 +5932,8 @@ AIAssistant.prototype.initCallUI = function() {
     this._bgEndTimer = null;
     this._sigCh = null;      // broadcast channel: fast ICE candidates + hangup sync
     this._incomingCh = null; // broadcast channel: receive incoming call ring
+    this._pollTimer = null;  // polling: watch for answer / call ended
+    this._candTimer = null;  // polling: fetch new ICE candidates
 
     const $ = id => document.getElementById(id);
     this._el = {
@@ -6186,88 +6188,121 @@ AIAssistant.prototype._getMedia = function(type) {
         : navigator.mediaDevices.getUserMedia({ audio:voiceAudio, video:false });
 };
 
+// ── POLLING HELPERS (primary reliability — no Supabase realtime needed) ─────
+// Called by CALLER after offer sent: polls every 1s for answer + rejected/ended
+AIAssistant.prototype._pollForAnswer = function() {
+    if (this._pollTimer) clearInterval(this._pollTimer);
+    let _ts = new Date().toISOString();
+    this._pollTimer = setInterval(async () => {
+        if (!this._callId || !this._pc) { clearInterval(this._pollTimer); this._pollTimer=null; return; }
+        try {
+            const {data} = await this.supabase.from('calls').select('status,answer,call_type').eq('id',this._callId).single();
+            if (!data) return;
+            if (data.status==='rejected') { clearInterval(this._pollTimer); this._pollTimer=null; this.showNotification('Call','Declined.'); this._endLocal(); return; }
+            if (data.status==='ended')    { clearInterval(this._pollTimer); this._pollTimer=null; this._endLocal('Call ended'); return; }
+            if (data.answer && !this._pc.remoteDescription) {
+                clearInterval(this._pollTimer); this._pollTimer=null;
+                try {
+                    await this._pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+                    if(this._el.statusText) this._el.statusText.textContent='Connected';
+                    this._startCallTimer(); this._setupRenego(true); this._setupBroadcast();
+                    this._pollForEnd(); // switch to end-polling now that we're connected
+                } catch(e) { console.warn('[CALL] poll-answer err:',e); }
+            }
+            if (data.call_type==='video' && this._callType!=='video') this._upgradeToVideo();
+        } catch(_) {}
+    }, 1000);
+};
+
+// Called by BOTH sides once connected: polls every 2s for status='ended'
+AIAssistant.prototype._pollForEnd = function() {
+    if (this._pollTimer) clearInterval(this._pollTimer);
+    this._pollTimer = setInterval(async () => {
+        if (!this._callId) { clearInterval(this._pollTimer); this._pollTimer=null; return; }
+        try {
+            const {data} = await this.supabase.from('calls').select('status,call_type').eq('id',this._callId).single();
+            if (!data) return;
+            if (data.status==='ended') { clearInterval(this._pollTimer); this._pollTimer=null; this._endLocal('Call ended'); return; }
+            if (data.call_type==='video' && this._callType!=='video') this._upgradeToVideo();
+        } catch(_) {}
+    }, 2000);
+};
+
+// Poll for new ICE candidates from the other side every 500ms
+AIAssistant.prototype._pollForCandidates = function() {
+    if (this._candTimer) clearInterval(this._candTimer);
+    let _since = new Date().toISOString();
+    this._candTimer = setInterval(async () => {
+        if (!this._callId || !this._pc) { clearInterval(this._candTimer); this._candTimer=null; return; }
+        try {
+            const {data} = await this.supabase.from('call_candidates')
+                .select('candidate,created_at').eq('call_id',this._callId).neq('sender_id',this.userId)
+                .gt('created_at',_since).order('created_at',{ascending:true});
+            if (data?.length) {
+                _since = data[data.length-1].created_at;
+                for (const c of data) { try{await this._pc.addIceCandidate(new RTCIceCandidate(c.candidate));}catch(_){} }
+            }
+        } catch(_) {}
+    }, 500);
+};
+
 // ── START CALL ───────────────────────────────────────────────
 AIAssistant.prototype.callStart = async function(callType) {
     if (!this.dcActiveChatUser?.id) { this.showNotification('Error','Open a DM chat first.'); return; }
     if (this._callId) { this.showNotification('Error','Already in a call.'); return; }
     this._callType = callType;
     try {
-        if (this._el.remoteAudio) { this._el.remoteAudio.muted = false; this._el.remoteAudio.play().catch(() => {}); }
+        if (this._el.remoteAudio) { this._el.remoteAudio.muted = false; this._el.remoteAudio.play().catch(()=>{}); }
         this._ls = await this._getMedia(callType);
-        console.log('[CALL] Got stream. audio:',this._ls.getAudioTracks().length,'video:',this._ls.getVideoTracks().length);
         this._makePc();
         this._ls.getTracks().forEach(t => this._pc.addTrack(t, this._ls));
         if (this._el.localVideo) { this._el.localVideo.srcObject=this._ls; this._el.localVideo.style.display=callType==='video'?'block':'none'; }
 
-        // Buffer ICE candidates until callId is known and sigCh is subscribed
-        // (candidates can fire immediately after setLocalDescription — before we have callId)
-        const _candBuf = [];
-        this._pc.onicecandidate = e => { if (e.candidate) _candBuf.push(e.candidate.toJSON()); };
+        // Buffer ICE candidates until callId is known
+        const _iceBuf = [];
+        this._pc.onicecandidate = e => { if (e.candidate) _iceBuf.push(e.candidate.toJSON()); };
 
         const offer = await this._pc.createOffer();
         await this._pc.setLocalDescription(offer);
 
-        // Insert via server so push notification fires to callee even when app is closed
-        const resp = await fetch('/api/start-call', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ callerId:this.userId, calleeId:this.dcActiveChatUser.id, callType, offer:{type:offer.type,sdp:offer.sdp} }) });
+        const resp = await fetch('/api/start-call', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({callerId:this.userId,calleeId:this.dcActiveChatUser.id,callType,offer:{type:offer.type,sdp:offer.sdp}})});
         const result = await resp.json();
-        if (!result.success) throw new Error(result.error || 'Failed to create call');
+        if (!result.success) throw new Error(result.error||'Failed to create call');
         this._callId = result.callId; this._isCaller = true;
 
-        // ── SIGNALING CHANNEL ─────────────────────────────────────────────────────
-        const _sendIce = (c) => {
+        // ── ICE: send buffered + future candidates via DB (always works) ──────────
+        const _sendIce = c => {
             if (!this._callId) return;
-            if (this._sigCh) this._sigCh.send({type:'broadcast',event:'ice',payload:{c,sid:this.userId}}).catch(()=>{});
             this.supabase.from('call_candidates').insert({call_id:this._callId,sender_id:this.userId,candidate:c}).catch(()=>{});
+            if (this._sigCh) this._sigCh.send({type:'broadcast',event:'ice',payload:{c,sid:this.userId}}).catch(()=>{}); // speed bonus
         };
-        const _applyAnswer = async (ans) => {
-            if (!this._pc || this._pc.remoteDescription) return;
-            try {
-                await this._pc.setRemoteDescription(new RTCSessionDescription(ans));
-                if(this._el.statusText) this._el.statusText.textContent='Connected';
-                this._startCallTimer(); this._setupRenego(true); this._setupBroadcast();
-            } catch(e) { console.warn('[CALL] answer err:', e); }
-        };
-        this._sigCh = this.supabase.channel(`sig-${this._callId}`)
-            .on('broadcast',{event:'ice'},    ({payload:p}) => {
-                if (p.sid!==this.userId && this._pc) this._pc.addIceCandidate(new RTCIceCandidate(p.c)).catch(()=>{});
-            })
-            .on('broadcast',{event:'answer'}, ({payload:p}) => { if (p?.answer) _applyAnswer(p.answer); })
-            .on('broadcast',{event:'end'},    () => { this._endLocal('Call ended'); })
-            .subscribe((status) => {
-                if (status==='SUBSCRIBED') {
-                    this._pc.onicecandidate = e => { if (e.candidate) _sendIce(e.candidate.toJSON()); };
-                    _candBuf.forEach(c => _sendIce(c)); _candBuf.length=0;
-                }
-            });
-        // Safety: flush candidate buffer via DB if channel never subscribes
-        setTimeout(() => {
-            if (_candBuf.length > 0 && this._callId) {
-                _candBuf.forEach(c => this.supabase.from('call_candidates').insert({call_id:this._callId,sender_id:this.userId,candidate:c}).catch(()=>{}));
-                _candBuf.length = 0;
-                if (this._pc) this._pc.onicecandidate = e => { if (e.candidate) _sendIce(e.candidate.toJSON()); };
-            }
-        }, 3000);
+        this._pc.onicecandidate = e => { if (e.candidate) _sendIce(e.candidate.toJSON()); };
+        _iceBuf.forEach(c => _sendIce(c)); // flush buffer immediately
 
-        // Broadcast ring to callee directly (no postgres_changes needed)
+        // ── PRIMARY: poll every 1s for answer + poll every 500ms for ICE ─────────
+        this._pollForAnswer();
+        this._pollForCandidates();
+
+        // ── BROADCAST ring to callee (speed bonus — works if realtime is enabled) ─
         const calleeId = this.dcActiveChatUser.id;
         const callData = {id:this._callId,caller_id:this.userId,callee_id:calleeId,call_type:callType,status:'ringing',offer:{type:offer.type,sdp:offer.sdp}};
         const _ringCh = this.supabase.channel(`ic-${calleeId}`);
-        _ringCh.subscribe((s) => {
+        _ringCh.subscribe(s => {
             if (s==='SUBSCRIBED') {
                 _ringCh.send({type:'broadcast',event:'ring',payload:{call:callData}}).catch(()=>{});
                 setTimeout(() => { try{this.supabase.removeChannel(_ringCh);}catch(_){} }, 5000);
             }
         });
 
-        // DB fallback: postgres_changes for answer/rejected/ended
-        this._callSub = this.supabase.channel(`cw-${this._callId}`)
-            .on('postgres_changes',{event:'UPDATE',schema:'public',table:'calls',filter:`id=eq.${this._callId}`}, async p => {
-                const c=p.new;
-                if (c.status==='rejected') { this.showNotification('Call','Declined.'); this._endLocal(); return; }
-                if (c.status==='ended')    { this._endLocal('Call ended'); return; }
-                if (c.answer) _applyAnswer(c.answer);
-                if (c.call_type==='video' && this._callType!=='video') this._upgradeToVideo();
-            }).subscribe();
+        // ── BROADCAST sig channel — speed bonus for answer + end ─────────────────
+        this._sigCh = this.supabase.channel(`sig-${this._callId}`)
+            .on('broadcast',{event:'ice'},    ({payload:p}) => { if(p.sid!==this.userId&&this._pc) this._pc.addIceCandidate(new RTCIceCandidate(p.c)).catch(()=>{}); })
+            .on('broadcast',{event:'answer'}, async ({payload:p}) => {
+                if (!p?.answer||!this._pc||this._pc.remoteDescription) return;
+                try { await this._pc.setRemoteDescription(new RTCSessionDescription(p.answer)); if(this._el.statusText)this._el.statusText.textContent='Connected'; this._startCallTimer();this._setupRenego(true);this._setupBroadcast();this._pollForEnd(); } catch(e){}
+            })
+            .on('broadcast',{event:'end'},    () => { this._endLocal('Call ended'); })
+            .subscribe();
 
         this._callShowOverlay(callType, this.dcActiveChatUser.name, false);
     } catch(err) {
@@ -6285,72 +6320,51 @@ AIAssistant.prototype.callAccept = async function() {
     if (this._el.incomingModal) this._el.incomingModal.style.display = 'none';
     if (this._incomingWatchSub) { this.supabase.removeChannel(this._incomingWatchSub); this._incomingWatchSub=null; }
     this._callType = call.call_type;
+    this._callId = call.id;
+    this._isCaller = false;
     try {
-        if (this._el.remoteAudio) { this._el.remoteAudio.muted = false; this._el.remoteAudio.play().catch(() => {}); }
+        if (this._el.remoteAudio) { this._el.remoteAudio.muted = false; this._el.remoteAudio.play().catch(()=>{}); }
         this._ls = await this._getMedia(call.call_type);
         this._makePc();
         this._ls.getTracks().forEach(t => this._pc.addTrack(t, this._ls));
         if (this._el.localVideo) { this._el.localVideo.srcObject=this._ls; this._el.localVideo.style.display=call.call_type==='video'?'block':'none'; }
 
-        this._callId = call.id; this._isCaller = false;
-
-        // ── FAST SIGNALING CHANNEL ────────────────────────────────────────────────
-        const _sendIce = (c) => {
+        // ── ICE sending: DB insert always + broadcast as speed bonus ──────────────
+        const _sendIce = c => {
             if (!this._callId) return;
-            if (this._sigCh) this._sigCh.send({type:'broadcast',event:'ice',payload:{c,sid:this.userId}}).catch(()=>{});
             this.supabase.from('call_candidates').insert({call_id:this._callId,sender_id:this.userId,candidate:c}).catch(()=>{});
+            if (this._sigCh) this._sigCh.send({type:'broadcast',event:'ice',payload:{c,sid:this.userId}}).catch(()=>{});
         };
-        // Buffer candidates while channel is subscribing
-        const _candBuf = [];
-        this._pc.onicecandidate = e => { if (e.candidate) _candBuf.push(e.candidate.toJSON()); };
-        this._sigCh = this.supabase.channel(`sig-${this._callId}`)
-            .on('broadcast',{event:'ice'},({payload:p}) => {
-                if (p.sid!==this.userId && this._pc) this._pc.addIceCandidate(new RTCIceCandidate(p.c)).catch(()=>{});
-            })
-            .on('broadcast',{event:'end'},() => { this._endLocal('Call ended'); })
-            .subscribe((status) => {
-                if (status==='SUBSCRIBED') {
-                    this._pc.onicecandidate = e => { if (e.candidate) _sendIce(e.candidate.toJSON()); };
-                    _candBuf.forEach(c => _sendIce(c)); _candBuf.length=0;
-                }
-            });
-        // Safety timeout: flush buffer via DB if channel never subscribes
-        setTimeout(() => {
-            if (_candBuf.length > 0 && this._callId) {
-                _candBuf.forEach(c => this.supabase.from('call_candidates').insert({call_id:this._callId,sender_id:this.userId,candidate:c}).catch(()=>{}));
-                _candBuf.length = 0;
-                if (this._pc) this._pc.onicecandidate = e => { if (e.candidate) _sendIce(e.candidate.toJSON()); };
-            }
-        }, 3000);
+        this._pc.onicecandidate = e => { if (e.candidate) _sendIce(e.candidate.toJSON()); };
 
         await this._pc.setRemoteDescription(new RTCSessionDescription(call.offer));
         const answer = await this._pc.createAnswer();
-        await this._pc.setLocalDescription(answer);  // ICE gathering starts here
+        await this._pc.setLocalDescription(answer); // ICE gathering starts here
 
-        // Fetch caller's candidates already in DB (sent before we subscribed to broadcast)
+        // Fetch caller's ICE candidates already in DB
         const {data:ec} = await this.supabase.from('call_candidates').select('candidate').eq('call_id',this._callId).neq('sender_id',this.userId);
         if (ec) for (const c of ec) { try{await this._pc.addIceCandidate(new RTCIceCandidate(c.candidate));}catch(_){} }
 
-        // DB fallback: watch for caller candidates that arrive after the broadcast fetch above
-        this._candSub = this.supabase.channel(`ca-${this._callId}`)
-            .on('postgres_changes',{event:'INSERT',schema:'public',table:'call_candidates',filter:`call_id=eq.${this._callId}`}, async p => {
-                if(p.new.sender_id!==this.userId&&this._pc) try{await this._pc.addIceCandidate(new RTCIceCandidate(p.new.candidate));}catch(_){}
-            }).subscribe();
-
-        // DB fallback for call status changes (ended/call_type)
-        this._callSub = this.supabase.channel(`ce-${this._callId}`)
-            .on('postgres_changes',{event:'UPDATE',schema:'public',table:'calls',filter:`id=eq.${this._callId}`}, p => {
-                if(p.new.status==='ended') this._endLocal('Call ended');
-                if(p.new.call_type==='video'&&this._callType!=='video') this._upgradeToVideo();
-            }).subscribe();
-
+        // Write answer to DB — this is what the caller's poll will find
         await this.supabase.from('calls').update({answer:{type:answer.type,sdp:answer.sdp},status:'active'}).eq('id',call.id);
 
-        // Broadcast answer to caller via sig channel — retried 3× so it arrives
-        // even if sigCh wasn't subscribed on first attempt
-        const _ans = {type:answer.type, sdp:answer.sdp};
-        const _tryAns = () => { if(this._sigCh&&this._callId) this._sigCh.send({type:'broadcast',event:'answer',payload:{answer:_ans}}).catch(()=>{}); };
-        _tryAns(); setTimeout(_tryAns, 400); setTimeout(_tryAns, 1000);
+        // ── BROADCAST sig channel — speed bonus: fast answer + ICE + end ─────────
+        this._sigCh = this.supabase.channel(`sig-${this._callId}`)
+            .on('broadcast',{event:'ice'}, ({payload:p}) => { if(p.sid!==this.userId&&this._pc) this._pc.addIceCandidate(new RTCIceCandidate(p.c)).catch(()=>{}); })
+            .on('broadcast',{event:'end'}, () => { this._endLocal('Call ended'); })
+            .subscribe(s => {
+                if (s==='SUBSCRIBED') {
+                    // Send answer via broadcast now that channel is confirmed ready
+                    const _ans = {type:answer.type,sdp:answer.sdp};
+                    this._sigCh.send({type:'broadcast',event:'answer',payload:{answer:_ans}}).catch(()=>{});
+                    setTimeout(()=>this._sigCh?.send({type:'broadcast',event:'answer',payload:{answer:_ans}}).catch(()=>{}), 800);
+                }
+            });
+
+        // ── PRIMARY: poll every 2s for call ended ─────────────────────────────────
+        this._pollForEnd();
+        // ── PRIMARY: poll every 500ms for new ICE from caller ────────────────────
+        this._pollForCandidates();
 
         const callerLabel = this._el.callerName?.textContent||'User';
         this._callShowOverlay(call.call_type, callerLabel, true);
@@ -6398,9 +6412,11 @@ AIAssistant.prototype._endLocal = function(reason) {
     this._stopRingtone();
     if (!this._callId && !this._pc && !this._ls) { if(this._el.overlay) this._el.overlay.style.display='none'; return; }
     console.log('[CALL] _endLocal:', reason);
-    if (this._callTimer)  { clearInterval(this._callTimer); this._callTimer=null; } this._callStartTime=null;
-    if (this._dcTimeout)  { clearTimeout(this._dcTimeout); this._dcTimeout=null; }
-    if (this._bgEndTimer) { clearTimeout(this._bgEndTimer); this._bgEndTimer=null; }
+    if (this._callTimer)  { clearInterval(this._callTimer);  this._callTimer=null;  } this._callStartTime=null;
+    if (this._pollTimer)  { clearInterval(this._pollTimer);  this._pollTimer=null;  }
+    if (this._candTimer)  { clearInterval(this._candTimer);  this._candTimer=null;  }
+    if (this._dcTimeout)  { clearTimeout(this._dcTimeout);   this._dcTimeout=null;  }
+    if (this._bgEndTimer) { clearTimeout(this._bgEndTimer);  this._bgEndTimer=null; }
     this._iceRestarted = false;
     if (this._screenStream) { this._screenStream.getTracks().forEach(t=>t.stop()); this._screenStream=null; }
     if (this._ls) { this._ls.getTracks().forEach(t=>t.stop()); this._ls=null; }
