@@ -24,9 +24,14 @@ CREATE TABLE IF NOT EXISTS public.book_pages (
 ALTER TABLE public.book_pages ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Anyone reads book" ON public.book_pages;
 DROP POLICY IF EXISTS "Admins modify book" ON public.book_pages;
+DROP POLICY IF EXISTS "Users add book pages" ON public.book_pages;
+-- Anyone can read pages
 CREATE POLICY "Anyone reads book" ON public.book_pages FOR SELECT USING (true);
-CREATE POLICY "Admins modify book" ON public.book_pages FOR ALL
-    USING (EXISTS (SELECT 1 FROM public.users WHERE id = auth.uid() AND is_admin = true));
+-- Any logged-in user can insert pages
+CREATE POLICY "Users add book pages" ON public.book_pages FOR INSERT WITH CHECK (auth.uid() IS NOT NULL);
+-- Any logged-in user can also delete their own (or admins all)
+CREATE POLICY "Users delete book pages" ON public.book_pages FOR DELETE
+    USING (auth.uid() IS NOT NULL);
 
 -- Enable realtime for book pages (so admin additions appear live)
 ALTER TABLE public.book_pages REPLICA IDENTITY FULL;

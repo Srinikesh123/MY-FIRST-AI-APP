@@ -4177,39 +4177,31 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (window.supabase && window.SUPABASE_URL && window.SUPABASE_ANON_KEY) {
         try {
             const supabaseClient = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
-            
-            // CRITICAL: Verify auth with getUser() first
-            const { data: { user }, error: userError } = await supabaseClient.auth.getUser();
-            console.log('🔐 AUTH USER:', user);
-            console.log('🔐 AUTH ERROR:', userError);
-            
-            if (userError || !user) {
-                console.error('❌ AUTH FAILED - No user found');
+
+            // Fast session check from localStorage — prevents redirect loop
+            const { data: sessionData } = await supabaseClient.auth.getSession();
+            if (!sessionData?.session) {
                 window.location.href = 'login.html';
                 return;
             }
-            
-            // Also check session
-            const { data: sessionData, error: sessionError } = await supabaseClient.auth.getSession();
-            console.log('🔐 SESSION DATA:', sessionData);
-            console.log('🔐 SESSION ERROR:', sessionError);
-            
-            if (sessionError || !sessionData || !sessionData.session) {
-                console.error('❌ SESSION FAILED - No active session');
-                window.location.href = 'login.html';
-                return;
-            }
-            
-            console.log('✅ AUTH VERIFIED - User:', user.email, 'ID:', user.id);
+
+            // Refresh auth token so DB queries work correctly.
+            // If getUser() fails (network down) we still proceed — don't redirect.
+            let user = sessionData.session.user;
+            try {
+                const { data } = await supabaseClient.auth.getUser();
+                if (data?.user) user = data.user;
+            } catch (_) { /* use session user if network fails */ }
+
             window.__supabaseClient = supabaseClient;
             window.__currentUser = user;
+
         } catch (err) {
-            console.error('❌ Supabase initialization error:', err);
+            console.error('Supabase init error:', err);
             window.location.href = 'login.html';
             return;
         }
     } else {
-        console.error('❌ Supabase not configured');
         window.location.href = 'login.html';
         return;
     }
@@ -6117,34 +6109,39 @@ AIAssistant.prototype._makePc = function() {
             if(this._dcTimeout){clearTimeout(this._dcTimeout);this._dcTimeout=null;}
             this._iceRestarted = false;
         }
-        else if (s==='connecting') { if(this._dcTimeout){clearTimeout(this._dcTimeout);this._dcTimeout=null;} }
+        else if (s==='connecting') {
+            if(this._dcTimeout){clearTimeout(this._dcTimeout);this._dcTimeout=null;}
+        }
         else if (s==='disconnected') {
             if(this._el.statusText) this._el.statusText.textContent='Reconnecting...';
+            // Don't hang up — WebRTC often recovers from brief disconnects on its own.
+            // Only hang up if it stays disconnected for 60 seconds.
             if(this._dcTimeout) clearTimeout(this._dcTimeout);
-            // Try ICE restart immediately, give 30s to recover before hanging up
-            if(this._pc) this._pc.restartIce();
             this._dcTimeout = setTimeout(()=>{
-                if(this._pc?.connectionState==='disconnected'||this._pc?.connectionState==='failed') this.callHangup();
-            }, 30000);
+                if(this._pc?.connectionState==='disconnected') {
+                    this._pc.restartIce();
+                    this._dcTimeout = setTimeout(()=>{
+                        if(this._pc?.connectionState==='disconnected'||this._pc?.connectionState==='failed') this.callHangup();
+                    }, 30000);
+                }
+            }, 60000);
         }
         else if (s==='failed') {
-            // Try one ICE restart before giving up
+            if(this._dcTimeout){clearTimeout(this._dcTimeout);this._dcTimeout=null;}
             if (!this._iceRestarted && this._pc) {
                 this._iceRestarted = true;
                 if(this._el.statusText) this._el.statusText.textContent='Reconnecting...';
                 this._pc.restartIce();
-                if(this._dcTimeout) clearTimeout(this._dcTimeout);
+                // Give it 30 seconds to recover before hanging up
                 this._dcTimeout = setTimeout(()=>{
                     if(this._pc?.connectionState==='failed') this.callHangup();
-                }, 20000);
-            } else {
-                this.callHangup();
+                }, 30000);
+            } else if (this._iceRestarted) {
+                // Already tried a restart — wait 30s before hanging up (don't hang up immediately)
+                if(this._dcTimeout) clearTimeout(this._dcTimeout);
+                this._dcTimeout = setTimeout(()=>{ this.callHangup(); }, 30000);
             }
         }
-    };
-    this._pc.oniceconnectionstatechange = () => {
-        const s = this._pc?.iceConnectionState;
-        if(s==='failed' && !this._iceRestarted) { this._iceRestarted=true; this._pc.restartIce(); }
     };
 };
 
@@ -6693,9 +6690,9 @@ AIAssistant.prototype.showBook = async function() {
     panel.style.display = 'flex';
     await this._bookLoadPages();
 
-    // Show admin controls if user is admin
+    // Any logged-in user can add pages
     const addBtn = document.getElementById('bookAdminAddBtn');
-    if (addBtn) addBtn.style.display = this.isAdmin ? 'block' : 'none';
+    if (addBtn) addBtn.style.display = this.userId ? 'block' : 'none';
 };
 
 AIAssistant.prototype.hideBook = function() {

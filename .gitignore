@@ -1,8 +1,7 @@
 node_modules/
 .DS_Store
 *.log
-.vscode/
 .idea/
 
 # Environment variables — NEVER commit these files
-.env
+

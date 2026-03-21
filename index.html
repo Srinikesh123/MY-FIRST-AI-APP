@@ -934,17 +934,9 @@
     </div>
 
     <script>
-        // Keys are injected at runtime by the server — never hardcoded here
-        (async () => {
-            try {
-                const r = await fetch('/api/config');
-                const cfg = await r.json();
-                window.SUPABASE_URL      = cfg.supabaseUrl;
-                window.SUPABASE_ANON_KEY = cfg.supabaseAnonKey;
-            } catch(e) {
-                console.error('Failed to load app config:', e);
-            }
-        })();
+        // Supabase anon key is public by design — safe to include in client code
+        window.SUPABASE_URL      = 'https://vexmydzwlongsqnzamdk.supabase.co';
+        window.SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZleG15ZHp3bG9uZ3NxbnphbWRrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU5ODQzNTEsImV4cCI6MjA4MTU2MDM1MX0.2sswoFrrYryzpDircWi2HtRFiE5x5Pp-N_oUYunPO1o';
     </script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="app.js"></script>
