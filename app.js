@@ -5930,7 +5930,8 @@ AIAssistant.prototype.initCallUI = function() {
     this._renegoLock = false;
     this._iceRestarted = false;
     this._bgEndTimer = null;
-    this._sigCh = null;    // broadcast channel: fast ICE candidates + hangup sync
+    this._sigCh = null;      // broadcast channel: fast ICE candidates + hangup sync
+    this._incomingCh = null; // broadcast channel: receive incoming call ring
 
     const $ = id => document.getElementById(id);
     this._el = {
@@ -5991,10 +5992,25 @@ AIAssistant.prototype.initCallUI = function() {
 // ── INCOMING CALLS ───────────────────────────────────────────
 AIAssistant.prototype._subscribeIncomingCalls = function() {
     if (!this.supabase || !this.userId) return;
-    this.supabase.channel(`inc-${this.userId}-${Date.now()}`)
+
+    // PRIMARY: broadcast channel — works instantly, no Supabase realtime toggle needed
+    this._incomingCh = this.supabase.channel(`ic-${this.userId}`)
+        .on('broadcast', {event:'ring'}, ({payload:p}) => {
+            if (!p?.call) return;
+            if (this._incomingCall?.id === p.call.id) return; // dedup
+            if (this._callId) return; // already in a call
+            this._showIncoming(p.call);
+        }).subscribe();
+
+    // FALLBACK: postgres_changes (only fires if realtime is ON in Supabase dashboard)
+    this.supabase.channel(`inc-${this.userId}`)
         .on('postgres_changes', { event:'INSERT', schema:'public', table:'calls', filter:`callee_id=eq.${this.userId}` },
-            p => { if (p.new.status === 'ringing') this._showIncoming(p.new); })
-        .subscribe();
+            p => {
+                if (p.new.status !== 'ringing') return;
+                if (this._incomingCall?.id === p.new.id) return; // dedup
+                if (this._callId) return;
+                this._showIncoming(p.new);
+            }).subscribe();
 };
 
 // ── WEB PUSH SETUP ───────────────────────────────────────────
@@ -6197,25 +6213,33 @@ AIAssistant.prototype.callStart = async function(callType) {
         if (!result.success) throw new Error(result.error || 'Failed to create call');
         this._callId = result.callId; this._isCaller = true;
 
-        // ── FAST SIGNALING CHANNEL (broadcast: ICE candidates + hangup) ──────────────
+        // ── SIGNALING CHANNEL ─────────────────────────────────────────────────────
         const _sendIce = (c) => {
             if (!this._callId) return;
             if (this._sigCh) this._sigCh.send({type:'broadcast',event:'ice',payload:{c,sid:this.userId}}).catch(()=>{});
             this.supabase.from('call_candidates').insert({call_id:this._callId,sender_id:this.userId,candidate:c}).catch(()=>{});
         };
+        const _applyAnswer = async (ans) => {
+            if (!this._pc || this._pc.remoteDescription) return;
+            try {
+                await this._pc.setRemoteDescription(new RTCSessionDescription(ans));
+                if(this._el.statusText) this._el.statusText.textContent='Connected';
+                this._startCallTimer(); this._setupRenego(true); this._setupBroadcast();
+            } catch(e) { console.warn('[CALL] answer err:', e); }
+        };
         this._sigCh = this.supabase.channel(`sig-${this._callId}`)
-            .on('broadcast',{event:'ice'},({payload:p}) => {
+            .on('broadcast',{event:'ice'},    ({payload:p}) => {
                 if (p.sid!==this.userId && this._pc) this._pc.addIceCandidate(new RTCIceCandidate(p.c)).catch(()=>{});
             })
-            .on('broadcast',{event:'end'},() => { this._endLocal('Call ended'); })
+            .on('broadcast',{event:'answer'}, ({payload:p}) => { if (p?.answer) _applyAnswer(p.answer); })
+            .on('broadcast',{event:'end'},    () => { this._endLocal('Call ended'); })
             .subscribe((status) => {
                 if (status==='SUBSCRIBED') {
-                    // Switch to real handler and flush buffer
                     this._pc.onicecandidate = e => { if (e.candidate) _sendIce(e.candidate.toJSON()); };
                     _candBuf.forEach(c => _sendIce(c)); _candBuf.length=0;
                 }
             });
-        // Safety timeout: flush buffer via DB if channel never subscribes
+        // Safety: flush candidate buffer via DB if channel never subscribes
         setTimeout(() => {
             if (_candBuf.length > 0 && this._callId) {
                 _candBuf.forEach(c => this.supabase.from('call_candidates').insert({call_id:this._callId,sender_id:this.userId,candidate:c}).catch(()=>{}));
@@ -6224,17 +6248,24 @@ AIAssistant.prototype.callStart = async function(callType) {
             }
         }, 3000);
 
-        // Watch for answer (DB) — DB handles rejected/ended as fallback too
+        // Broadcast ring to callee directly (no postgres_changes needed)
+        const calleeId = this.dcActiveChatUser.id;
+        const callData = {id:this._callId,caller_id:this.userId,callee_id:calleeId,call_type:callType,status:'ringing',offer:{type:offer.type,sdp:offer.sdp}};
+        const _ringCh = this.supabase.channel(`ic-${calleeId}`);
+        _ringCh.subscribe((s) => {
+            if (s==='SUBSCRIBED') {
+                _ringCh.send({type:'broadcast',event:'ring',payload:{call:callData}}).catch(()=>{});
+                setTimeout(() => { try{this.supabase.removeChannel(_ringCh);}catch(_){} }, 5000);
+            }
+        });
+
+        // DB fallback: postgres_changes for answer/rejected/ended
         this._callSub = this.supabase.channel(`cw-${this._callId}`)
             .on('postgres_changes',{event:'UPDATE',schema:'public',table:'calls',filter:`id=eq.${this._callId}`}, async p => {
                 const c=p.new;
                 if (c.status==='rejected') { this.showNotification('Call','Declined.'); this._endLocal(); return; }
                 if (c.status==='ended')    { this._endLocal('Call ended'); return; }
-                if (c.answer && this._pc && !this._pc.remoteDescription) {
-                    await this._pc.setRemoteDescription(new RTCSessionDescription(c.answer));
-                    if(this._el.statusText) this._el.statusText.textContent='Connected';
-                    this._startCallTimer(); this._setupRenego(true); this._setupBroadcast();
-                }
+                if (c.answer) _applyAnswer(c.answer);
                 if (c.call_type==='video' && this._callType!=='video') this._upgradeToVideo();
             }).subscribe();
 
@@ -6314,6 +6345,13 @@ AIAssistant.prototype.callAccept = async function() {
             }).subscribe();
 
         await this.supabase.from('calls').update({answer:{type:answer.type,sdp:answer.sdp},status:'active'}).eq('id',call.id);
+
+        // Broadcast answer to caller via sig channel — retried 3× so it arrives
+        // even if sigCh wasn't subscribed on first attempt
+        const _ans = {type:answer.type, sdp:answer.sdp};
+        const _tryAns = () => { if(this._sigCh&&this._callId) this._sigCh.send({type:'broadcast',event:'answer',payload:{answer:_ans}}).catch(()=>{}); };
+        _tryAns(); setTimeout(_tryAns, 400); setTimeout(_tryAns, 1000);
+
         const callerLabel = this._el.callerName?.textContent||'User';
         this._callShowOverlay(call.call_type, callerLabel, true);
         this._startCallTimer(); this._setupRenego(false); this._setupBroadcast();
@@ -6336,12 +6374,20 @@ AIAssistant.prototype.callReject = async function() {
 
 AIAssistant.prototype.callHangup = function() {
     const id = this._callId;
-    // Broadcast 'end' immediately so the other side knows RIGHT AWAY (no DB delay)
-    if (this._sigCh && id) {
-        this._sigCh.send({type:'broadcast',event:'end',payload:{sid:this.userId}}).catch(()=>{});
-    }
+    // IMPORTANT: detach sigCh from _endLocal FIRST — otherwise _endLocal removes
+    // the channel before the broadcast is delivered, and the other side never knows.
+    const sigCh = this._sigCh;
+    this._sigCh = null;
     this._endLocal('You ended the call');
     if (id) {
+        if (sigCh) {
+            // Send end event, THEN clean up the channel after delivery
+            sigCh.send({type:'broadcast',event:'end',payload:{sid:this.userId}})
+                .catch(()=>{})
+                .finally(() => { try{this.supabase.removeChannel(sigCh);}catch(_){} });
+            // Hard cleanup after 4s in case .finally never fires (closed tab etc.)
+            setTimeout(() => { try{this.supabase.removeChannel(sigCh);}catch(_){} }, 4000);
+        }
         this.supabase.from('calls').update({status:'ended'}).eq('id',id).then(()=>{}).catch(()=>{});
         fetch('/api/end-call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({callId:id})}).catch(()=>{});
     }
@@ -6502,7 +6548,8 @@ AIAssistant.prototype._upgradeToVideo = function() {
 
 // ── SCREEN SHARE ─────────────────────────────────────────────
 AIAssistant.prototype.callShareScreen = async function() {
-    if(!this._pc||!this._callId) return;
+    if(!this._pc||!this._callId) { this.showNotification('Screen Share','No active call.'); return; }
+    if(!navigator.mediaDevices?.getDisplayMedia) { this.showNotification('Screen Share','Not supported in this browser.'); return; }
     if(this._isScreenSharing) { this._stopScreen(); return; }
     try {
         const ss = await navigator.mediaDevices.getDisplayMedia({
@@ -6543,7 +6590,11 @@ AIAssistant.prototype.callShareScreen = async function() {
         setTimeout(() => this._bcast(), 2000);
 
         st.onended = () => this._stopScreen();
-    } catch(err) { if(err.name!=='NotAllowedError') this.showNotification('Error','Screen share failed: '+err.message); }
+    } catch(err) {
+        if (err.name === 'NotAllowedError' || err.name === 'AbortError') return; // user cancelled
+        this.showNotification('Screen Share Error', err.message || err.name || 'Unknown error');
+        console.error('[SCREEN]', err);
+    }
 };
 
 AIAssistant.prototype._stopScreen = async function() {
