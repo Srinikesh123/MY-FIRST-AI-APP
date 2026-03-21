@@ -5934,6 +5934,7 @@ AIAssistant.prototype.initCallUI = function() {
     this._incomingCh = null; // broadcast channel: receive incoming call ring
     this._pollTimer = null;  // polling: watch for answer / call ended
     this._candTimer = null;  // polling: fetch new ICE candidates
+    this._incTimer  = null;  // polling: watch for incoming calls
 
     const $ = id => document.getElementById(id);
     this._el = {
@@ -6013,6 +6014,9 @@ AIAssistant.prototype._subscribeIncomingCalls = function() {
                 if (this._callId) return;
                 this._showIncoming(p.new);
             }).subscribe();
+
+    // FALLBACK 2: REST poll every 3s (works with zero Supabase config)
+    this._pollForIncoming();
 };
 
 // ── WEB PUSH SETUP ───────────────────────────────────────────
@@ -6188,11 +6192,13 @@ AIAssistant.prototype._getMedia = function(type) {
         : navigator.mediaDevices.getUserMedia({ audio:voiceAudio, video:false });
 };
 
+// ── SAFE DB WRITE (Supabase thenable ≠ full Promise — use async wrapper) ─────
+function _dbw(promise) { (async()=>{ try{ await promise; }catch(_){} })(); }
+
 // ── POLLING HELPERS (primary reliability — no Supabase realtime needed) ─────
-// Called by CALLER after offer sent: polls every 1s for answer + rejected/ended
+// Called by CALLER after offer sent: polls every 500ms for answer
 AIAssistant.prototype._pollForAnswer = function() {
     if (this._pollTimer) clearInterval(this._pollTimer);
-    let _ts = new Date().toISOString();
     this._pollTimer = setInterval(async () => {
         if (!this._callId || !this._pc) { clearInterval(this._pollTimer); this._pollTimer=null; return; }
         try {
@@ -6200,21 +6206,21 @@ AIAssistant.prototype._pollForAnswer = function() {
             if (!data) return;
             if (data.status==='rejected') { clearInterval(this._pollTimer); this._pollTimer=null; this.showNotification('Call','Declined.'); this._endLocal(); return; }
             if (data.status==='ended')    { clearInterval(this._pollTimer); this._pollTimer=null; this._endLocal('Call ended'); return; }
-            if (data.answer && !this._pc.remoteDescription) {
+            if (data.answer && this._pc && !this._pc.remoteDescription) {
                 clearInterval(this._pollTimer); this._pollTimer=null;
                 try {
                     await this._pc.setRemoteDescription(new RTCSessionDescription(data.answer));
                     if(this._el.statusText) this._el.statusText.textContent='Connected';
                     this._startCallTimer(); this._setupRenego(true); this._setupBroadcast();
-                    this._pollForEnd(); // switch to end-polling now that we're connected
+                    this._pollForEnd();
                 } catch(e) { console.warn('[CALL] poll-answer err:',e); }
             }
             if (data.call_type==='video' && this._callType!=='video') this._upgradeToVideo();
         } catch(_) {}
-    }, 1000);
+    }, 500);
 };
 
-// Called by BOTH sides once connected: polls every 2s for status='ended'
+// Called by BOTH sides once connected: polls every 1s for status='ended'
 AIAssistant.prototype._pollForEnd = function() {
     if (this._pollTimer) clearInterval(this._pollTimer);
     this._pollTimer = setInterval(async () => {
@@ -6225,10 +6231,10 @@ AIAssistant.prototype._pollForEnd = function() {
             if (data.status==='ended') { clearInterval(this._pollTimer); this._pollTimer=null; this._endLocal('Call ended'); return; }
             if (data.call_type==='video' && this._callType!=='video') this._upgradeToVideo();
         } catch(_) {}
-    }, 2000);
+    }, 1000);
 };
 
-// Poll for new ICE candidates from the other side every 500ms
+// Poll for new ICE candidates from the other side every 300ms
 AIAssistant.prototype._pollForCandidates = function() {
     if (this._candTimer) clearInterval(this._candTimer);
     let _since = new Date().toISOString();
@@ -6243,7 +6249,21 @@ AIAssistant.prototype._pollForCandidates = function() {
                 for (const c of data) { try{await this._pc.addIceCandidate(new RTCIceCandidate(c.candidate));}catch(_){} }
             }
         } catch(_) {}
-    }, 500);
+    }, 300);
+};
+
+// Poll for incoming ringing calls (hard fallback if broadcast ring fails)
+AIAssistant.prototype._pollForIncoming = function() {
+    if (this._incTimer) return; // already polling
+    this._incTimer = setInterval(async () => {
+        if (this._callId || this._incomingCall) return; // busy
+        try {
+            const {data} = await this.supabase.from('calls').select('*')
+                .eq('callee_id',this.userId).eq('status','ringing')
+                .order('created_at',{ascending:false}).limit(1).single();
+            if (data && !this._incomingCall && !this._callId) this._showIncoming(data);
+        } catch(_) {}
+    }, 3000);
 };
 
 // ── START CALL ───────────────────────────────────────────────
@@ -6273,8 +6293,8 @@ AIAssistant.prototype.callStart = async function(callType) {
         // ── ICE: send buffered + future candidates via DB (always works) ──────────
         const _sendIce = c => {
             if (!this._callId) return;
-            this.supabase.from('call_candidates').insert({call_id:this._callId,sender_id:this.userId,candidate:c}).catch(()=>{});
-            if (this._sigCh) this._sigCh.send({type:'broadcast',event:'ice',payload:{c,sid:this.userId}}).catch(()=>{}); // speed bonus
+            _dbw(this.supabase.from('call_candidates').insert({call_id:this._callId,sender_id:this.userId,candidate:c}));
+            if (this._sigCh) this._sigCh.send({type:'broadcast',event:'ice',payload:{c,sid:this.userId}}).then(null,()=>{}); // speed bonus
         };
         this._pc.onicecandidate = e => { if (e.candidate) _sendIce(e.candidate.toJSON()); };
         _iceBuf.forEach(c => _sendIce(c)); // flush buffer immediately
@@ -6332,8 +6352,8 @@ AIAssistant.prototype.callAccept = async function() {
         // ── ICE sending: DB insert always + broadcast as speed bonus ──────────────
         const _sendIce = c => {
             if (!this._callId) return;
-            this.supabase.from('call_candidates').insert({call_id:this._callId,sender_id:this.userId,candidate:c}).catch(()=>{});
-            if (this._sigCh) this._sigCh.send({type:'broadcast',event:'ice',payload:{c,sid:this.userId}}).catch(()=>{});
+            _dbw(this.supabase.from('call_candidates').insert({call_id:this._callId,sender_id:this.userId,candidate:c}));
+            if (this._sigCh) this._sigCh.send({type:'broadcast',event:'ice',payload:{c,sid:this.userId}}).then(null,()=>{});
         };
         this._pc.onicecandidate = e => { if (e.candidate) _sendIce(e.candidate.toJSON()); };
 
@@ -6356,8 +6376,8 @@ AIAssistant.prototype.callAccept = async function() {
                 if (s==='SUBSCRIBED') {
                     // Send answer via broadcast now that channel is confirmed ready
                     const _ans = {type:answer.type,sdp:answer.sdp};
-                    this._sigCh.send({type:'broadcast',event:'answer',payload:{answer:_ans}}).catch(()=>{});
-                    setTimeout(()=>this._sigCh?.send({type:'broadcast',event:'answer',payload:{answer:_ans}}).catch(()=>{}), 800);
+                    this._sigCh.send({type:'broadcast',event:'answer',payload:{answer:_ans}}).then(null,()=>{});
+                    setTimeout(()=>this._sigCh?.send({type:'broadcast',event:'answer',payload:{answer:_ans}}).then(null,()=>{}), 800);
                 }
             });
 
@@ -6402,7 +6422,7 @@ AIAssistant.prototype.callHangup = function() {
             // Hard cleanup after 4s in case .finally never fires (closed tab etc.)
             setTimeout(() => { try{this.supabase.removeChannel(sigCh);}catch(_){} }, 4000);
         }
-        this.supabase.from('calls').update({status:'ended'}).eq('id',id).then(()=>{}).catch(()=>{});
+        _dbw(this.supabase.from('calls').update({status:'ended'}).eq('id',id));
         fetch('/api/end-call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({callId:id})}).catch(()=>{});
     }
 };
@@ -6415,6 +6435,7 @@ AIAssistant.prototype._endLocal = function(reason) {
     if (this._callTimer)  { clearInterval(this._callTimer);  this._callTimer=null;  } this._callStartTime=null;
     if (this._pollTimer)  { clearInterval(this._pollTimer);  this._pollTimer=null;  }
     if (this._candTimer)  { clearInterval(this._candTimer);  this._candTimer=null;  }
+    // _incTimer stays alive — keeps watching for new incoming calls even after a call ends
     if (this._dcTimeout)  { clearTimeout(this._dcTimeout);   this._dcTimeout=null;  }
     if (this._bgEndTimer) { clearTimeout(this._bgEndTimer);  this._bgEndTimer=null; }
     this._iceRestarted = false;
