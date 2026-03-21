@@ -6343,8 +6343,24 @@ AIAssistant.prototype._setupBroadcast = function() {
             if(!p||p.uid===this.userId) return;
             if(this._el.remoteMuteIndicator) this._el.remoteMuteIndicator.style.display = p.muted?'block':'none';
             if(p.vidOff!==undefined && this._callType==='video' && this._el.overlayAvatar) this._el.overlayAvatar.style.display=p.vidOff?'flex':'none';
-            if(p.screen) { if(this._el.videoContainer)this._el.videoContainer.style.display='block'; if(this._el.overlayAvatar)this._el.overlayAvatar.style.display='none'; }
-            if(p.screenOff && this._callType!=='video') { if(this._el.videoContainer)this._el.videoContainer.style.display='none'; if(this._el.overlayAvatar)this._el.overlayAvatar.style.display='flex'; }
+            if(p.screen) {
+                if(this._el.videoContainer) this._el.videoContainer.style.display='block';
+                if(this._el.overlayAvatar)  this._el.overlayAvatar.style.display='none';
+                // replaceTrack arrives via WebRTC — Supabase broadcast is faster,
+                // so wait a moment for the new track to actually start delivering frames
+                const rv = this._el.remoteVideo;
+                if(rv) {
+                    const doRefresh = () => { const src=rv.srcObject; if(src){rv.srcObject=null;rv.srcObject=src;} rv.play().catch(()=>{}); };
+                    doRefresh();
+                    setTimeout(doRefresh, 600);
+                }
+            }
+            if(p.screenOff) {
+                if(this._callType!=='video') { if(this._el.videoContainer)this._el.videoContainer.style.display='none'; if(this._el.overlayAvatar)this._el.overlayAvatar.style.display='flex'; }
+                // Restore camera view
+                const rv2 = this._el.remoteVideo;
+                if(rv2) { const src=rv2.srcObject; if(src){rv2.srcObject=null;rv2.srcObject=src;} rv2.play().catch(()=>{}); }
+            }
             if(p.toVideo && this._callType!=='video') this._upgradeToVideo();
         }).subscribe();
 };
@@ -6412,16 +6428,40 @@ AIAssistant.prototype.callShareScreen = async function() {
     if(!this._pc||!this._callId) return;
     if(this._isScreenSharing) { this._stopScreen(); return; }
     try {
-        const ss = await navigator.mediaDevices.getDisplayMedia({video:{cursor:'always',width:{ideal:1920},height:{ideal:1080}},audio:false});
-        const st = ss.getVideoTracks()[0]; if(!st) throw new Error('No screen');
-        this._savedCamTrack = this._ls?.getVideoTracks()[0]||null;
-        const s=this._vidSender(); if(s) await s.replaceTrack(st); else this._pc.addTrack(st,ss);
-        this._screenStream=ss; this._isScreenSharing=true;
-        if(this._el.localVideo){this._el.localVideo.srcObject=new MediaStream([st]);this._el.localVideo.style.display='block';}
-        if(this._el.screenShareBtn){this._el.screenShareBtn.textContent='⏹️';this._el.screenShareBtn.style.background='#ef4444';}
+        const ss = await navigator.mediaDevices.getDisplayMedia({
+            video: { cursor: 'always', width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
+            audio: false
+        });
+        const st = ss.getVideoTracks()[0]; if(!st) throw new Error('No screen track');
+        this._savedCamTrack = this._ls?.getVideoTracks()[0] || null;
+
+        const sender = this._vidSender();
+        if (sender) {
+            // Video call — replace camera with screen (no renegotiation needed)
+            await sender.replaceTrack(st);
+        } else {
+            // Voice call — add new video track (triggers renegotiation via onnegotiationneeded)
+            this._pc.addTrack(st, ss);
+        }
+
+        this._screenStream = ss;
+        this._isScreenSharing = true;
+
+        // Show local preview of the screen being shared
+        if(this._el.localVideo) {
+            this._el.localVideo.srcObject = new MediaStream([st]);
+            this._el.localVideo.style.display = 'block';
+            this._el.localVideo.play().catch(()=>{});
+        }
+        if(this._el.screenShareBtn) { this._el.screenShareBtn.textContent='⏹️'; this._el.screenShareBtn.style.background='#ef4444'; }
         if(this._el.videoContainer) this._el.videoContainer.style.display='block';
-        if(this._el.overlayAvatar) this._el.overlayAvatar.style.display='none';
-        this._bcast();
+        if(this._el.overlayAvatar)  this._el.overlayAvatar.style.display='none';
+
+        // Tell other side to refresh their video element
+        // Small delay gives replaceTrack time to propagate through ICE before the
+        // remote side tries to reassign srcObject
+        setTimeout(() => this._bcast(), 300);
+
         st.onended = () => this._stopScreen();
     } catch(err) { if(err.name!=='NotAllowedError') this.showNotification('Error','Screen share failed: '+err.message); }
 };
@@ -6460,9 +6500,16 @@ AIAssistant.prototype._setupRenego = function(isCaller) {
             try { if(this._pc.signalingState!=='have-local-offer') return; await this._pc.setRemoteDescription(new RTCSessionDescription(p.answer)); this._renegoLock=false; } catch(e){console.warn('renego-a err:',e);}
         }).subscribe();
     this._pc.onnegotiationneeded = async () => {
-        if(!this._pc||!this._renegoCh||this._renegoLock||this._pc.signalingState!=='stable') return;
+        // Only renegotiate AFTER the call is fully connected — ignore events fired during initial setup
+        if(!this._pc||!this._renegoCh||this._renegoLock) return;
+        if(this._pc.signalingState!=='stable') return;
+        if(this._pc.connectionState!=='connected') return;
         this._renegoLock=true;
-        try { const o=await this._pc.createOffer(); await this._pc.setLocalDescription(o); this._renegoCh.send({type:'broadcast',event:'ro',payload:{offer:o,sid:this.userId}}).catch(()=>{}); } catch(e){this._renegoLock=false;}
+        try {
+            const o=await this._pc.createOffer();
+            await this._pc.setLocalDescription(o);
+            this._renegoCh.send({type:'broadcast',event:'ro',payload:{offer:o,sid:this.userId}}).catch(()=>{});
+        } catch(e) { this._renegoLock=false; console.warn('[RENEGO] offer err:',e); }
     };
 };
 

@@ -705,9 +705,9 @@
     </div>
 
     <!-- ===== ACTIVE CALL OVERLAY — compact top bar ===== -->
-    <div id="callOverlay" style="display:none;position:fixed;top:0;left:0;right:0;z-index:10000;background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);box-shadow:0 3px 24px rgba(0,0,0,0.65);border-bottom:1px solid rgba(255,255,255,0.07);">
+    <div id="callOverlay" style="display:none;position:fixed;top:0;left:0;right:0;z-index:99999;pointer-events:auto;background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);box-shadow:0 3px 24px rgba(0,0,0,0.65);border-bottom:1px solid rgba(255,255,255,0.07);">
         <!-- compact info + controls bar -->
-        <div style="display:flex;align-items:center;padding:8px 14px;gap:10px;">
+        <div style="display:flex;align-items:center;padding:8px 14px;gap:10px;pointer-events:auto;">
             <div id="callOverlayAvatar" style="width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,#667eea,#764ba2);display:flex;align-items:center;justify-content:center;font-size:18px;color:white;flex-shrink:0;border:2px solid rgba(255,255,255,0.2);"></div>
             <div style="flex:1;min-width:0;overflow:hidden;">
                 <div id="callOverlayName" style="color:white;font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Calling...</div>
@@ -718,13 +718,13 @@
                 </div>
             </div>
             <!-- icon-only control buttons -->
-            <div style="display:flex;gap:5px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end;max-width:280px;">
-                <button id="toggleMuteBtn"        title="Mute"         style="width:34px;height:34px;border-radius:50%;background:#374151;color:white;border:none;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;">🎤</button>
-                <button id="toggleVideoBtn"        title="Stop Video"   style="width:34px;height:34px;border-radius:50%;background:#374151;color:white;border:none;cursor:pointer;font-size:16px;display:none;align-items:center;justify-content:center;">📹</button>
-                <button id="callSwitchToVideoBtn"  title="Add Video"    style="width:34px;height:34px;border-radius:50%;background:#374151;color:white;border:none;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;">📷</button>
-                <button id="callScreenShareBtn"    title="Share Screen" style="width:34px;height:34px;border-radius:50%;background:#374151;color:white;border:none;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;">🖥️</button>
-                <button id="callFlipCamBtn"        title="Flip Camera"  style="width:34px;height:34px;border-radius:50%;background:#374151;color:white;border:none;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;">🔄</button>
-                <button id="hangupBtn"             title="End Call"     style="width:34px;height:34px;border-radius:50%;background:#ef4444;color:white;border:none;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;">📵</button>
+            <div style="display:flex;gap:5px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end;max-width:280px;pointer-events:auto;">
+                <button id="toggleMuteBtn"        title="Mute"         style="width:34px;height:34px;border-radius:50%;background:#374151;color:white;border:none;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;pointer-events:auto;">🎤</button>
+                <button id="toggleVideoBtn"        title="Stop Video"   style="width:34px;height:34px;border-radius:50%;background:#374151;color:white;border:none;cursor:pointer;font-size:16px;display:none;align-items:center;justify-content:center;pointer-events:auto;">📹</button>
+                <button id="callSwitchToVideoBtn"  title="Add Video"    style="width:34px;height:34px;border-radius:50%;background:#374151;color:white;border:none;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;pointer-events:auto;">📷</button>
+                <button id="callScreenShareBtn"    title="Share Screen" style="width:34px;height:34px;border-radius:50%;background:#374151;color:white;border:none;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;pointer-events:auto;">🖥️</button>
+                <button id="callFlipCamBtn"        title="Flip Camera"  style="width:34px;height:34px;border-radius:50%;background:#374151;color:white;border:none;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;pointer-events:auto;">🔄</button>
+                <button id="hangupBtn"             title="End Call"     style="width:34px;height:34px;border-radius:50%;background:#ef4444;color:white;border:none;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;pointer-events:auto;">📵</button>
             </div>
         </div>
         <!-- video area — only shown during video calls, collapsible -->
