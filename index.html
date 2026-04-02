@@ -729,11 +729,83 @@
         </div>
         <!-- video area — only shown during video calls, collapsible -->
         <div id="callVideoContainer" style="display:none;position:relative;background:#000;border-top:1px solid rgba(255,255,255,0.05);">
-            <video id="remoteVideo" autoplay playsinline muted style="width:100%;max-height:52vh;object-fit:contain;display:block;background:#111;"></video>
-            <video id="localVideo"  autoplay playsinline muted style="position:absolute;bottom:10px;right:10px;width:90px;height:120px;border-radius:8px;background:#333;object-fit:cover;display:none;border:2px solid rgba(255,255,255,0.25);"></video>
+            <video id="remoteVideo" autoplay playsinline style="width:100%;max-height:52vh;object-fit:contain;display:block;background:#111;"></video>
+            <div id="webrtcConnBadge" class="webrtc-conn-badge connecting" style="display:none;">Connecting</div>
+            <video id="localVideo"  autoplay playsinline muted style="position:absolute;bottom:10px;right:10px;width:90px;height:120px;border-radius:8px;background:#333;object-fit:cover;display:none;border:2px solid rgba(255,255,255,0.25);z-index:6;"></video>
+            <!-- Top-right buttons overlay -->
+            <div style="position:absolute;top:10px;right:10px;display:flex;gap:6px;z-index:10;">
+                <button id="callRemoteControlBtn" title="Request Remote Control" style="width:36px;height:36px;border-radius:8px;background:rgba(0,0,0,0.6);color:white;border:1px solid rgba(255,255,255,0.2);cursor:pointer;font-size:18px;display:none;align-items:center;justify-content:center;backdrop-filter:blur(4px);transition:background 0.2s;" onmouseenter="this.style.background='rgba(255,255,255,0.2)'" onmouseleave="this.style.background='rgba(0,0,0,0.6)'">🖱️</button>
+                <button id="callFullscreenBtn" title="Fullscreen" style="width:36px;height:36px;border-radius:8px;background:rgba(0,0,0,0.6);color:white;border:1px solid rgba(255,255,255,0.2);cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px);transition:background 0.2s;" onmouseenter="this.style.background='rgba(255,255,255,0.2)'" onmouseleave="this.style.background='rgba(0,0,0,0.6)'">⛶</button>
+            </div>
+            <!-- Fullscreen bottom controls bar (only visible in fullscreen) -->
+            <div id="callFsControls" style="display:none;position:absolute;bottom:0;left:0;right:0;background:linear-gradient(transparent,rgba(0,0,0,0.85));padding:16px 20px 20px;z-index:10;">
+                <div style="display:flex;align-items:center;justify-content:center;gap:12px;">
+                    <button id="fsMuteBtn" title="Mute" style="width:44px;height:44px;border-radius:50%;background:rgba(255,255,255,0.15);color:white;border:1px solid rgba(255,255,255,0.2);cursor:pointer;font-size:20px;backdrop-filter:blur(4px);">🎤</button>
+                    <button id="fsVideoBtn" title="Video" style="width:44px;height:44px;border-radius:50%;background:rgba(255,255,255,0.15);color:white;border:1px solid rgba(255,255,255,0.2);cursor:pointer;font-size:20px;backdrop-filter:blur(4px);display:none;">📹</button>
+                    <button id="fsScreenBtn" title="Screen" style="width:44px;height:44px;border-radius:50%;background:rgba(255,255,255,0.15);color:white;border:1px solid rgba(255,255,255,0.2);cursor:pointer;font-size:20px;backdrop-filter:blur(4px);">🖥️</button>
+                    <button id="fsHangupBtn" title="End" style="width:52px;height:44px;border-radius:24px;background:#ef4444;color:white;border:none;cursor:pointer;font-size:20px;">📵</button>
+                    <button id="fsExitBtn" title="Exit Fullscreen" style="width:44px;height:44px;border-radius:50%;background:rgba(255,255,255,0.15);color:white;border:1px solid rgba(255,255,255,0.2);cursor:pointer;font-size:20px;backdrop-filter:blur(4px);">✕</button>
+                </div>
+            </div>
         </div>
         <!-- audio-only element (hidden, always plays remote audio) -->
         <audio id="remoteAudio" autoplay style="display:none;"></audio>
+
+        <!-- Remote control: cursor element shown on the SHARER'S page when being controlled -->
+        <div id="rcRemoteCursor" style="display:none;position:fixed;top:0;left:0;z-index:999999;pointer-events:none;transition:left 0.02s linear,top 0.02s linear;">
+            <svg width="24" height="24" viewBox="0 0 24 24" style="filter:drop-shadow(1px 2px 2px rgba(0,0,0,0.5));"><path d="M2 2L10 22L12.5 13.5L22 10Z" fill="#ef4444" stroke="white" stroke-width="1.5"/></svg>
+            <div id="rcCursorLabel" style="position:absolute;top:24px;left:12px;background:#ef4444;color:white;font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;white-space:nowrap;"></div>
+        </div>
+        <!-- Click ripple effect on sharer's page -->
+        <div id="rcClickRipple" style="display:none;position:fixed;z-index:999998;pointer-events:none;width:40px;height:40px;border-radius:50%;border:3px solid #ef4444;animation:rcRipple 0.4s ease-out forwards;"></div>
+        <style>
+            @keyframes rcRipple { 0%{transform:translate(-50%,-50%) scale(0.3);opacity:1;} 100%{transform:translate(-50%,-50%) scale(1.5);opacity:0;} }
+            /* Fullscreen — standard + webkit */
+            #callVideoContainer:fullscreen,
+            #callVideoContainer:-webkit-full-screen {
+                background:#000 !important; width:100vw !important; height:100vh !important;
+                display:flex !important; align-items:center !important; justify-content:center !important;
+                position:relative !important;
+            }
+            #callVideoContainer:fullscreen #remoteVideo,
+            #callVideoContainer:-webkit-full-screen #remoteVideo {
+                width:100% !important; height:100% !important; max-height:100vh !important;
+                object-fit:contain !important; display:block !important;
+                position:absolute !important; top:0 !important; left:0 !important;
+            }
+            #callVideoContainer:fullscreen #localVideo,
+            #callVideoContainer:-webkit-full-screen #localVideo {
+                width:160px !important; height:120px !important; bottom:90px !important; right:20px !important;
+                position:absolute !important; z-index:15 !important;
+            }
+            #callVideoContainer:fullscreen #callFsControls,
+            #callVideoContainer:-webkit-full-screen #callFsControls {
+                display:flex !important; position:absolute !important; bottom:0 !important;
+                left:0 !important; right:0 !important; z-index:20 !important;
+            }
+            .rc-controlling #remoteVideo { cursor:none !important; }
+            /* Connection state indicator */
+            .webrtc-conn-badge { position:absolute; top:8px; left:8px; z-index:12; padding:3px 8px; border-radius:6px; font-size:10px; font-weight:600; color:white; backdrop-filter:blur(4px); pointer-events:none; }
+            .webrtc-conn-badge.connecting { background:rgba(250,204,21,0.7); }
+            .webrtc-conn-badge.connected { background:rgba(34,197,94,0.6); }
+            .webrtc-conn-badge.relay { background:rgba(168,85,247,0.7); }
+            .webrtc-conn-badge.disconnected { background:rgba(239,68,68,0.7); }
+        </style>
+
+        <!-- Remote control permission modal -->
+        <div id="remoteControlModal" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:100001;background:linear-gradient(135deg,#1a1a2e,#16213e);border:1px solid rgba(255,255,255,0.15);border-radius:16px;padding:24px;min-width:300px;box-shadow:0 8px 32px rgba(0,0,0,0.6);text-align:center;">
+            <div style="font-size:28px;margin-bottom:12px;">🖱️</div>
+            <div style="color:white;font-size:16px;font-weight:600;margin-bottom:6px;" id="rcModalTitle">Remote Control Request</div>
+            <div style="color:#9ca3af;font-size:13px;margin-bottom:20px;" id="rcModalText">wants to control your screen</div>
+            <div style="display:flex;gap:10px;justify-content:center;">
+                <button id="rcAcceptBtn" style="padding:10px 24px;border-radius:10px;border:none;background:#22c55e;color:white;font-weight:600;cursor:pointer;font-size:14px;">Allow</button>
+                <button id="rcDenyBtn" style="padding:10px 24px;border-radius:10px;border:none;background:#ef4444;color:white;font-weight:600;cursor:pointer;font-size:14px;">Deny</button>
+            </div>
+        </div>
+        <!-- Remote control status indicator (shown when being controlled) -->
+        <div id="remoteControlStatus" style="display:none;position:fixed;top:60px;left:50%;transform:translateX(-50%);z-index:100000;background:rgba(239,68,68,0.9);color:white;padding:6px 16px;border-radius:20px;font-size:12px;font-weight:600;backdrop-filter:blur(8px);cursor:pointer;" title="Click to stop remote control">
+            🖱️ <span id="rcControllerName">User</span> is controlling your screen — <span style="text-decoration:underline;">click to stop</span>
+        </div>
     </div>
 
     <!-- Direct Chat Panel (User-to-User) -->

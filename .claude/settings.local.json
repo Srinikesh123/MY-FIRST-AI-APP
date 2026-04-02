@@ -19,7 +19,9 @@
       "Bash(npm install:*)",
       "Bash(\"c:/Users/howto/Documents/GitHub/MY-FIRST-AI-APP/PUSH_BOOK_SETUP.sql\":*)",
       "Bash(node --check \"c:/Users/howto/Documents/GitHub/MY-FIRST-AI-APP/app.js\")",
-      "Bash(node --check \"c:/Users/howto/Documents/GitHub/MY-FIRST-AI-APP/server.js\")"
+      "Bash(node --check \"c:/Users/howto/Documents/GitHub/MY-FIRST-AI-APP/server.js\")",
+      "Bash(grep -v \"//.*statusText\")",
+      "Bash(grep -v '\\\\.sql$\\\\|\\\\.md$\\\\|node_modules')"
     ]
   }
 }

@@ -5896,17 +5896,54 @@ AIAssistant.prototype._notifyNewMessage = async function(senderId, content, isGr
 // WebRTC + Supabase Realtime signaling
 // ============================================================
 
-const _ICE = { iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun3.l.google.com:19302' },
-    { urls: 'stun:stun4.l.google.com:19302' },
-    { urls: 'turn:openrelay.metered.ca:80',                username: 'openrelayproject', credential: 'openrelayproject' },
-    { urls: 'turn:openrelay.metered.ca:443',               username: 'openrelayproject', credential: 'openrelayproject' },
-    { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-    { urls: 'turn:openrelay.metered.ca:80?transport=tcp',  username: 'openrelayproject', credential: 'openrelayproject' },
-] };
+// ── ICE CONFIG — robust STUN + TURN for global connectivity ─────────
+// Multiple STUN servers for NAT type detection, plus TURN servers for
+// symmetric NAT / firewall traversal (India ↔ USA etc.)
+const _ICE_BASE = {
+    iceCandidatePoolSize: 10,
+    bundlePolicy: 'max-bundle',
+    rtcpMuxPolicy: 'require',
+    iceTransportPolicy: 'all', // try P2P first, fall back to relay
+    iceServers: [
+        // STUN — Google (most reliable, globally distributed)
+        { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+        { urls: ['stun:stun2.l.google.com:19302', 'stun:stun3.l.google.com:19302', 'stun:stun4.l.google.com:19302'] },
+        // STUN — Cloudflare + Twilio (backup)
+        { urls: 'stun:stun.cloudflare.com:3478' },
+        { urls: 'stun:global.stun.twilio.com:3478' },
+        // TURN — OpenRelay (UDP, TCP, TLS — covers all NAT types)
+        { urls: 'turn:openrelay.metered.ca:80',                username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443',               username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:80?transport=tcp',  username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turns:openrelay.metered.ca:443',              username: 'openrelayproject', credential: 'openrelayproject' },
+    ]
+};
+
+// Dynamic TURN fetcher — tries to get fresh credentials from Metered.ca API (free tier)
+// Falls back to static config if fetch fails
+let _ICE = _ICE_BASE;
+let _iceLastFetch = 0;
+async function _refreshICE() {
+    if (Date.now() - _iceLastFetch < 300_000) return; // cache 5min
+    try {
+        const r = await fetch('https://voidzenzi.metered.live/api/v1/turn/credentials?apiKey=free');
+        if (r.ok) {
+            const servers = await r.json();
+            if (Array.isArray(servers) && servers.length > 0) {
+                const dynamic = servers.map(s => ({ urls: s.urls || s.url, username: s.username, credential: s.credential }));
+                _ICE = { ..._ICE_BASE, iceServers: [..._ICE_BASE.iceServers, ...dynamic] };
+                _iceLastFetch = Date.now();
+                console.log('[ICE] Fetched', dynamic.length, 'dynamic TURN servers');
+                return;
+            }
+        }
+    } catch(_) {}
+    // If dynamic fetch fails, use static config
+    _ICE = _ICE_BASE;
+    _iceLastFetch = Date.now();
+    console.log('[ICE] Using static STUN/TURN config');
+}
 
 AIAssistant.prototype.initCallUI = function() {
     this._pc = null;           // RTCPeerConnection
@@ -5932,9 +5969,14 @@ AIAssistant.prototype.initCallUI = function() {
     this._bgEndTimer = null;
     this._sigCh = null;      // broadcast channel: fast ICE candidates + hangup sync
     this._incomingCh = null; // broadcast channel: receive incoming call ring
-    this._pollTimer = null;  // polling: watch for answer / call ended
+    this._pollTimer = null;  // polling: watch for answer
+    this._endPollTimer = null; // polling: watch for call ended (separate from answer poll)
     this._candTimer = null;  // polling: fetch new ICE candidates
     this._incTimer  = null;  // polling: watch for incoming calls
+    this._callPeerId = null; // the other person's userId (for end broadcast)
+    this._rcDataChannel = null;      // WebRTC DataChannel for remote control
+    this._rcDataChannelReady = false;
+    this._bitrateTimer = null;       // adaptive bitrate monitor
 
     const $ = id => document.getElementById(id);
     this._el = {
@@ -5950,7 +5992,20 @@ AIAssistant.prototype.initCallUI = function() {
         hangupBtn: $('hangupBtn'), muteBtn: $('toggleMuteBtn'),
         videoToggleBtn: $('toggleVideoBtn'), switchToVideoBtn: $('callSwitchToVideoBtn'),
         screenShareBtn: $('callScreenShareBtn'), flipCamBtn: $('callFlipCamBtn'),
+        fullscreenBtn: $('callFullscreenBtn'), remoteControlBtn: $('callRemoteControlBtn'),
+        rcModal: $('remoteControlModal'), rcModalTitle: $('rcModalTitle'), rcModalText: $('rcModalText'),
+        rcAcceptBtn: $('rcAcceptBtn'), rcDenyBtn: $('rcDenyBtn'),
+        rcStatus: $('remoteControlStatus'), rcControllerName: $('rcControllerName'),
+        rcCursor: $('rcRemoteCursor'), rcCursorLabel: $('rcCursorLabel'), rcClickRipple: $('rcClickRipple'),
+        fsControls: $('callFsControls'),
+        fsMuteBtn: $('fsMuteBtn'), fsVideoBtn: $('fsVideoBtn'), fsScreenBtn: $('fsScreenBtn'),
+        fsHangupBtn: $('fsHangupBtn'), fsExitBtn: $('fsExitBtn'),
     };
+
+    // Remote control state
+    this._rcActive = false;      // true if WE are controlling the remote
+    this._rcBeingControlled = false; // true if THEY are controlling us
+    this._rcPeerScreening = false; // true if the OTHER side is screen sharing (we see it)
 
     if (this._el.voiceBtn)         this._el.voiceBtn.onclick  = () => this.callStart('voice');
     if (this._el.videoBtn)         this._el.videoBtn.onclick  = () => this.callStart('video');
@@ -5962,6 +6017,17 @@ AIAssistant.prototype.initCallUI = function() {
     if (this._el.switchToVideoBtn) this._el.switchToVideoBtn.onclick = () => this.callSwitchToVideo();
     if (this._el.screenShareBtn)   this._el.screenShareBtn.onclick   = () => this.callShareScreen();
     if (this._el.flipCamBtn)       this._el.flipCamBtn.onclick       = () => this.callFlipCamera();
+    if (this._el.fullscreenBtn)    this._el.fullscreenBtn.onclick    = () => this.callToggleFullscreen();
+    if (this._el.remoteControlBtn) this._el.remoteControlBtn.onclick = () => this.callRequestRemoteControl();
+    if (this._el.rcAcceptBtn)      this._el.rcAcceptBtn.onclick      = () => this.callAcceptRemoteControl();
+    if (this._el.rcDenyBtn)        this._el.rcDenyBtn.onclick        = () => this.callDenyRemoteControl();
+    if (this._el.rcStatus)         this._el.rcStatus.onclick         = () => this.callStopRemoteControl();
+    // Fullscreen duplicate controls (inside the fullscreen view)
+    if (this._el.fsMuteBtn)        this._el.fsMuteBtn.onclick        = () => this.callToggleMute();
+    if (this._el.fsVideoBtn)       this._el.fsVideoBtn.onclick       = () => this.callToggleVideo();
+    if (this._el.fsScreenBtn)      this._el.fsScreenBtn.onclick      = () => this.callShareScreen();
+    if (this._el.fsHangupBtn)      this._el.fsHangupBtn.onclick      = () => this.callHangup();
+    if (this._el.fsExitBtn)        this._el.fsExitBtn.onclick        = () => this.callToggleFullscreen();
 
     this._subscribeIncomingCalls();
     this.initPresence();
@@ -5976,20 +6042,9 @@ AIAssistant.prototype.initCallUI = function() {
     window.addEventListener('beforeunload', () => { _realUnload = true; if (this._callId) _beacon(this._callId); });
     window.addEventListener('pagehide', (e) => { if (this._callId && !e.persisted && _realUnload) _beacon(this._callId); });
 
-    // Mobile: if app stays in background > 4 minutes, end call gracefully
+    // NOTE: No background-kill timer — WebRTC calls survive background/screen-lock on mobile.
+    // The beforeunload beacon above handles actual tab/app close.
     this._bgEndTimer = null;
-    document.addEventListener('visibilitychange', () => {
-        if (document.hidden && this._callId) {
-            this._bgEndTimer = setTimeout(() => {
-                if (document.hidden && this._callId) {
-                    fetch('/api/end-call', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({callId:this._callId})}).catch(()=>{});
-                    this._endLocal('Call ended (went offline)');
-                }
-            }, 240000); // 4 minutes
-        } else if (!document.hidden) {
-            if (this._bgEndTimer) { clearTimeout(this._bgEndTimer); this._bgEndTimer = null; }
-        }
-    });
 };
 
 // ── INCOMING CALLS ───────────────────────────────────────────
@@ -6003,7 +6058,18 @@ AIAssistant.prototype._subscribeIncomingCalls = function() {
             if (this._incomingCall?.id === p.call.id) return; // dedup
             if (this._callId) return; // already in a call
             this._showIncoming(p.call);
-        }).subscribe();
+        })
+        .on('broadcast', {event:'end'}, ({payload:p}) => {
+            // Hangup delivered via peer's incoming channel — most reliable path
+            if (!p?.callId) return;
+            if (this._callId && this._callId === p.callId) this._endLocal('Call ended');
+            else if (this._incomingCall && this._incomingCall.id === p.callId) {
+                this._stopRingtone();
+                this._incomingCall = null;
+                if (this._el.incomingModal) this._el.incomingModal.style.display = 'none';
+            }
+        })
+        .subscribe();
 
     // FALLBACK: postgres_changes (only fires if realtime is ON in Supabase dashboard)
     this.supabase.channel(`inc-${this.userId}`)
@@ -6097,19 +6163,40 @@ AIAssistant.prototype._showIncoming = async function(call) {
 AIAssistant.prototype._makePc = function() {
     if (this._pc) { try{this._pc.close();}catch(_){} }
     this._pc = new RTCPeerConnection(_ICE);
+    this._rcDataChannel = null;    // WebRTC DataChannel for low-latency remote control
+    this._rcDataChannelReady = false;
 
-    // ontrack: wire audio to <audio>, video to <video muted>
+    const _connBadge = document.getElementById('webrtcConnBadge');
+    const _updateBadge = (state) => {
+        if (!_connBadge) return;
+        _connBadge.style.display = 'block';
+        _connBadge.className = 'webrtc-conn-badge';
+        if (state === 'connected' || state === 'completed') {
+            // Check if using relay (TURN) by inspecting selected candidate pair
+            this._checkRelayStatus().then(isRelay => {
+                _connBadge.className = 'webrtc-conn-badge ' + (isRelay ? 'relay' : 'connected');
+                _connBadge.textContent = isRelay ? 'Relay (TURN)' : 'P2P Connected';
+            });
+        } else if (state === 'connecting' || state === 'new' || state === 'checking') {
+            _connBadge.className = 'webrtc-conn-badge connecting';
+            _connBadge.textContent = 'Connecting...';
+        } else if (state === 'disconnected' || state === 'failed') {
+            _connBadge.className = 'webrtc-conn-badge disconnected';
+            _connBadge.textContent = state === 'failed' ? 'Connection Failed' : 'Reconnecting...';
+        }
+    };
+
+    // ontrack: wire audio to <audio>, video to <video>
     // Use e.streams[0] so replaceTrack auto-updates the remote side
     this._pc.ontrack = (e) => {
-        console.log('[CALL] ontrack:', e.track.kind, e.streams.length);
+        console.log('[CALL] ontrack:', e.track.kind, 'streams:', e.streams.length, 'track.readyState:', e.track.readyState, 'track.enabled:', e.track.enabled);
         if (e.track.kind === 'audio') {
             const s = e.streams[0] || new MediaStream([e.track]);
             if (this._el.remoteAudio) {
                 this._el.remoteAudio.srcObject = s;
-                this._el.remoteAudio.volume = 0.7; // lower volume reduces echo/feedback risk
+                this._el.remoteAudio.volume = 0.7;
                 const play = () => { if (this._el.remoteAudio) this._el.remoteAudio.play().catch(() => {}); };
                 play(); setTimeout(play, 200); setTimeout(play, 800); setTimeout(play, 2000);
-                // Fallback: play on next user interaction (handles browser autoplay block)
                 const tap = () => { play(); };
                 document.addEventListener('click',    tap, {once:true, capture:true});
                 document.addEventListener('touchstart', tap, {once:true, capture:true});
@@ -6118,56 +6205,220 @@ AIAssistant.prototype._makePc = function() {
         }
         if (e.track.kind === 'video') {
             const s = e.streams[0] || new MediaStream([e.track]);
-            if (this._el.remoteVideo) { this._el.remoteVideo.srcObject = s; this._el.remoteVideo.play().catch(()=>{}); }
+            if (this._el.remoteVideo) {
+                this._el.remoteVideo.srcObject = s;
+                // Force video to play — multiple attempts to handle autoplay restrictions
+                const playVideo = () => {
+                    if (!this._el.remoteVideo) return;
+                    this._el.remoteVideo.play().catch(err => {
+                        console.warn('[CALL] remote video play failed:', err.name);
+                    });
+                };
+                playVideo();
+                setTimeout(playVideo, 100);
+                setTimeout(playVideo, 500);
+                setTimeout(playVideo, 1500);
+                // Monitor track state for black screen prevention
+                e.track.onended = () => console.warn('[CALL] remote video track ended');
+            }
             if (this._el.videoContainer) this._el.videoContainer.style.display = 'block';
             if (this._el.overlayAvatar)  this._el.overlayAvatar.style.display = 'none';
         }
         e.track.onunmute = () => {
-            if (e.track.kind==='video') { if(this._el.videoContainer)this._el.videoContainer.style.display='block'; if(this._el.overlayAvatar)this._el.overlayAvatar.style.display='none'; if(this._el.remoteVideo)this._el.remoteVideo.play().catch(()=>{}); }
+            console.log('[CALL] track unmuted:', e.track.kind);
+            if (e.track.kind==='video') {
+                if(this._el.videoContainer) this._el.videoContainer.style.display='block';
+                if(this._el.overlayAvatar)  this._el.overlayAvatar.style.display='none';
+                if(this._el.remoteVideo) {
+                    // Re-attach stream on unmute to prevent black screen
+                    const currentSrc = this._el.remoteVideo.srcObject;
+                    if (currentSrc) {
+                        this._el.remoteVideo.srcObject = null;
+                        this._el.remoteVideo.srcObject = currentSrc;
+                    }
+                    this._el.remoteVideo.play().catch(()=>{});
+                }
+            }
             if (e.track.kind==='audio' && this._el.remoteAudio) { this._el.remoteAudio.volume=0.7; this._el.remoteAudio.play().catch(()=>{}); }
         };
+        e.track.onmute = () => { console.log('[CALL] track muted:', e.track.kind); };
+    };
+
+    // ── ICE GATHERING STATE LOGGING ─────────────────────────────
+    this._pc.onicegatheringstatechange = () => {
+        console.log('[ICE] gathering:', this._pc?.iceGatheringState);
+    };
+    this._pc.oniceconnectionstatechange = () => {
+        const s = this._pc?.iceConnectionState;
+        console.log('[ICE] connection:', s);
+        _updateBadge(s);
+    };
+    this._pc.onsignalingstatechange = () => {
+        console.log('[ICE] signaling:', this._pc?.signalingState);
+    };
+
+    // ── DataChannel for remote control (low latency) ─────────────
+    // The caller creates the channel; the callee receives it via ondatachannel
+    this._pc.ondatachannel = (ev) => {
+        console.log('[DC] received data channel:', ev.channel.label);
+        if (ev.channel.label === 'rc') {
+            this._rcDataChannel = ev.channel;
+            this._setupRcDataChannel(ev.channel);
+        }
     };
 
     this._pc.onconnectionstatechange = () => {
         const s = this._pc?.connectionState; console.log('[CALL] conn:', s);
+        _updateBadge(s);
         if (s==='connected') {
             if(this._el.statusText) this._el.statusText.textContent='Connected';
             if(this._dcTimeout){clearTimeout(this._dcTimeout);this._dcTimeout=null;}
             this._iceRestarted = false;
+            // Start adaptive bitrate monitoring
+            this._startBitrateMonitor();
         }
         else if (s==='connecting') {
             if(this._dcTimeout){clearTimeout(this._dcTimeout);this._dcTimeout=null;}
         }
         else if (s==='disconnected') {
             if(this._el.statusText) this._el.statusText.textContent='Reconnecting...';
-            // Don't hang up — WebRTC often recovers from brief disconnects on its own.
-            // Only hang up if it stays disconnected for 60 seconds.
             if(this._dcTimeout) clearTimeout(this._dcTimeout);
             this._dcTimeout = setTimeout(()=>{
                 if(this._pc?.connectionState==='disconnected') {
+                    console.log('[CALL] attempting ICE restart...');
                     this._pc.restartIce();
+                    this._triggerRenegotiation();
                     this._dcTimeout = setTimeout(()=>{
                         if(this._pc?.connectionState==='disconnected'||this._pc?.connectionState==='failed') this.callHangup();
                     }, 30000);
                 }
-            }, 60000);
+            }, 15000); // 15s before restart (was 60s — too slow)
         }
         else if (s==='failed') {
             if(this._dcTimeout){clearTimeout(this._dcTimeout);this._dcTimeout=null;}
             if (!this._iceRestarted && this._pc) {
                 this._iceRestarted = true;
                 if(this._el.statusText) this._el.statusText.textContent='Reconnecting...';
+                console.log('[CALL] connection failed, restarting ICE...');
                 this._pc.restartIce();
-                // Give it 30 seconds to recover before hanging up
+                this._triggerRenegotiation();
                 this._dcTimeout = setTimeout(()=>{
-                    if(this._pc?.connectionState==='failed') this.callHangup();
-                }, 30000);
+                    if(this._pc?.connectionState==='failed') {
+                        // Last resort: force relay-only reconnection
+                        console.log('[CALL] P2P failed, trying relay-only...');
+                        this._forceRelayReconnect();
+                    }
+                }, 20000);
             } else if (this._iceRestarted) {
-                // Already tried a restart — wait 30s before hanging up (don't hang up immediately)
                 if(this._dcTimeout) clearTimeout(this._dcTimeout);
                 this._dcTimeout = setTimeout(()=>{ this.callHangup(); }, 30000);
             }
         }
+    };
+};
+
+// ── Check if connection is using TURN relay ──────────────────
+AIAssistant.prototype._checkRelayStatus = async function() {
+    if (!this._pc) return false;
+    try {
+        const stats = await this._pc.getStats();
+        for (const [, report] of stats) {
+            if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+                for (const [, r2] of stats) {
+                    if (r2.id === report.localCandidateId || r2.id === report.remoteCandidateId) {
+                        if (r2.candidateType === 'relay') return true;
+                    }
+                }
+            }
+        }
+    } catch(_) {}
+    return false;
+};
+
+// ── Force relay-only reconnection (last resort for symmetric NAT) ──
+AIAssistant.prototype._forceRelayReconnect = function() {
+    if (!this._pc || !this._renegoCh) return;
+    console.log('[ICE] forcing relay-only transport policy');
+    // We can't change iceTransportPolicy on existing PC, so trigger a restart
+    // and log the attempt — the existing TURN servers should relay
+    this._pc.restartIce();
+    this._triggerRenegotiation();
+};
+
+// ── Trigger renegotiation after ICE restart ─────────────────
+AIAssistant.prototype._triggerRenegotiation = async function() {
+    if (!this._pc || !this._renegoCh || this._renegoLock) return;
+    this._renegoLock = true;
+    try {
+        const o = await this._pc.createOffer({ iceRestart: true });
+        await this._pc.setLocalDescription(o);
+        this._renegoCh.send({type:'broadcast',event:'ro',payload:{offer:o,sid:this.userId}}).catch(()=>{});
+    } catch(e) { this._renegoLock = false; console.warn('[RENEGO] restart offer err:', e); }
+};
+
+// ── ADAPTIVE BITRATE MONITOR ────────────────────────────────
+AIAssistant.prototype._startBitrateMonitor = function() {
+    if (this._bitrateTimer) clearInterval(this._bitrateTimer);
+    let _prevBytesSent = 0, _prevTimestamp = 0;
+    this._bitrateTimer = setInterval(async () => {
+        if (!this._pc || this._pc.connectionState !== 'connected') {
+            clearInterval(this._bitrateTimer); this._bitrateTimer = null; return;
+        }
+        try {
+            const stats = await this._pc.getStats();
+            for (const [, report] of stats) {
+                if (report.type === 'outbound-rtp' && report.kind === 'video') {
+                    if (_prevTimestamp > 0) {
+                        const bitrate = 8 * (report.bytesSent - _prevBytesSent) / (report.timestamp - _prevTimestamp) * 1000;
+                        // If bitrate drops below 100kbps and we're screen sharing, reduce resolution
+                        if (bitrate < 100_000 && this._isScreenSharing) {
+                            const sender = this._pc.getSenders().find(s => s.track?.kind === 'video');
+                            if (sender) {
+                                const params = sender.getParameters();
+                                if (params.encodings?.[0]) {
+                                    params.encodings[0].maxBitrate = Math.max(500_000, (params.encodings[0].maxBitrate || 2_500_000) * 0.7);
+                                    params.encodings[0].scaleResolutionDownBy = Math.min(4, (params.encodings[0].scaleResolutionDownBy || 1) * 1.2);
+                                    await sender.setParameters(params);
+                                }
+                            }
+                        }
+                        // If bitrate is good and we reduced quality, restore it
+                        else if (bitrate > 500_000 && this._isScreenSharing) {
+                            const sender = this._pc.getSenders().find(s => s.track?.kind === 'video');
+                            if (sender) {
+                                const params = sender.getParameters();
+                                if (params.encodings?.[0]?.scaleResolutionDownBy > 1) {
+                                    params.encodings[0].maxBitrate = 2_500_000;
+                                    params.encodings[0].scaleResolutionDownBy = 1;
+                                    await sender.setParameters(params);
+                                }
+                            }
+                        }
+                    }
+                    _prevBytesSent = report.bytesSent;
+                    _prevTimestamp = report.timestamp;
+                }
+            }
+        } catch(_) {}
+    }, 5000);
+};
+
+// ── SETUP RC DATA CHANNEL ───────────────────────────────────
+AIAssistant.prototype._setupRcDataChannel = function(ch) {
+    ch.onopen = () => {
+        console.log('[DC] remote control channel open');
+        this._rcDataChannelReady = true;
+    };
+    ch.onclose = () => {
+        console.log('[DC] remote control channel closed');
+        this._rcDataChannelReady = false;
+    };
+    ch.onerror = (e) => console.warn('[DC] error:', e);
+    ch.onmessage = (ev) => {
+        try {
+            const p = JSON.parse(ev.data);
+            if (p.uid !== this.userId) this._handleRemoteControlEvent(p);
+        } catch(_) {}
     };
 };
 
@@ -6221,17 +6472,18 @@ AIAssistant.prototype._pollForAnswer = function() {
 };
 
 // Called by BOTH sides once connected: polls every 1s for status='ended'
+// Uses separate _endPollTimer so it doesn't conflict with _pollForAnswer
 AIAssistant.prototype._pollForEnd = function() {
-    if (this._pollTimer) clearInterval(this._pollTimer);
-    this._pollTimer = setInterval(async () => {
-        if (!this._callId) { clearInterval(this._pollTimer); this._pollTimer=null; return; }
+    if (this._endPollTimer) clearInterval(this._endPollTimer);
+    this._endPollTimer = setInterval(async () => {
+        if (!this._callId) { clearInterval(this._endPollTimer); this._endPollTimer=null; return; }
         try {
             const {data} = await this.supabase.from('calls').select('status,call_type').eq('id',this._callId).single();
             if (!data) return;
-            if (data.status==='ended') { clearInterval(this._pollTimer); this._pollTimer=null; this._endLocal('Call ended'); return; }
+            if (data.status==='ended') { clearInterval(this._endPollTimer); this._endPollTimer=null; this._endLocal('Call ended'); return; }
             if (data.call_type==='video' && this._callType!=='video') this._upgradeToVideo();
         } catch(_) {}
-    }, 1000);
+    }, 500);
 };
 
 // Poll for new ICE candidates from the other side every 300ms
@@ -6272,10 +6524,16 @@ AIAssistant.prototype.callStart = async function(callType) {
     if (this._callId) { this.showNotification('Error','Already in a call.'); return; }
     this._callType = callType;
     try {
+        // Refresh ICE servers before starting (fetches dynamic TURN if available)
+        await _refreshICE();
         if (this._el.remoteAudio) { this._el.remoteAudio.muted = false; this._el.remoteAudio.play().catch(()=>{}); }
         this._ls = await this._getMedia(callType);
         this._makePc();
         this._ls.getTracks().forEach(t => this._pc.addTrack(t, this._ls));
+
+        // Create DataChannel for low-latency remote control
+        this._rcDataChannel = this._pc.createDataChannel('rc', { ordered: false, maxRetransmits: 0 });
+        this._setupRcDataChannel(this._rcDataChannel);
         if (this._el.localVideo) { this._el.localVideo.srcObject=this._ls; this._el.localVideo.style.display=callType==='video'?'block':'none'; }
 
         // Buffer ICE candidates until callId is known
@@ -6288,7 +6546,7 @@ AIAssistant.prototype.callStart = async function(callType) {
         const resp = await fetch('/api/start-call', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({callerId:this.userId,calleeId:this.dcActiveChatUser.id,callType,offer:{type:offer.type,sdp:offer.sdp}})});
         const result = await resp.json();
         if (!result.success) throw new Error(result.error||'Failed to create call');
-        this._callId = result.callId; this._isCaller = true;
+        this._callId = result.callId; this._isCaller = true; this._callPeerId = this.dcActiveChatUser.id;
 
         // ── ICE: send buffered + future candidates via DB (always works) ──────────
         const _sendIce = c => {
@@ -6342,7 +6600,9 @@ AIAssistant.prototype.callAccept = async function() {
     this._callType = call.call_type;
     this._callId = call.id;
     this._isCaller = false;
+    this._callPeerId = call.caller_id;
     try {
+        await _refreshICE();
         if (this._el.remoteAudio) { this._el.remoteAudio.muted = false; this._el.remoteAudio.play().catch(()=>{}); }
         this._ls = await this._getMedia(call.call_type);
         this._makePc();
@@ -6408,22 +6668,38 @@ AIAssistant.prototype.callReject = async function() {
 
 AIAssistant.prototype.callHangup = function() {
     const id = this._callId;
-    // IMPORTANT: detach sigCh from _endLocal FIRST — otherwise _endLocal removes
-    // the channel before the broadcast is delivered, and the other side never knows.
+    const peerId = this._callPeerId;
+    // Detach sigCh from _endLocal FIRST so _endLocal won't remove it before broadcast delivers
     const sigCh = this._sigCh;
     this._sigCh = null;
     this._endLocal('You ended the call');
-    if (id) {
-        if (sigCh) {
-            // Send end event, THEN clean up the channel after delivery
-            sigCh.send({type:'broadcast',event:'end',payload:{sid:this.userId}})
-                .catch(()=>{})
-                .finally(() => { try{this.supabase.removeChannel(sigCh);}catch(_){} });
-            // Hard cleanup after 4s in case .finally never fires (closed tab etc.)
-            setTimeout(() => { try{this.supabase.removeChannel(sigCh);}catch(_){} }, 4000);
-        }
-        _dbw(this.supabase.from('calls').update({status:'ended'}).eq('id',id));
-        fetch('/api/end-call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({callId:id})}).catch(()=>{});
+    if (!id) return;
+
+    // ── DB update: server-side (supabaseAdmin, bypasses RLS) ─────────────────
+    fetch('/api/end-call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({callId:id})}).catch(()=>{});
+    // ── DB update: client-side backup ────────────────────────────────────────
+    _dbw(this.supabase.from('calls').update({status:'ended'}).eq('id',id));
+
+    // ── Broadcast on peer's ic- channel (PRIMARY delivery to other side) ─────
+    // The peer is ALWAYS subscribed to ic-{peerId} — more reliable than sigCh
+    if (peerId) {
+        const _endCh = this.supabase.channel(`ic-${peerId}`);
+        _endCh.subscribe(s => {
+            if (s === 'SUBSCRIBED') {
+                _endCh.send({type:'broadcast',event:'end',payload:{callId:id}}).then(null,()=>{});
+                // Retry multiple times to ensure delivery
+                setTimeout(() => { _endCh.send({type:'broadcast',event:'end',payload:{callId:id}}).then(null,()=>{}); }, 500);
+                setTimeout(() => { _endCh.send({type:'broadcast',event:'end',payload:{callId:id}}).then(null,()=>{}); }, 1500);
+                setTimeout(() => { _endCh.send({type:'broadcast',event:'end',payload:{callId:id}}).then(null,()=>{}); }, 3000);
+                setTimeout(() => { try{this.supabase.removeChannel(_endCh);}catch(_){} }, 5000);
+            }
+        });
+    }
+
+    // ── Broadcast on sig channel (SPEED BONUS — may already be subscribed) ──
+    if (sigCh) {
+        sigCh.send({type:'broadcast',event:'end',payload:{sid:this.userId}}).then(null,()=>{});
+        setTimeout(() => { try{this.supabase.removeChannel(sigCh);}catch(_){} }, 4000);
     }
 };
 
@@ -6432,16 +6708,19 @@ AIAssistant.prototype._endLocal = function(reason) {
     this._stopRingtone();
     if (!this._callId && !this._pc && !this._ls) { if(this._el.overlay) this._el.overlay.style.display='none'; return; }
     console.log('[CALL] _endLocal:', reason);
-    if (this._callTimer)  { clearInterval(this._callTimer);  this._callTimer=null;  } this._callStartTime=null;
-    if (this._pollTimer)  { clearInterval(this._pollTimer);  this._pollTimer=null;  }
-    if (this._candTimer)  { clearInterval(this._candTimer);  this._candTimer=null;  }
+    if (this._callTimer)    { clearInterval(this._callTimer);    this._callTimer=null;    } this._callStartTime=null;
+    if (this._pollTimer)    { clearInterval(this._pollTimer);    this._pollTimer=null;    }
+    if (this._endPollTimer) { clearInterval(this._endPollTimer); this._endPollTimer=null; }
+    if (this._candTimer)    { clearInterval(this._candTimer);    this._candTimer=null;    }
     // _incTimer stays alive — keeps watching for new incoming calls even after a call ends
-    if (this._dcTimeout)  { clearTimeout(this._dcTimeout);   this._dcTimeout=null;  }
-    if (this._bgEndTimer) { clearTimeout(this._bgEndTimer);  this._bgEndTimer=null; }
+    if (this._dcTimeout)    { clearTimeout(this._dcTimeout);     this._dcTimeout=null;    }
+    if (this._bgEndTimer)   { clearTimeout(this._bgEndTimer);    this._bgEndTimer=null;   }
     this._iceRestarted = false;
+    if (this._bitrateTimer) { clearInterval(this._bitrateTimer); this._bitrateTimer = null; }
+    if (this._rcDataChannel) { try{this._rcDataChannel.close();}catch(_){} this._rcDataChannel=null; this._rcDataChannelReady=false; }
     if (this._screenStream) { this._screenStream.getTracks().forEach(t=>t.stop()); this._screenStream=null; }
     if (this._ls) { this._ls.getTracks().forEach(t=>t.stop()); this._ls=null; }
-    if (this._pc) { this._pc.ontrack=null; this._pc.onconnectionstatechange=null; this._pc.oniceconnectionstatechange=null; this._pc.onnegotiationneeded=null; this._pc.onicecandidate=null; this._pc.close(); this._pc=null; }
+    if (this._pc) { this._pc.ontrack=null; this._pc.onconnectionstatechange=null; this._pc.oniceconnectionstatechange=null; this._pc.onicegatheringstatechange=null; this._pc.onsignalingstatechange=null; this._pc.onnegotiationneeded=null; this._pc.onicecandidate=null; this._pc.ondatachannel=null; this._pc.close(); this._pc=null; }
     if (this._callSub) { this.supabase.removeChannel(this._callSub); this._callSub=null; }
     if (this._candSub) { this.supabase.removeChannel(this._candSub); this._candSub=null; }
     if (this._renegoCh){ this.supabase.removeChannel(this._renegoCh);this._renegoCh=null; }
@@ -6452,13 +6731,27 @@ AIAssistant.prototype._endLocal = function(reason) {
     if (this._el.remoteVideo) this._el.remoteVideo.srcObject = null;
     if (this._el.remoteAudio) { this._el.remoteAudio.srcObject = null; this._el.remoteAudio.pause(); }
     if (this._el.incomingModal) this._el.incomingModal.style.display = 'none';
-    if (this._el.overlay && this._el.overlay.style.display==='flex') {
+    if (this._el.overlay && (this._el.overlay.style.display==='flex' || this._el.overlay.style.display==='block')) {
         if(this._el.statusText) this._el.statusText.textContent = reason||'Call ended';
         if(this._el.callTimer)  this._el.callTimer.style.display = 'none';
         setTimeout(()=>{ if(this._el.overlay) this._el.overlay.style.display='none'; }, 1500);
     }
-    this._callId=null; this._isMuted=false; this._isVideoOff=false; this._isScreenSharing=false;
+    this._callId=null; this._callPeerId=null; this._isMuted=false; this._isVideoOff=false; this._isScreenSharing=false;
     this._renegoLock=false; this._facingMode='user'; this._callType='voice'; this._savedCamTrack=null;
+    // Clean up remote control
+    if(this._rcActive||this._rcBeingControlled) this.callStopRemoteControl();
+    this._rcActive=false; this._rcBeingControlled=false; this._rcPeerScreening=false;
+    if(this._el.remoteControlBtn) this._el.remoteControlBtn.style.display='none';
+    if(this._el.rcModal) this._el.rcModal.style.display='none';
+    if(this._el.rcStatus) this._el.rcStatus.style.display='none';
+    if(this._el.rcCursor) this._el.rcCursor.style.display='none';
+    if(this._el.videoContainer) this._el.videoContainer.classList.remove('rc-controlling');
+    // Exit fullscreen if active
+    const _fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+    if(_fsEl) (document.exitFullscreen || document.webkitExitFullscreen).call(document).catch(()=>{});
+    // Hide connection badge
+    const _badge = document.getElementById('webrtcConnBadge');
+    if(_badge) _badge.style.display = 'none';
     if(this._el.muteBtn){this._el.muteBtn.textContent='🎤';this._el.muteBtn.style.background='#374151';}
     if(this._el.videoToggleBtn){this._el.videoToggleBtn.textContent='📹';this._el.videoToggleBtn.style.background='#374151';}
     if(this._el.screenShareBtn){this._el.screenShareBtn.textContent='🖥️';this._el.screenShareBtn.style.background='#374151';}
@@ -6501,28 +6794,75 @@ AIAssistant.prototype._setupBroadcast = function() {
             if(this._el.remoteMuteIndicator) this._el.remoteMuteIndicator.style.display = p.muted?'block':'none';
             if(p.vidOff!==undefined && this._callType==='video' && this._el.overlayAvatar) this._el.overlayAvatar.style.display=p.vidOff?'flex':'none';
             if(p.screen) {
+                this._rcPeerScreening = true;
                 if(this._el.videoContainer) this._el.videoContainer.style.display='block';
                 if(this._el.overlayAvatar)  this._el.overlayAvatar.style.display='none';
-                // replaceTrack travels via WebRTC/RTP; broadcast travels via Supabase WS.
-                // Refresh the video element immediately and at multiple intervals so
-                // the browser picks up the new screen frames whenever they arrive.
+                if(this._el.remoteControlBtn) this._el.remoteControlBtn.style.display='flex';
+                // Refresh the video element: re-attach srcObject to force render pipeline reset
+                // This prevents black screen when remote switches from camera to screen share
                 const rv = this._el.remoteVideo;
                 if(rv) {
-                    const doRefresh = () => { const src=rv.srcObject; if(src){rv.srcObject=null;rv.srcObject=src;} rv.play().catch(()=>{}); };
+                    const doRefresh = () => {
+                        const src = rv.srcObject;
+                        if (src) {
+                            // Check if video tracks are active
+                            const vTracks = src.getVideoTracks();
+                            console.log('[SCREEN-RX] refresh - tracks:', vTracks.length, vTracks.map(t => `enabled:${t.enabled} state:${t.readyState}`).join(', '));
+                            rv.srcObject = null;
+                            rv.srcObject = src;
+                            rv.play().catch(()=>{});
+                        }
+                    };
                     doRefresh();
-                    setTimeout(doRefresh, 400);
-                    setTimeout(doRefresh, 1000);
-                    setTimeout(doRefresh, 2500);
+                    setTimeout(doRefresh, 300);
+                    setTimeout(doRefresh, 800);
+                    setTimeout(doRefresh, 1500);
+                    setTimeout(doRefresh, 3000);
+                    setTimeout(doRefresh, 5000);
                 }
             }
             if(p.screenOff) {
+                this._rcPeerScreening = false;
+                // Hide remote control button and stop any active remote control
+                if(this._el.remoteControlBtn) this._el.remoteControlBtn.style.display='none';
+                if(this._rcActive) this.callStopRemoteControl();
                 if(this._callType!=='video') { if(this._el.videoContainer)this._el.videoContainer.style.display='none'; if(this._el.overlayAvatar)this._el.overlayAvatar.style.display='flex'; }
                 // Restore camera view
                 const rv2 = this._el.remoteVideo;
                 if(rv2) { const src=rv2.srcObject; if(src){rv2.srcObject=null;rv2.srcObject=src;} rv2.play().catch(()=>{}); }
             }
             if(p.toVideo && this._callType!=='video') this._upgradeToVideo();
-        }).subscribe();
+
+            // ── Remote control signaling ──
+            if(p.rcRequest) {
+                // Someone is requesting to control our screen
+                this._rcRequesterUid = p.uid;
+                this._rcRequesterName = this._el.overlayName?.textContent || 'User';
+                if(this._el.rcModalText) this._el.rcModalText.textContent = `${this._rcRequesterName} wants to control your screen`;
+                if(this._el.rcModal) this._el.rcModal.style.display = 'block';
+            }
+            if(p.rcAccepted) {
+                // Our request was accepted — start sending mouse/keyboard events
+                this._startRemoteControlSending();
+            }
+            if(p.rcDenied) {
+                if(this._el.remoteControlBtn) {
+                    this._el.remoteControlBtn.textContent = '🖱️';
+                    this._el.remoteControlBtn.style.background = 'rgba(0,0,0,0.6)';
+                }
+                this.showNotification('Remote Control', 'Request denied.');
+            }
+            if(p.rcStopped) {
+                this.callStopRemoteControl();
+                this.showNotification('Remote Control', 'Remote control ended.');
+            }
+        })
+        .on('broadcast',{event:'rc'}, ({payload:p}) => {
+            // Receive remote control mouse/keyboard events
+            if(!p||p.uid===this.userId) return;
+            this._handleRemoteControlEvent(p);
+        })
+        .subscribe();
 };
 AIAssistant.prototype._bcast = function(extra) {
     if(!this._stateCh) return;
@@ -6589,19 +6929,34 @@ AIAssistant.prototype.callShareScreen = async function() {
     if(!navigator.mediaDevices?.getDisplayMedia) { this.showNotification('Screen Share','Not supported in this browser.'); return; }
     if(this._isScreenSharing) { this._stopScreen(); return; }
     try {
-        const ss = await navigator.mediaDevices.getDisplayMedia({
-            video: { cursor: 'always', width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
-            audio: false
-        });
+        // Cross-browser getDisplayMedia options — Firefox doesn't support all constraints
+        const displayOpts = { video: { cursor: 'always' }, audio: false };
+        // Chrome/Edge: add resolution + framerate hints
+        if (navigator.userAgent.includes('Chrome') || navigator.userAgent.includes('Edg')) {
+            displayOpts.video = { cursor: 'always', width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30, max: 30 } };
+        }
+        const ss = await navigator.mediaDevices.getDisplayMedia(displayOpts);
         const st = ss.getVideoTracks()[0]; if(!st) throw new Error('No screen track');
+        console.log('[SCREEN] track:', st.label, 'settings:', JSON.stringify(st.getSettings()));
         this._savedCamTrack = this._ls?.getVideoTracks()[0] || null;
 
         const sender = this._vidSender();
         if (sender) {
             // Video call — replace camera with screen (no renegotiation needed)
             await sender.replaceTrack(st);
+            // Boost bitrate for screen share so remote viewer gets a sharp, readable image
+            try {
+                const params = sender.getParameters();
+                if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
+                params.encodings[0].maxBitrate = 4_000_000; // 4 Mbps for screen share (text readability)
+                params.encodings[0].maxFramerate = 30;
+                // Content hint tells encoder to optimize for detail (text) over motion
+                st.contentHint = 'detail';
+                await sender.setParameters(params);
+            } catch(e) { console.warn('[SCREEN] setParameters:', e); }
         } else {
             // Voice call — add new video track (triggers renegotiation via onnegotiationneeded)
+            st.contentHint = 'detail';
             this._pc.addTrack(st, ss);
         }
 
@@ -6619,12 +6974,10 @@ AIAssistant.prototype.callShareScreen = async function() {
         if(this._el.overlayAvatar)  this._el.overlayAvatar.style.display='none';
 
         // Tell the other side to refresh their video element.
-        // replaceTrack packets travel via WebRTC/RTP; broadcast goes via Supabase WS.
-        // Send multiple times with increasing delays so the remote side refreshes
-        // as soon as the new frames actually arrive.
         setTimeout(() => this._bcast(), 200);
         setTimeout(() => this._bcast(), 800);
         setTimeout(() => this._bcast(), 2000);
+        setTimeout(() => this._bcast(), 4000);
 
         st.onended = () => this._stopScreen();
     } catch(err) {
@@ -6692,6 +7045,411 @@ AIAssistant.prototype.callFlipCamera = async function() {
         const s=this._pc.getSenders().find(x=>x.track?.kind==='video'); if(s) await s.replaceTrack(nt);
         if(this._el.localVideo) this._el.localVideo.srcObject=this._ls;
     } catch(err) { this._facingMode=this._facingMode==='user'?'environment':'user'; this.showNotification('Error','Flip failed: '+err.message); }
+};
+
+// ── FULLSCREEN ───────────────────────────────────────────────
+AIAssistant.prototype.callToggleFullscreen = function() {
+    const container = this._el.videoContainer;
+    if (!container) return;
+
+    // Cross-browser fullscreen detection
+    const fsEl = document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.msFullscreenElement;
+
+    if (fsEl) {
+        (document.exitFullscreen || document.webkitExitFullscreen || document.mozCancelFullScreen || document.msExitFullscreen).call(document).catch(()=>{});
+    } else {
+        // Robust re-attach: save stream ref BEFORE entering fullscreen
+        const rv = this._el.remoteVideo;
+        const savedStream = rv?.srcObject;
+
+        const _playAfterFs = () => {
+            if (!rv) return;
+            // Re-attach stream — this is the key fix for black screen in fullscreen
+            if (savedStream) {
+                rv.srcObject = null;
+                // Small delay to let fullscreen layout settle before re-attaching
+                setTimeout(() => {
+                    rv.srcObject = savedStream;
+                    rv.play().catch(()=>{});
+                    // Double-check: verify video tracks are active
+                    const vTracks = savedStream.getVideoTracks();
+                    console.log('[FS] video tracks:', vTracks.length, vTracks.map(t => `${t.label} enabled:${t.enabled} readyState:${t.readyState}`).join(', '));
+                    if (vTracks.length > 0 && vTracks[0].readyState === 'ended') {
+                        console.warn('[FS] video track ended — stream may have been lost');
+                    }
+                }, 50);
+            }
+            // Also re-attach local video
+            const lv = this._el.localVideo;
+            if (lv && this._ls) {
+                lv.srcObject = null;
+                setTimeout(() => { lv.srcObject = this._ls; lv.play().catch(()=>{}); }, 50);
+            }
+        };
+
+        const fsRequest = container.requestFullscreen || container.webkitRequestFullscreen || container.mozRequestFullScreen || container.msRequestFullscreen;
+        if (fsRequest) {
+            const p = fsRequest.call(container);
+            if (p && p.then) {
+                p.then(() => { setTimeout(_playAfterFs, 100); }).catch(() => {
+                    // Fallback: try webkit prefix
+                    if (container.webkitRequestFullscreen) { container.webkitRequestFullscreen(); setTimeout(_playAfterFs, 200); }
+                });
+            } else {
+                setTimeout(_playAfterFs, 200);
+            }
+        }
+    }
+
+    if (!this._fsListenerAdded) {
+        this._fsListenerAdded = true;
+        const _onFsChange = () => {
+            const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement);
+            if (this._el.fullscreenBtn) this._el.fullscreenBtn.textContent = isFs ? '✕' : '⛶';
+            if (isFs) {
+                if(this._el.fsMuteBtn) this._el.fsMuteBtn.textContent = this._isMuted ? '🔇' : '🎤';
+                if(this._el.fsVideoBtn) this._el.fsVideoBtn.style.display = this._callType==='video' ? 'block' : 'none';
+                if(this._el.fsScreenBtn) this._el.fsScreenBtn.textContent = this._isScreenSharing ? '⏹️' : '🖥️';
+            } else {
+                // Exiting fullscreen: re-attach streams to prevent black screen
+                const rv2 = this._el.remoteVideo;
+                if (rv2?.srcObject) {
+                    const s = rv2.srcObject;
+                    rv2.srcObject = null;
+                    setTimeout(() => { rv2.srcObject = s; rv2.play().catch(()=>{}); }, 50);
+                }
+            }
+        };
+        document.addEventListener('fullscreenchange', _onFsChange);
+        document.addEventListener('webkitfullscreenchange', _onFsChange);
+    }
+};
+
+// ── REMOTE CONTROL ───────────────────────────────────────────
+// Viewer clicks 🖱️ → request sent → Sharer sees Allow/Deny →
+// If allowed: viewer's mouse hidden over video, all mouse/keyboard events sent to sharer
+// who dispatches REAL DOM events + shows a visible red cursor arrow.
+// Screen share video acts as live view so viewer sees everything happen in real time.
+
+AIAssistant.prototype.callRequestRemoteControl = function() {
+    if (!this._callId || !this._stateCh) return;
+    if (this._rcActive) { this.callStopRemoteControl(); return; }
+    this._stateCh.send({type:'broadcast',event:'cs',payload:{uid:this.userId,rcRequest:true}}).catch(()=>{});
+    if (this._el.remoteControlBtn) {
+        this._el.remoteControlBtn.textContent = '⏳';
+        this._el.remoteControlBtn.style.background = 'rgba(250,204,21,0.4)';
+    }
+    this.showNotification('Remote Control', 'Request sent. Waiting for approval...');
+};
+
+AIAssistant.prototype.callAcceptRemoteControl = function() {
+    if (this._el.rcModal) this._el.rcModal.style.display = 'none';
+    this._rcBeingControlled = true;
+    this._rcControllerUid = this._rcRequesterUid;
+    if (this._stateCh) {
+        this._stateCh.send({type:'broadcast',event:'cs',payload:{
+            uid:this.userId, rcAccepted:true,
+            vw:window.innerWidth, vh:window.innerHeight
+        }}).catch(()=>{});
+    }
+    // Show the remote cursor on our page
+    if (this._el.rcCursor) this._el.rcCursor.style.display = 'block';
+    if (this._el.rcCursorLabel) this._el.rcCursorLabel.textContent = this._rcRequesterName || '';
+    // Show status bar
+    if (this._el.rcStatus) this._el.rcStatus.style.display = 'block';
+    if (this._el.rcControllerName) this._el.rcControllerName.textContent = this._rcRequesterName || 'User';
+    this.showNotification('Remote Control', 'Remote control enabled. Click the red bar to stop.');
+};
+
+AIAssistant.prototype.callDenyRemoteControl = function() {
+    if (this._el.rcModal) this._el.rcModal.style.display = 'none';
+    if (this._stateCh) {
+        this._stateCh.send({type:'broadcast',event:'cs',payload:{uid:this.userId,rcDenied:true}}).catch(()=>{});
+    }
+};
+
+AIAssistant.prototype.callStopRemoteControl = function() {
+    // Guard: only notify peer if we were actually in a remote control session
+    // Without this, both sides would ping rcStopped to each other indefinitely
+    const wasActive = this._rcActive || this._rcBeingControlled;
+    this._rcBeingControlled = false;
+    this._rcActive = false;
+    this._rcControllerUid = null;
+    if (this._el.rcStatus) this._el.rcStatus.style.display = 'none';
+    if (this._el.rcCursor) this._el.rcCursor.style.display = 'none';
+    if (this._el.remoteControlBtn) {
+        this._el.remoteControlBtn.textContent = '🖱️';
+        this._el.remoteControlBtn.style.background = 'rgba(0,0,0,0.6)';
+    }
+    // Remove controller-side listeners
+    if (this._rcMouseHandler) {
+        const v = this._el.remoteVideo;
+        if(v) {
+            v.removeEventListener('mousemove',this._rcMouseHandler);
+            v.removeEventListener('mousedown',this._rcClickHandler);
+            v.removeEventListener('mouseup',this._rcMouseUpHandler);
+            v.removeEventListener('contextmenu',this._rcContextHandler);
+            v.removeEventListener('dblclick',this._rcDblClickHandler);
+            v.removeEventListener('wheel',this._rcWheelHandler);
+            if(this._rcTouchHandler) v.removeEventListener('touchmove',this._rcTouchHandler);
+            if(this._rcTouchStartHandler) v.removeEventListener('touchstart',this._rcTouchStartHandler);
+            if(this._rcTouchEndHandler) v.removeEventListener('touchend',this._rcTouchEndHandler);
+        }
+        document.removeEventListener('keydown', this._rcKeyHandler, true);
+        document.removeEventListener('keyup', this._rcKeyUpHandler, true);
+        this._rcMouseHandler = null;
+        this._rcTouchHandler = null;
+        this._rcTouchStartHandler = null;
+        this._rcTouchEndHandler = null;
+    }
+    if (this._el.remoteVideo) this._el.remoteVideo.style.cursor = '';
+    if (this._el.videoContainer) this._el.videoContainer.classList.remove('rc-controlling');
+    if (wasActive && this._stateCh) {
+        this._stateCh.send({type:'broadcast',event:'cs',payload:{uid:this.userId,rcStopped:true}}).catch(()=>{});
+    }
+};
+
+// ── CONTROLLER SIDE: capture mouse/keyboard over remote video and send to sharer ──
+AIAssistant.prototype._startRemoteControlSending = function() {
+    this._rcActive = true;
+    this._rcFocusedOnVideo = false;
+    if (this._el.remoteControlBtn) {
+        this._el.remoteControlBtn.textContent = '🔴';
+        this._el.remoteControlBtn.style.background = 'rgba(239,68,68,0.6)';
+    }
+    if (this._el.videoContainer) this._el.videoContainer.classList.add('rc-controlling');
+    this.showNotification('Remote Control', 'You have control! Move your mouse over the screen share.');
+
+    const video = this._el.remoteVideo;
+    if (!video) return;
+
+    let _lastSend = 0;
+    const _throttle = 16; // ~60fps for mouse (DataChannel is fast enough)
+
+    const _getRelPos = (e) => {
+        const rect = video.getBoundingClientRect();
+        // Account for object-fit:contain letterboxing — black bars don't count as content
+        const vw = video.videoWidth || rect.width;
+        const vh = video.videoHeight || rect.height;
+        const vr = vw / vh;
+        const er = rect.width / rect.height;
+        let contentW, contentH, ox, oy;
+        if (vr > er) {
+            contentW = rect.width;
+            contentH = rect.width / vr;
+            ox = 0;
+            oy = (rect.height - contentH) / 2;
+        } else {
+            contentH = rect.height;
+            contentW = rect.height * vr;
+            ox = (rect.width - contentW) / 2;
+            oy = 0;
+        }
+        return {
+            x: Math.max(0, Math.min(1, (e.clientX - rect.left - ox) / contentW)),
+            y: Math.max(0, Math.min(1, (e.clientY - rect.top - oy) / contentH))
+        };
+    };
+
+    // Send via DataChannel (low latency) with Supabase broadcast fallback
+    const _send = (data) => {
+        const msg = {uid:this.userId,...data};
+        // PRIMARY: WebRTC DataChannel — ~10-50ms latency
+        if (this._rcDataChannel && this._rcDataChannelReady) {
+            try { this._rcDataChannel.send(JSON.stringify(msg)); return; } catch(_) {}
+        }
+        // FALLBACK: Supabase broadcast — ~200-500ms latency
+        if (this._stateCh) this._stateCh.send({type:'broadcast',event:'rc',payload:msg}).catch(()=>{});
+    };
+
+    this._rcMouseHandler = (e) => {
+        this._rcFocusedOnVideo = true;
+        const now = Date.now();
+        if (now - _lastSend < _throttle) return;
+        _lastSend = now;
+        _send({t:'move',..._getRelPos(e)});
+    };
+    this._rcClickHandler = (e) => { e.preventDefault(); e.stopPropagation(); _send({t:'mousedown',..._getRelPos(e),btn:e.button}); };
+    this._rcMouseUpHandler = (e) => { e.preventDefault(); e.stopPropagation(); _send({t:'mouseup',..._getRelPos(e),btn:e.button}); };
+    this._rcContextHandler = (e) => { e.preventDefault(); e.stopPropagation(); _send({t:'contextmenu',..._getRelPos(e)}); };
+    this._rcDblClickHandler = (e) => { e.preventDefault(); e.stopPropagation(); _send({t:'dblclick',..._getRelPos(e)}); };
+    this._rcWheelHandler = (e) => { e.preventDefault(); e.stopPropagation(); _send({t:'scroll',dx:e.deltaX,dy:e.deltaY}); };
+
+    this._rcKeyHandler = (e) => {
+        if (!this._rcFocusedOnVideo) return;
+        e.preventDefault(); e.stopPropagation();
+        _send({t:'keydown',key:e.key,code:e.code,shift:e.shiftKey,ctrl:e.ctrlKey||e.metaKey,alt:e.altKey});
+    };
+    this._rcKeyUpHandler = (e) => {
+        if (!this._rcFocusedOnVideo) return;
+        e.preventDefault(); e.stopPropagation();
+        _send({t:'keyup',key:e.key,code:e.code});
+    };
+
+    // Touch support for mobile remote control
+    this._rcTouchHandler = (e) => {
+        if (e.touches.length === 1) {
+            this._rcFocusedOnVideo = true;
+            const touch = e.touches[0];
+            const fakeE = { clientX: touch.clientX, clientY: touch.clientY };
+            const now = Date.now();
+            if (now - _lastSend < _throttle) return;
+            _lastSend = now;
+            _send({t:'move',..._getRelPos(fakeE)});
+        }
+    };
+    this._rcTouchStartHandler = (e) => {
+        e.preventDefault();
+        if (e.touches.length === 1) {
+            const touch = e.touches[0];
+            const fakeE = { clientX: touch.clientX, clientY: touch.clientY };
+            _send({t:'mousedown',..._getRelPos(fakeE),btn:0});
+        }
+    };
+    this._rcTouchEndHandler = (e) => {
+        e.preventDefault();
+        if (e.changedTouches.length === 1) {
+            const touch = e.changedTouches[0];
+            const fakeE = { clientX: touch.clientX, clientY: touch.clientY };
+            _send({t:'mouseup',..._getRelPos(fakeE),btn:0});
+        }
+    };
+
+    video.addEventListener('mouseleave', () => { this._rcFocusedOnVideo = false; });
+    video.addEventListener('mouseenter', () => { this._rcFocusedOnVideo = true; });
+    video.addEventListener('mousemove', this._rcMouseHandler);
+    video.addEventListener('mousedown', this._rcClickHandler);
+    video.addEventListener('mouseup', this._rcMouseUpHandler);
+    video.addEventListener('contextmenu', this._rcContextHandler);
+    video.addEventListener('dblclick', this._rcDblClickHandler);
+    video.addEventListener('wheel', this._rcWheelHandler, {passive:false});
+    video.addEventListener('touchmove', this._rcTouchHandler, {passive:false});
+    video.addEventListener('touchstart', this._rcTouchStartHandler, {passive:false});
+    video.addEventListener('touchend', this._rcTouchEndHandler, {passive:false});
+    document.addEventListener('keydown', this._rcKeyHandler, true);
+    document.addEventListener('keyup', this._rcKeyUpHandler, true);
+};
+
+// ── SHARER SIDE: receive remote events, show cursor, dispatch REAL DOM events ──
+AIAssistant.prototype._handleRemoteControlEvent = function(p) {
+    if (!this._rcBeingControlled || p.uid === this.userId) return;
+
+    // Map normalized 0..1 coords → actual page pixel coords
+    const px = p.x !== undefined ? Math.round(p.x * window.innerWidth) : 0;
+    const py = p.y !== undefined ? Math.round(p.y * window.innerHeight) : 0;
+
+    // Move the visible red cursor SVG element
+    if (this._el.rcCursor && (p.t === 'move' || p.t === 'mousedown' || p.t === 'mouseup' || p.t === 'dblclick')) {
+        this._el.rcCursor.style.left = px + 'px';
+        this._el.rcCursor.style.top = py + 'px';
+    }
+
+    // Find element under the cursor
+    // Temporarily hide the cursor so elementFromPoint doesn't hit it
+    if (this._el.rcCursor) this._el.rcCursor.style.pointerEvents = 'none';
+    const target = document.elementFromPoint(px, py);
+    if (this._el.rcCursor) this._el.rcCursor.style.pointerEvents = 'none';
+
+    if (p.t === 'move') {
+        if (target) {
+            target.dispatchEvent(new MouseEvent('mousemove', {clientX:px,clientY:py,bubbles:true,cancelable:true,view:window}));
+            target.dispatchEvent(new MouseEvent('mouseover', {clientX:px,clientY:py,bubbles:true,cancelable:true,view:window}));
+        }
+    }
+    else if (p.t === 'mousedown') {
+        this._rcShowClickRipple(px, py);
+        if (target) {
+            if (target.focus && (target.tagName==='INPUT'||target.tagName==='TEXTAREA'||target.tagName==='SELECT'||target.tagName==='BUTTON'||target.tagName==='A'||target.contentEditable==='true'||target.tabIndex>=0)) target.focus();
+            target.dispatchEvent(new MouseEvent('mousedown', {clientX:px,clientY:py,button:p.btn||0,bubbles:true,cancelable:true,view:window}));
+        }
+    }
+    else if (p.t === 'mouseup') {
+        if (target) {
+            target.dispatchEvent(new MouseEvent('mouseup', {clientX:px,clientY:py,button:p.btn||0,bubbles:true,cancelable:true,view:window}));
+            target.dispatchEvent(new MouseEvent('click', {clientX:px,clientY:py,button:p.btn||0,bubbles:true,cancelable:true,view:window}));
+        }
+    }
+    else if (p.t === 'dblclick') {
+        this._rcShowClickRipple(px, py, '#fbbf24');
+        if (target) {
+            target.dispatchEvent(new MouseEvent('dblclick', {clientX:px,clientY:py,bubbles:true,cancelable:true,view:window}));
+            if (target.select) target.select();
+        }
+    }
+    else if (p.t === 'contextmenu') {
+        if (target) target.dispatchEvent(new MouseEvent('contextmenu', {clientX:px,clientY:py,bubbles:true,cancelable:true,view:window}));
+    }
+    else if (p.t === 'scroll') {
+        if (target) target.dispatchEvent(new WheelEvent('wheel', {deltaX:p.dx||0,deltaY:p.dy||0,clientX:px,clientY:py,bubbles:true,cancelable:true,view:window}));
+        const scrollEl = target?.closest('[style*="overflow"]') || document.scrollingElement;
+        if (scrollEl) { scrollEl.scrollTop += (p.dy||0); scrollEl.scrollLeft += (p.dx||0); }
+    }
+    else if (p.t === 'keydown') {
+        const ae = document.activeElement;
+        const isTextInput = ae && (ae.tagName==='INPUT'||ae.tagName==='TEXTAREA'||ae.contentEditable==='true');
+        (ae||document.body).dispatchEvent(new KeyboardEvent('keydown', {key:p.key,code:p.code,shiftKey:!!p.shift,ctrlKey:!!p.ctrl,altKey:!!p.alt,bubbles:true,cancelable:true,view:window}));
+
+        // Actually type characters into text fields
+        if (isTextInput && p.key.length === 1 && !p.ctrl && !p.alt) {
+            if (ae.tagName==='INPUT'||ae.tagName==='TEXTAREA') {
+                const s=ae.selectionStart??ae.value.length, e=ae.selectionEnd??ae.value.length;
+                ae.value = ae.value.slice(0,s)+p.key+ae.value.slice(e);
+                ae.selectionStart = ae.selectionEnd = s+1;
+                ae.dispatchEvent(new Event('input',{bubbles:true}));
+                ae.dispatchEvent(new Event('change',{bubbles:true}));
+            }
+        }
+        else if (isTextInput && p.key==='Backspace') {
+            if (ae.tagName==='INPUT'||ae.tagName==='TEXTAREA') {
+                const s=ae.selectionStart??ae.value.length, e=ae.selectionEnd??ae.value.length;
+                if(s!==e) { ae.value=ae.value.slice(0,s)+ae.value.slice(e); ae.selectionStart=ae.selectionEnd=s; }
+                else if(s>0) { ae.value=ae.value.slice(0,s-1)+ae.value.slice(s); ae.selectionStart=ae.selectionEnd=s-1; }
+                ae.dispatchEvent(new Event('input',{bubbles:true}));
+            }
+        }
+        else if (isTextInput && p.key==='Delete') {
+            if (ae.tagName==='INPUT'||ae.tagName==='TEXTAREA') {
+                const s=ae.selectionStart??ae.value.length, e=ae.selectionEnd??ae.value.length;
+                if(s!==e) ae.value=ae.value.slice(0,s)+ae.value.slice(e);
+                else ae.value=ae.value.slice(0,s)+ae.value.slice(s+1);
+                ae.selectionStart=ae.selectionEnd=s;
+                ae.dispatchEvent(new Event('input',{bubbles:true}));
+            }
+        }
+        else if (p.key==='Enter') {
+            if(ae) ae.dispatchEvent(new KeyboardEvent('keypress',{key:'Enter',code:'Enter',bubbles:true,cancelable:true,view:window}));
+            if(ae?.tagName==='BUTTON'||ae?.tagName==='A') ae.click();
+            if(ae?.tagName==='TEXTAREA') {
+                const s=ae.selectionStart??ae.value.length;
+                ae.value=ae.value.slice(0,s)+'\n'+ae.value.slice(s);
+                ae.selectionStart=ae.selectionEnd=s+1;
+                ae.dispatchEvent(new Event('input',{bubbles:true}));
+            }
+            if(ae?.tagName==='INPUT'&&ae.form) ae.form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));
+        }
+        else if (p.key==='Tab') {
+            const focusables=[...document.querySelectorAll('input,textarea,select,button,a,[tabindex]')].filter(el=>!el.disabled&&el.tabIndex>=0);
+            const idx=focusables.indexOf(ae);
+            if(idx>=0){const next=p.shift?focusables[idx-1]:focusables[idx+1];if(next)next.focus();}
+        }
+        else if (p.ctrl && p.key==='a' && isTextInput) {
+            ae.selectionStart=0; ae.selectionEnd=ae.value.length;
+        }
+    }
+    else if (p.t === 'keyup') {
+        (document.activeElement||document.body).dispatchEvent(new KeyboardEvent('keyup',{key:p.key,code:p.code,bubbles:true,cancelable:true,view:window}));
+    }
+};
+
+// Show a click ripple at position on the sharer's page
+AIAssistant.prototype._rcShowClickRipple = function(x, y, color) {
+    const r = this._el.rcClickRipple;
+    if (!r) return;
+    r.style.left=x+'px'; r.style.top=y+'px'; r.style.borderColor=color||'#ef4444';
+    r.style.display='block'; r.style.animation='none';
+    r.offsetHeight; // reflow
+    r.style.animation='rcRipple 0.4s ease-out forwards';
+    setTimeout(()=>{r.style.display='none';},450);
 };
 
 // ============================================================
