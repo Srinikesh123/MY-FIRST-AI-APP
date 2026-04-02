@@ -5911,7 +5911,11 @@ const _ICE_BASE = {
         // STUN — Cloudflare + Twilio (backup)
         { urls: 'stun:stun.cloudflare.com:3478' },
         { urls: 'stun:global.stun.twilio.com:3478' },
-        // TURN — OpenRelay (UDP, TCP, TLS — covers all NAT types)
+        // TURN — FreeTURN (no registration, free, good global coverage)
+        { urls: 'turn:freestun.net:3479',                      username: 'free',             credential: 'free' },
+        { urls: 'turns:freestun.net:5350',                     username: 'free',             credential: 'free' },
+        { urls: 'turn:freestun.net:3478',                      username: 'free',             credential: 'free' },
+        // TURN — OpenRelay fallback (UDP, TCP, TLS)
         { urls: 'turn:openrelay.metered.ca:80',                username: 'openrelayproject', credential: 'openrelayproject' },
         { urls: 'turn:openrelay.metered.ca:443',               username: 'openrelayproject', credential: 'openrelayproject' },
         { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
@@ -5927,7 +5931,7 @@ let _iceLastFetch = 0;
 async function _refreshICE() {
     if (Date.now() - _iceLastFetch < 300_000) return; // cache 5min
     try {
-        const r = await fetch('https://voidzenzi.metered.live/api/v1/turn/credentials?apiKey=free');
+        const r = await fetch('https://voidzen_ai.metered.live/api/v1/turn/credentials?apiKey=c6ebad70334072baa1f086fcd5884ccf7921');
         if (r.ok) {
             const servers = await r.json();
             if (Array.isArray(servers) && servers.length > 0) {
@@ -5977,6 +5981,7 @@ AIAssistant.prototype.initCallUI = function() {
     this._rcDataChannel = null;      // WebRTC DataChannel for remote control
     this._rcDataChannelReady = false;
     this._bitrateTimer = null;       // adaptive bitrate monitor
+    this._credRefreshTimer = null;   // TURN credential refresh (before 1hr expiry)
 
     const $ = id => document.getElementById(id);
     this._el = {
@@ -6276,6 +6281,8 @@ AIAssistant.prototype._makePc = function() {
             this._iceRestarted = false;
             // Start adaptive bitrate monitoring
             this._startBitrateMonitor();
+            // Schedule TURN credential refresh at 45 min (tokens expire at 60 min)
+            this._startCredentialRefresh();
         }
         else if (s==='connecting') {
             if(this._dcTimeout){clearTimeout(this._dcTimeout);this._dcTimeout=null;}
@@ -6401,6 +6408,38 @@ AIAssistant.prototype._startBitrateMonitor = function() {
             }
         } catch(_) {}
     }, 5000);
+};
+
+// ── TURN CREDENTIAL REFRESH (prevents 1hr expiry drop) ──────
+// Metered.ca tokens expire after 60 min. At 45 min we silently fetch
+// fresh credentials, update the live PeerConnection, and restart ICE
+// so the relay stays open with zero interruption to the screen share.
+AIAssistant.prototype._startCredentialRefresh = function() {
+    if (this._credRefreshTimer) clearTimeout(this._credRefreshTimer);
+    this._credRefreshTimer = setTimeout(async () => {
+        if (!this._pc || !this._callId) return;
+        console.log('[ICE] Refreshing TURN credentials before 1hr expiry...');
+        try {
+            const r = await fetch('https://voidzen_ai.metered.live/api/v1/turn/credentials?apiKey=c6ebad70334072baa1f086fcd5884ccf7921');
+            if (r.ok) {
+                const servers = await r.json();
+                if (Array.isArray(servers) && servers.length > 0) {
+                    const dynamic = servers.map(s => ({ urls: s.urls || s.url, username: s.username, credential: s.credential }));
+                    const newConfig = { ..._ICE_BASE, iceServers: [..._ICE_BASE.iceServers, ...dynamic] };
+                    _ICE = newConfig;
+                    _iceLastFetch = Date.now();
+                    // Hot-swap credentials into the live PeerConnection
+                    try { this._pc.setConfiguration(newConfig); } catch(_) {}
+                    // Restart ICE so the relay uses the new tokens
+                    this._pc.restartIce();
+                    this._triggerRenegotiation();
+                    console.log('[ICE] Credentials refreshed silently, ICE restarted');
+                }
+            }
+        } catch(e) { console.warn('[ICE] Credential refresh failed:', e); }
+        // Schedule next refresh again (for calls longer than 1.5 hours)
+        this._startCredentialRefresh();
+    }, 45 * 60 * 1000); // 45 minutes
 };
 
 // ── SETUP RC DATA CHANNEL ───────────────────────────────────
@@ -6716,7 +6755,8 @@ AIAssistant.prototype._endLocal = function(reason) {
     if (this._dcTimeout)    { clearTimeout(this._dcTimeout);     this._dcTimeout=null;    }
     if (this._bgEndTimer)   { clearTimeout(this._bgEndTimer);    this._bgEndTimer=null;   }
     this._iceRestarted = false;
-    if (this._bitrateTimer) { clearInterval(this._bitrateTimer); this._bitrateTimer = null; }
+    if (this._bitrateTimer)    { clearInterval(this._bitrateTimer);    this._bitrateTimer = null; }
+    if (this._credRefreshTimer){ clearTimeout(this._credRefreshTimer); this._credRefreshTimer = null; }
     if (this._rcDataChannel) { try{this._rcDataChannel.close();}catch(_){} this._rcDataChannel=null; this._rcDataChannelReady=false; }
     if (this._screenStream) { this._screenStream.getTracks().forEach(t=>t.stop()); this._screenStream=null; }
     if (this._ls) { this._ls.getTracks().forEach(t=>t.stop()); this._ls=null; }
