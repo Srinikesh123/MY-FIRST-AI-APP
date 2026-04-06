@@ -112,8 +112,28 @@ export default function ChatsPage() {
     }
   };
 
+  // Auto-load all users when Add tab is opened
+  useEffect(() => {
+    if (activeTab !== 'add' || !userId) return;
+    loadAllUsers();
+  }, [activeTab, userId]);
+
+  const loadAllUsers = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('users')
+        .select('id, email, username, avatar_url')
+        .neq('id', userId)
+        .order('username', { ascending: true });
+      if (error) throw error;
+      setSearchResults(data || []);
+    } catch (err) {
+      console.error('Failed to load users:', err);
+    }
+  };
+
   const handleSearch = async () => {
-    if (!searchQuery.trim()) { setSearchResults([]); return; }
+    if (!searchQuery.trim()) { loadAllUsers(); return; }
     try {
       const results = await friendQ.searchUsers(supabase, searchQuery);
       setSearchResults(results.filter(u => u.id !== userId));
