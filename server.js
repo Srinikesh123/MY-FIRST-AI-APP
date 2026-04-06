@@ -866,12 +866,14 @@ app.post('/api/end-call', async (req, res) => {
 // ============================================
 
 // React SPA catch-all (must be after all API routes)
-const fs = require('fs');
-if (fs.existsSync(path.join(reactBuildPath, 'index.html'))) {
-    app.get('*', (req, res) => {
-        res.sendFile(path.join(reactBuildPath, 'index.html'));
-    });
-}
+app.get('*', (req, res) => {
+    const indexPath = path.join(reactBuildPath, 'index.html');
+    if (require('fs').existsSync(indexPath)) {
+        res.sendFile(indexPath);
+    } else {
+        res.status(500).send('Client not built. Run: npm run build');
+    }
+});
 
 const PORT = process.env.PORT || 3000;
 

@@ -4,10 +4,9 @@
   "description": "AI Assistant with ChatGPT integration",
   "main": "server.js",
   "scripts": {
-    "prestart": "cd client && npm install && npm run build",
     "start": "node server.js",
     "dev": "node server.js",
-    "build": "cd client && npm install && npm run build"
+    "build": "npm install && cd client && npm install && npm run build"
   },
   "keywords": [
     "ai",
