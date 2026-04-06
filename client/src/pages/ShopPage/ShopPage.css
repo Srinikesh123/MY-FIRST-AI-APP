@@ -1,0 +1,112 @@
+.shop-page {
+  padding: 24px 20px;
+  animation: fadeIn var(--transition-normal);
+}
+
+.shop-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.shop-header h2 {
+  font-size: var(--font-size-xl);
+  font-weight: 700;
+}
+
+.coin-display {
+  font-size: var(--font-size-md);
+  font-weight: 700;
+  color: var(--accent-orange);
+  background: rgba(245, 158, 11, 0.1);
+  padding: 6px 16px;
+  border-radius: var(--radius-full);
+}
+
+.shop-subtitle {
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  margin-bottom: 24px;
+}
+
+.shop-loading {
+  padding: 40px;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.plans-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.plan-card {
+  background: var(--bg-secondary);
+  border: 2px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  transition: all var(--transition-fast);
+}
+
+.plan-card:hover {
+  border-color: var(--plan-color);
+  box-shadow: var(--shadow-md);
+}
+
+.plan-card h3 {
+  font-size: var(--font-size-lg);
+  font-weight: 700;
+  color: var(--plan-color);
+  margin-bottom: 8px;
+}
+
+.plan-price {
+  font-size: var(--font-size-2xl);
+  font-weight: 800;
+  color: var(--text-primary);
+  margin-bottom: 16px;
+}
+
+.plan-features {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 20px;
+}
+
+.plan-features li {
+  padding: 6px 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+
+.plan-features li::before {
+  content: '✓ ';
+  color: var(--success);
+  font-weight: 700;
+}
+
+.plan-buy-btn {
+  width: 100%;
+  padding: 12px;
+  border: none;
+  background: var(--primary-gradient);
+  color: white;
+  border-radius: var(--radius-md);
+  font-weight: 600;
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.plan-buy-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+
+.plan-buy-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  background: var(--gray-400);
+}

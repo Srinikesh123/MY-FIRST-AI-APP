@@ -80,10 +80,9 @@ const imageMemory = new Map(); // userId -> imageData (base64)
 // STATIC FILES
 // ============================================
 
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));
-});
-app.use(express.static(__dirname));
+// Serve React build from client/dist
+const reactBuildPath = path.join(__dirname, 'client', 'dist');
+app.use(express.static(reactBuildPath));
 
 // ============================================
 // HEALTH CHECK
@@ -865,6 +864,14 @@ app.post('/api/end-call', async (req, res) => {
 // ============================================
 // START SERVER
 // ============================================
+
+// React SPA catch-all (must be after all API routes)
+const fs = require('fs');
+if (fs.existsSync(path.join(reactBuildPath, 'index.html'))) {
+    app.get('*', (req, res) => {
+        res.sendFile(path.join(reactBuildPath, 'index.html'));
+    });
+}
 
 const PORT = process.env.PORT || 3000;
 

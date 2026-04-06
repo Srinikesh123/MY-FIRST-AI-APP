@@ -1,0 +1,122 @@
+.login-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.login-card {
+  background: var(--bg-primary);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-xl);
+  padding: 40px;
+  width: 100%;
+  max-width: 420px;
+}
+
+.login-card h1 {
+  text-align: center;
+  font-size: var(--font-size-2xl);
+  color: var(--accent-blue);
+  margin-bottom: 4px;
+}
+
+.login-subtitle {
+  text-align: center;
+  color: var(--text-muted);
+  margin-bottom: 28px;
+  font-size: var(--font-size-sm);
+}
+
+.login-tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 24px;
+  border-bottom: 2px solid var(--border-color);
+}
+
+.login-tab {
+  flex: 1;
+  padding: 12px;
+  text-align: center;
+  cursor: pointer;
+  border: none;
+  background: none;
+  font-size: var(--font-size-md);
+  color: var(--text-muted);
+  transition: all var(--transition-normal);
+  border-bottom: 3px solid transparent;
+  margin-bottom: -2px;
+}
+
+.login-tab.active {
+  color: var(--accent-blue);
+  border-bottom-color: var(--accent-blue);
+  font-weight: 600;
+}
+
+.login-error {
+  background: #fef2f2;
+  color: var(--danger);
+  padding: 12px 16px;
+  border-radius: var(--radius-md);
+  margin-bottom: 16px;
+  font-size: var(--font-size-sm);
+}
+
+.form-group {
+  margin-bottom: 18px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text-secondary);
+  font-weight: 500;
+  font-size: var(--font-size-sm);
+}
+
+.form-group input {
+  width: 100%;
+  padding: 12px 16px;
+  border: 2px solid var(--border-color);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-md);
+  outline: none;
+  transition: border-color var(--transition-normal);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.form-group input:focus {
+  border-color: var(--accent-blue);
+}
+
+.btn-login {
+  width: 100%;
+  padding: 14px;
+  background: var(--primary-gradient);
+  color: white;
+  border: none;
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-md);
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+  margin-top: 8px;
+}
+
+.btn-login:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+}
+
+.btn-login:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.btn-login:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}

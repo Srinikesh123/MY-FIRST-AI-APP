@@ -4,4 +4,13 @@ node_modules/
 .idea/
 
 # Environment variables — NEVER commit these files
+.env
+client/.env
 
+# Build output
+client/dist/
+client/node_modules/
+
+# Backup files
+*.backup
+*.bak

@@ -1,0 +1,115 @@
+.settings-page {
+  padding: 24px 20px 40px;
+  animation: fadeIn var(--transition-normal);
+}
+
+.settings-header {
+  margin-bottom: 24px;
+}
+
+.settings-header h2 {
+  font-size: var(--font-size-xl);
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.settings-section {
+  background: var(--bg-secondary);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  margin-bottom: 16px;
+}
+
+.settings-section h3 {
+  font-size: var(--font-size-md);
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 16px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.setting-select-group {
+  padding: 8px 0;
+}
+
+.setting-select-group label {
+  display: block;
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+
+.setting-select {
+  width: 100%;
+  max-width: 240px;
+  padding: 10px 14px;
+  border: 2px solid var(--border-color);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  outline: none;
+  cursor: pointer;
+  transition: border-color var(--transition-normal);
+}
+
+.setting-select:focus {
+  border-color: var(--accent-blue);
+}
+
+.settings-actions-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-actions-section h3 {
+  margin-bottom: 12px;
+}
+
+.btn-danger {
+  padding: 12px 20px;
+  background: var(--danger);
+  color: white;
+  border: none;
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn-danger:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+.danger-warning {
+  color: var(--danger);
+  font-size: var(--font-size-xs);
+}
+
+.settings-footer {
+  margin-top: 20px;
+  display: flex;
+  justify-content: center;
+}
+
+.btn-back {
+  padding: 12px 32px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  border: 2px solid var(--border-color);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn-back:hover {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+}

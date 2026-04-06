@@ -21,7 +21,11 @@
       "Bash(node --check \"c:/Users/howto/Documents/GitHub/MY-FIRST-AI-APP/app.js\")",
       "Bash(node --check \"c:/Users/howto/Documents/GitHub/MY-FIRST-AI-APP/server.js\")",
       "Bash(grep -v \"//.*statusText\")",
-      "Bash(grep -v '\\\\.sql$\\\\|\\\\.md$\\\\|node_modules')"
+      "Bash(grep -v '\\\\.sql$\\\\|\\\\.md$\\\\|node_modules')",
+      "Bash(npx vite:*)",
+      "Bash(mkdir -p sql docs)",
+      "Bash(mv *.sql sql/)",
+      "Bash(mv DEPLOYMENT.md DEPLOYMENT_CHECKLIST.md EMERGENCY_SETUP.md FIXES_SUMMARY.md FIX_RLS_RECURSION_README.md GET_SERVICE_KEY.md GROQ_AVAILABLE_MODELS.md GROQ_SETUP.md IMPLEMENTATION_GUIDE.md NEW_GAMES_SETUP.md PATCH_INSTRUCTIONS.md QUICK_FIX.md SETUP_DATABASE.md SETUP_INSTRUCTIONS.md UPDATE_INSTRUCTIONS.md USER_CONTEXT_TEST_PLAN.md VERCEL_DEPLOYMENT_CHECKLIST.md API_URL_PATCH.md docs/)"
     ]
   }
 }

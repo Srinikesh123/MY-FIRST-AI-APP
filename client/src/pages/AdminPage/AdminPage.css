@@ -1,0 +1,138 @@
+.admin-page {
+  padding: 24px 20px;
+  animation: fadeIn var(--transition-normal);
+}
+
+.admin-auth {
+  max-width: 360px;
+  margin: 60px auto;
+  text-align: center;
+}
+
+.admin-auth h2 {
+  font-size: var(--font-size-xl);
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.admin-auth p {
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  margin-bottom: 20px;
+}
+
+.admin-error {
+  background: #fef2f2;
+  color: var(--danger);
+  padding: 10px 16px;
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+  margin-bottom: 12px;
+}
+
+.admin-password-input {
+  width: 100%;
+  padding: 12px 16px;
+  border: 2px solid var(--border-color);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-md);
+  outline: none;
+  margin-bottom: 12px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.admin-password-input:focus {
+  border-color: var(--accent-blue);
+}
+
+.admin-auth-btn {
+  width: 100%;
+  padding: 12px;
+  background: var(--primary-gradient);
+  color: white;
+  border: none;
+  border-radius: var(--radius-md);
+  font-weight: 600;
+  font-size: var(--font-size-md);
+  cursor: pointer;
+}
+
+.admin-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.admin-header h2 {
+  font-size: var(--font-size-xl);
+  font-weight: 700;
+}
+
+.admin-badge {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  background: var(--bg-secondary);
+  padding: 4px 12px;
+  border-radius: var(--radius-full);
+}
+
+.admin-loading {
+  text-align: center;
+  padding: 40px;
+  color: var(--text-muted);
+}
+
+.admin-users {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.admin-user-card {
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+}
+
+.user-card-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.user-card-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--primary-gradient);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: var(--font-size-sm);
+  flex-shrink: 0;
+}
+
+.user-card-name {
+  display: block;
+  font-weight: 600;
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+}
+
+.user-card-email {
+  display: block;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
+
+.user-card-meta {
+  display: flex;
+  gap: 16px;
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+}
