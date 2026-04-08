@@ -63,6 +63,8 @@ export default function MeetingPage() {
   const [remoteCursor, setRemoteCursor] = useState(null); // {x, y} normalized 0-1
   const [networkStats, setNetworkStats] = useState(null); // fps, bitrate
   const [sessionTime, setSessionTime] = useState(0);
+  const [isHost, setIsHost] = useState(false);
+  const [knockQueue, setKnockQueue] = useState([]); // guests waiting to be admitted
 
   // ─── Refs ─────────────────────────────────────────────────────────────────
   const socketRef        = useRef(null);
@@ -274,10 +276,34 @@ export default function MeetingPage() {
     socket.on('control-request', ({ from, username: u }) => setControlRequest({ from, username: u }));
     socket.on('control-granted', () => { setRemoteControlActive(true); setError('Remote control granted!'); });
     socket.on('control-denied', () => setError('Remote control denied'));
+
+    // ── Waiting room / host approval ──────────────────────────────────────
+    socket.on('knock', ({ socketId, username: knocker }) => {
+      // Host receives knock — add to queue
+      setKnockQueue(prev => [...prev.filter(k => k.socketId !== socketId), { socketId, username: knocker }]);
+    });
+    socket.on('admitted', ({ peers: peerList, chat }) => {
+      // Guest was admitted by host
+      setChatMessages(chat || []);
+      const others = peerList.filter(p => p.socketId !== socket.id);
+      setPeers(others);
+      setView('meeting');
+      setConnecting(false);
+      // Offer to all existing peers
+      others.forEach(p => offerToPeer(p.socketId));
+    });
+    socket.on('denied', () => {
+      setView('lobby');
+      setConnecting(false);
+      setError('The host did not admit you. Try again or check the code.');
+      socket.disconnect();
+    });
+    socket.on('promoted-to-host', () => setIsHost(true));
+
     socket.on('disconnect', (reason) => {
       if (reason !== 'io client disconnect') setError('Disconnected. Reconnecting...');
     });
-  }, [buildPeerConnection]);
+  }, [buildPeerConnection, offerToPeer]);
 
   const offerToPeer = useCallback(async (peerId) => {
     const socket = socketRef.current;
@@ -315,6 +341,7 @@ export default function MeetingPage() {
       });
       if (!res.success) throw new Error(res.error || 'Failed to create room');
       setRoomCode(res.roomCode);
+      setIsHost(true);
       setView('meeting');
     } catch (err) {
       setError(err.message);
@@ -338,12 +365,50 @@ export default function MeetingPage() {
       });
       if (!res.success) throw new Error(res.error || 'Room not found. Check the code.');
       setRoomCode(code);
-      setView('meeting');
-      res.peers?.filter(p => p.socketId !== socket.id).forEach(p => offerToPeer(p.socketId));
+      setView('waiting'); // wait for host to admit
     } catch (err) {
       setError(err.message);
       socketRef.current?.disconnect();
-    } finally { setConnecting(false); }
+      setConnecting(false);
+    }
+    // NOTE: setConnecting(false) is called in 'admitted'/'denied' listeners, not here
+  };
+
+  // ─── Auto-start mic when entering meeting ─────────────────────────────────
+  useEffect(() => {
+    if (view !== 'meeting') return;
+    let active = true;
+    (async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 48000 },
+        });
+        if (!active) { stream.getTracks().forEach(t => t.stop()); return; }
+        localStreamRef.current = stream;
+        setIsMuted(false);
+        // Add audio track to any existing peer connections
+        for (const [peerId, pc] of peerConnsRef.current) {
+          stream.getAudioTracks().forEach(t => pc.addTrack(t, stream));
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          socketRef.current?.emit('signal', { to: peerId, signal: offer });
+        }
+      } catch (_) {
+        // Mic denied — fine, user can click manually
+      }
+    })();
+    return () => { active = false; };
+  }, [view]);
+
+  // ─── Host admit / deny guests ──────────────────────────────────────────────
+  const admitGuest = (guestSocketId) => {
+    socketRef.current?.emit('admit-guest', { guestSocketId });
+    setKnockQueue(prev => prev.filter(k => k.socketId !== guestSocketId));
+  };
+
+  const denyGuest = (guestSocketId) => {
+    socketRef.current?.emit('deny-guest', { guestSocketId });
+    setKnockQueue(prev => prev.filter(k => k.socketId !== guestSocketId));
   };
 
   // ─── Screen Share ──────────────────────────────────────────────────────────
@@ -532,6 +597,7 @@ export default function MeetingPage() {
     setShowChat(false); setShowAnnotations(false);
     setRemoteControlActive(false); setRemoteCursor(null);
     setNetworkStats(null); setError('');
+    setIsHost(false); setKnockQueue([]);
   };
 
   useEffect(() => () => {
@@ -542,6 +608,34 @@ export default function MeetingPage() {
     peerConnsRef.current.forEach(pc => pc.close());
     socketRef.current?.disconnect();
   }, []);
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // WAITING ROOM (guest waiting for host approval)
+  // ════════════════════════════════════════════════════════════════════════════
+  if (view === 'waiting') {
+    return (
+      <div className="meeting-page">
+        <div className="meeting-lobby">
+          <div className="lobby-icon waiting-pulse">⏳</div>
+          <h2>Waiting to Join</h2>
+          <p className="lobby-subtitle">The host has been notified. Please wait...</p>
+          <div className="waiting-room-code">Room: <strong>{roomCode}</strong></div>
+          {error && (
+            <div className="meeting-error">
+              <span>⚠️ {error}</span>
+              <button onClick={() => setError('')}>✕</button>
+            </div>
+          )}
+          <button className="meeting-leave-btn-sm" onClick={() => {
+            socketRef.current?.disconnect();
+            setView('lobby'); setRoomCode(''); setConnecting(false); setError('');
+          }}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   // ════════════════════════════════════════════════════════════════════════════
   // LOBBY
@@ -598,6 +692,22 @@ export default function MeetingPage() {
 
   return (
     <div className="meeting-page meeting-active" ref={containerRef}>
+
+      {/* Knock queue — host admits/denies guests */}
+      {isHost && knockQueue.length > 0 && (
+        <div className="knock-queue">
+          {knockQueue.map(k => (
+            <div key={k.socketId} className="knock-item">
+              <div className="knock-avatar">{k.username?.[0]?.toUpperCase() || '?'}</div>
+              <span className="knock-name"><strong>{k.username}</strong> wants to join</span>
+              <div className="knock-actions">
+                <button className="admit-btn" onClick={() => admitGuest(k.socketId)}>Admit</button>
+                <button className="deny-btn" onClick={() => denyGuest(k.socketId)}>Deny</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Remote control request modal */}
       {controlRequest && (

@@ -1059,24 +1059,59 @@ io.on('connection', (socket) => {
         cb({ success: true, roomCode: code });
     });
 
-    // Join meeting room
+    // Join meeting room — guest goes to waiting room, host must admit
     socket.on('join-room', ({ roomCode, userId, username }, cb) => {
         const room = meetingRooms.get(roomCode);
-        if (!room) return cb({ success: false, error: 'Room not found' });
+        if (!room) return cb({ success: false, error: 'Room not found. Check the code.' });
 
-        room.peers.set(socket.id, { userId, username, isHost: false });
-        socket.join(roomCode);
-        socket.roomCode = roomCode;
+        // Add to waiting list
+        if (!room.waiting) room.waiting = new Map();
+        room.waiting.set(socket.id, { userId, username, socketId: socket.id });
+        socket.pendingRoom = roomCode;
 
-        // Notify everyone in room
+        // Knock on host's door
+        io.to(room.host).emit('knock', { socketId: socket.id, username });
+
+        console.log(`🚪 ${username} is knocking at room ${roomCode}`);
+        cb({ success: true, waiting: true });
+    });
+
+    // Host admits a waiting guest
+    socket.on('admit-guest', ({ guestSocketId }) => {
+        const roomCode = socket.roomCode;
+        if (!roomCode) return;
+        const room = meetingRooms.get(roomCode);
+        if (!room || room.host !== socket.id) return;
+
+        const guest = room.waiting?.get(guestSocketId);
+        if (!guest) return;
+
+        room.waiting.delete(guestSocketId);
+        room.peers.set(guestSocketId, { ...guest, isHost: false });
+
+        const guestSocket = io.sockets.sockets.get(guestSocketId);
+        if (!guestSocket) return;
+
+        guestSocket.join(roomCode);
+        guestSocket.roomCode = roomCode;
+        delete guestSocket.pendingRoom;
+
         const peerList = [...room.peers.entries()].map(([sid, info]) => ({ socketId: sid, ...info }));
         io.to(roomCode).emit('room-peers', peerList);
+        guestSocket.emit('admitted', { peers: peerList, chat: room.chat });
 
-        // Send chat history
-        socket.emit('chat-history', room.chat);
+        console.log(`✅ ${guest.username} admitted to room ${roomCode}`);
+    });
 
-        console.log(`👤 ${username} joined room ${roomCode}`);
-        cb({ success: true, peers: peerList });
+    // Host denies a waiting guest
+    socket.on('deny-guest', ({ guestSocketId }) => {
+        const roomCode = socket.roomCode;
+        const room = meetingRooms.get(roomCode);
+        if (!room || room.host !== socket.id) return;
+
+        room.waiting?.delete(guestSocketId);
+        io.to(guestSocketId).emit('denied');
+        console.log(`❌ Guest ${guestSocketId} denied from room ${roomCode}`);
     });
 
     // WebRTC signaling
@@ -1142,11 +1177,12 @@ io.on('connection', (socket) => {
 
     // Disconnect
     socket.on('disconnect', () => {
-        const code = socket.roomCode;
+        const code = socket.roomCode || socket.pendingRoom;
         if (code && meetingRooms.has(code)) {
             const room = meetingRooms.get(code);
             const peer = room.peers.get(socket.id);
             room.peers.delete(socket.id);
+            room.waiting?.delete(socket.id); // remove from waiting list too
 
             if (room.peers.size === 0) {
                 meetingRooms.delete(code);
