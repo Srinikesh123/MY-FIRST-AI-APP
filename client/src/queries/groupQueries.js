@@ -4,7 +4,10 @@ export async function loadGroups(supabase, userId) {
     .select('group_id, role, group_chats(*)')
     .eq('user_id', userId);
 
-  if (error) throw error;
+  if (error) {
+    console.warn('loadGroups error (RLS issue?):', error.message);
+    return [];
+  }
   return (data || []).map(d => ({ ...d.group_chats, role: d.role }));
 }
 

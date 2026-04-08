@@ -1,27 +1,36 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { useAuth } from './AuthContext';
-import * as userQ from '../queries/userQueries';
 
 const UserContext = createContext(null);
 
 export function UserProvider({ children }) {
-  const { user, supabase } = useAuth();
+  const { user } = useAuth();
   const [userInfo, setUserInfo] = useState(null);
   const [loading, setLoading] = useState(true);
 
   const refreshUser = useCallback(async () => {
-    if (!user?.id) { setLoading(false); return; }
+    if (!user?.id) {
+      setLoading(false);
+      setUserInfo(null);
+      return;
+    }
     try {
-      const info = await userQ.loadUserInfo(supabase, user.id);
-      setUserInfo(info);
+      // Use server endpoint — bypasses Supabase RLS with service role key
+      const res = await fetch(`/api/users/me?userId=${user.id}`);
+      if (!res.ok) throw new Error('Failed to load user');
+      const data = await res.json();
+      setUserInfo(data);
     } catch (err) {
       console.error('Failed to load user info:', err);
+      // Fallback: at least show email-derived username
+      setUserInfo({ plan: 'free', coins: 0, is_admin: false });
     } finally {
       setLoading(false);
     }
-  }, [user, supabase]);
+  }, [user?.id]);
 
   useEffect(() => {
+    setLoading(true);
     refreshUser();
   }, [refreshUser]);
 
@@ -30,7 +39,7 @@ export function UserProvider({ children }) {
     loading,
     refreshUser,
     plan: userInfo?.plan || 'free',
-    coins: userInfo?.coins || 0,
+    coins: userInfo?.coins ?? 0,
     username: userInfo?.username || user?.email?.split('@')[0] || 'User',
     avatarUrl: userInfo?.avatar_url || null,
     isAdmin: userInfo?.is_admin || false,

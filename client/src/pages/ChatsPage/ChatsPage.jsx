@@ -1,12 +1,15 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import * as friendQ from '../../queries/friendQueries';
 import * as dmQ from '../../queries/dmQueries';
 import * as groupQ from '../../queries/groupQueries';
+import CallOverlay from '../../components/chat/CallOverlay';
 import './ChatsPage.css';
 
 export default function ChatsPage() {
   const { user, supabase } = useAuth();
+  const navigate = useNavigate();
   const userId = user?.id;
 
   const [activeTab, setActiveTab] = useState('dms');
@@ -20,6 +23,10 @@ export default function ChatsPage() {
   const [chatMessages, setChatMessages] = useState([]);
   const [messageInput, setMessageInput] = useState('');
   const [userNames, setUserNames] = useState({});
+  const [showCreateGroup, setShowCreateGroup] = useState(false);
+  const [newGroupName, setNewGroupName] = useState('');
+  const [selectedMembers, setSelectedMembers] = useState([]);
+  const [activeCall, setActiveCall] = useState(null); // { type: 'audio'|'video' }
 
   // Load data
   const loadAll = useCallback(async () => {
@@ -172,15 +179,102 @@ export default function ChatsPage() {
     }
   };
 
+  const toggleMember = (id) => {
+    setSelectedMembers(prev =>
+      prev.includes(id) ? prev.filter(m => m !== id) : [...prev, id]
+    );
+  };
+
+  const handleCreateGroup = async () => {
+    if (!newGroupName.trim()) return alert('Enter a group name');
+    if (selectedMembers.length === 0) return alert('Select at least one member');
+    try {
+      const group = await groupQ.createGroup(supabase, userId, newGroupName.trim(), selectedMembers);
+      setShowCreateGroup(false);
+      setNewGroupName('');
+      setSelectedMembers([]);
+      await loadAll();
+      openChat('group', group.id, group.name);
+    } catch (err) {
+      alert('Failed to create group: ' + err.message);
+    }
+  };
+
+  // Create group view
+  if (showCreateGroup) {
+    return (
+      <div className="chats-page">
+        <div className="chat-room-header">
+          <button className="back-btn" onClick={() => setShowCreateGroup(false)}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <h3>New Group</h3>
+        </div>
+        <div className="create-group-form">
+          <input
+            type="text"
+            value={newGroupName}
+            onChange={(e) => setNewGroupName(e.target.value)}
+            placeholder="Group name..."
+            className="group-name-input"
+          />
+          <h4 className="section-label">Select Members ({selectedMembers.length})</h4>
+          <div className="friends-list">
+            {friends.length === 0 ? (
+              <div className="empty-state">Add friends first to create a group</div>
+            ) : (
+              friends.map(fr => {
+                const other = getFriendUser(fr);
+                const otherId = fr.user_id === userId ? fr.friend_id : fr.user_id;
+                const isSelected = selectedMembers.includes(otherId);
+                return (
+                  <div key={fr.id} className={`friend-item selectable ${isSelected ? 'selected' : ''}`} onClick={() => toggleMember(otherId)}>
+                    <div className="conv-avatar">{other.username?.[0]?.toUpperCase() || '?'}</div>
+                    <div className="conv-info">
+                      <span className="conv-name">{other.username}</span>
+                    </div>
+                    <div className={`select-check ${isSelected ? 'checked' : ''}`}>
+                      {isSelected ? '✓' : ''}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+          <button className="create-group-btn" onClick={handleCreateGroup} disabled={!newGroupName.trim() || selectedMembers.length === 0}>
+            Create Group
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   // Active chat view
   if (activeChat) {
     return (
       <div className="chats-page chat-room-view">
+        {activeCall && (
+          <CallOverlay
+            supabase={supabase}
+            userId={userId}
+            chatId={activeChat.id}
+            chatName={activeChat.name}
+            callType={activeCall.type}
+            onEnd={() => setActiveCall(null)}
+          />
+        )}
         <div className="chat-room-header">
           <button className="back-btn" onClick={() => setActiveChat(null)}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6"/></svg>
           </button>
           <h3>{activeChat.name}</h3>
+          <div className="chat-room-actions">
+            <button className="call-action-btn" onClick={() => setActiveCall({ type: 'audio' })} title="Voice Call">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M22 16.92v3a2 2 0 01-2.18 2A19.79 19.79 0 013.18 2.18 2 2 0 015.18.18h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.91 8.09a16 16 0 006.93 6.93l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z"/>
+              </svg>
+            </button>
+          </div>
         </div>
         <div className="chat-room-messages">
           {chatMessages.length === 0 ? (
@@ -218,6 +312,13 @@ export default function ChatsPage() {
     <div className="chats-page">
       <div className="chats-header">
         <h2>Chats</h2>
+        <button className="meeting-header-btn" onClick={() => navigate('/meeting')}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <polygon points="23 7 16 12 23 17 23 7"/>
+            <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+          </svg>
+          Meeting
+        </button>
       </div>
 
       <div className="chats-tabs">
@@ -256,8 +357,12 @@ export default function ChatsPage() {
 
         {activeTab === 'groups' && (
           <div className="conversation-list">
+            <button className="create-group-trigger" onClick={() => setShowCreateGroup(true)}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              Create New Group
+            </button>
             {groups.length === 0 ? (
-              <div className="empty-state">No groups yet.</div>
+              <div className="empty-state">No groups yet. Create one above!</div>
             ) : (
               groups.map(g => (
                 <div key={g.id} className="conversation-item" onClick={() => openChat('group', g.id, g.name)}>
@@ -332,16 +437,32 @@ export default function ChatsPage() {
               <button onClick={handleSearch}>Search</button>
             </div>
             <div className="search-results">
-              {searchResults.map(u => (
-                <div key={u.id} className="friend-item">
-                  <div className="conv-avatar">{u.username?.[0]?.toUpperCase() || '?'}</div>
-                  <div className="conv-info">
-                    <span className="conv-name">{u.username}</span>
-                    <span className="conv-last">{u.email}</span>
+              {searchResults.map(u => {
+                const isFriend = friends.some(fr =>
+                  (fr.user_id === userId && fr.friend_id === u.id) ||
+                  (fr.friend_id === userId && fr.user_id === u.id)
+                );
+                const isPending = pendingRequests.some(pr =>
+                  (pr.user_id === userId && pr.friend_id === u.id) ||
+                  (pr.friend_id === userId && pr.user_id === u.id)
+                );
+                return (
+                  <div key={u.id} className="friend-item">
+                    <div className="conv-avatar">{u.username?.[0]?.toUpperCase() || '?'}</div>
+                    <div className="conv-info">
+                      <span className="conv-name">{u.username}</span>
+                      <span className="conv-last">{u.email}</span>
+                    </div>
+                    {isFriend ? (
+                      <span className="status-badge friend-badge">Friends</span>
+                    ) : isPending ? (
+                      <span className="status-badge pending-badge">Pending</span>
+                    ) : (
+                      <button className="add-btn" onClick={() => handleAddFriend(u.id)}>Add</button>
+                    )}
                   </div>
-                  <button className="add-btn" onClick={() => handleAddFriend(u.id)}>Add</button>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}

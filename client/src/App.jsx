@@ -13,7 +13,7 @@ import MorePage from './pages/MorePage/MorePage';
 import GamesPage from './pages/GamesPage/GamesPage';
 import ShopPage from './pages/ShopPage/ShopPage';
 import BookPage from './pages/BookPage/BookPage';
-import AdminPage from './pages/AdminPage/AdminPage';
+import MeetingPage from './pages/MeetingPage/MeetingPage';
 
 export default function App() {
   return (
@@ -32,7 +32,7 @@ export default function App() {
                   <Route path="/games" element={<GamesPage />} />
                   <Route path="/shop" element={<ShopPage />} />
                   <Route path="/book" element={<BookPage />} />
-                  <Route path="/admin" element={<AdminPage />} />
+                  <Route path="/meeting" element={<MeetingPage />} />
                 </Route>
               </Route>
             </Routes>

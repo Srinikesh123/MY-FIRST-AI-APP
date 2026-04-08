@@ -611,6 +611,145 @@ app.post('/api/users/create', async (req, res) => {
 });
 
 // ============================================
+// GET USER INFO — bypasses RLS via service key
+// ============================================
+
+app.get('/api/users/me', async (req, res) => {
+    try {
+        const { userId } = req.query;
+        if (!userId) return res.status(400).json({ error: 'userId required' });
+
+        const { data, error } = await supabaseAdmin
+            .from('users')
+            .select('id, email, username, plan, coins, is_admin, avatar_url, invites_count, created_at')
+            .eq('id', userId)
+            .single();
+
+        if (error) {
+            // If user row doesn't exist yet, return defaults
+            if (error.code === 'PGRST116') {
+                return res.json({ id: userId, plan: 'free', coins: 0, is_admin: false });
+            }
+            return res.status(500).json({ error: error.message });
+        }
+
+        return res.json(data);
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+
+// ============================================
+// UPDATE USER COINS — server-side safe update
+// ============================================
+
+app.post('/api/users/coins', async (req, res) => {
+    try {
+        const { userId, amount } = req.body;
+        if (!userId || amount === undefined) return res.status(400).json({ error: 'userId and amount required' });
+
+        const { data: user } = await supabaseAdmin.from('users').select('coins').eq('id', userId).single();
+        const newCoins = Math.max(0, (user?.coins || 0) + amount);
+
+        const { error } = await supabaseAdmin.from('users').update({ coins: newCoins }).eq('id', userId);
+        if (error) return res.status(500).json({ error: error.message });
+
+        return res.json({ coins: newCoins });
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+
+// ============================================
+// TURN / ICE SERVER CREDENTIALS
+// Priority: AWS Chime SDK > Metered.ca > Custom TURN > STUN only
+// ============================================
+
+app.get('/api/turn-credentials', async (req, res) => {
+    // Always include Google STUN as baseline
+    const iceServers = [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun3.l.google.com:19302' },
+    ];
+
+    // ── Option 1: Metered.ca (free TURN, just needs API key) ──
+    if (process.env.METERED_APP_NAME && process.env.METERED_API_KEY) {
+        try {
+            const url = `https://${process.env.METERED_APP_NAME}.metered.live/api/v1/turn/credentials?apiKey=${process.env.METERED_API_KEY}`;
+            const response = await fetch(url);
+            if (response.ok) {
+                const meteredServers = await response.json();
+                iceServers.push(...meteredServers);
+                console.log(`✅ Metered TURN: ${meteredServers.length} servers loaded`);
+                return res.json({ iceServers });
+            }
+        } catch (err) {
+            console.warn('⚠️  Metered.ca TURN fetch failed:', err.message);
+        }
+    }
+
+    // ── Option 2: AWS Chime SDK TURN servers ──
+    if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY && process.env.AWS_REGION) {
+        try {
+            const { ChimeSDKMeetingsClient, CreateMeetingCommand } = require('@aws-sdk/client-chime-sdk-meetings');
+            const chime = new ChimeSDKMeetingsClient({
+                region: process.env.AWS_REGION || 'us-east-1',
+                credentials: {
+                    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+                    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+                    sessionToken: process.env.AWS_SESSION_TOKEN,
+                },
+            });
+            // Chime TURN credentials come from its WAN/TURN infrastructure
+            // We get these from a temporary meeting creation
+            const { Meeting } = await chime.send(new CreateMeetingCommand({
+                ClientRequestToken: `turn-creds-${Date.now()}`,
+                MediaRegion: process.env.AWS_REGION || 'us-east-1',
+                ExternalMeetingId: `temp-${Date.now()}`,
+            }));
+            if (Meeting?.MediaPlacement?.TurnControlUrl) {
+                iceServers.push({
+                    urls: Meeting.MediaPlacement.TurnControlUrl,
+                    username: Meeting.MediaPlacement.EventIngestionUrl || '',
+                    credential: Meeting.MeetingId,
+                });
+                console.log('✅ AWS Chime TURN servers loaded');
+                return res.json({ iceServers });
+            }
+        } catch (err) {
+            console.warn('⚠️  AWS Chime TURN fetch failed:', err.message);
+        }
+    }
+
+    // ── Option 3: Custom TURN server env vars ──
+    if (process.env.TURN_URL) {
+        iceServers.push({
+            urls: process.env.TURN_URL.split(','),
+            username: process.env.TURN_USER || '',
+            credential: process.env.TURN_PASS || '',
+        });
+        console.log('✅ Custom TURN server loaded');
+        return res.json({ iceServers });
+    }
+
+    // ── Fallback: OpenRelay FREE public TURN — no API key needed, works globally ──
+    iceServers.push({
+        urls: [
+            'turn:openrelay.metered.ca:80',
+            'turn:openrelay.metered.ca:443',
+            'turn:openrelay.metered.ca:443?transport=tcp',
+            'turns:openrelay.metered.ca:443',
+        ],
+        username: 'openrelayproject',
+        credential: 'openrelayprojectsecret',
+    });
+    console.log('✅ OpenRelay free TURN loaded (no API key needed)');
+    return res.json({ iceServers });
+});
+
+// ============================================
 // UPDATE AVATAR
 // ============================================
 
@@ -875,10 +1014,176 @@ app.get('*', (req, res) => {
     }
 });
 
+// ============================================
+// SOCKET.IO — Meeting signaling server
+// ============================================
+
+const http = require('http');
+const { Server: SocketIO } = require('socket.io');
+
+const server = http.createServer(app);
+const io = new SocketIO(server, {
+    cors: { origin: '*', methods: ['GET', 'POST'] },
+});
+
+// Meeting rooms: Map<roomCode, { host, peers: Map<socketId, {userId,username}>, chat[], annotations[] }>
+const meetingRooms = new Map();
+
+function generateRoomCode() {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let code = '';
+    for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
+    return code;
+}
+
+io.on('connection', (socket) => {
+    console.log(`🔌 Socket connected: ${socket.id}`);
+
+    // Create meeting room
+    socket.on('create-room', ({ userId, username }, cb) => {
+        let code = generateRoomCode();
+        while (meetingRooms.has(code)) code = generateRoomCode();
+
+        meetingRooms.set(code, {
+            host: socket.id,
+            hostUserId: userId,
+            peers: new Map([[socket.id, { userId, username, isHost: true }]]),
+            chat: [],
+            annotations: [],
+            createdAt: Date.now(),
+        });
+
+        socket.join(code);
+        socket.roomCode = code;
+        console.log(`📹 Room ${code} created by ${username}`);
+        cb({ success: true, roomCode: code });
+    });
+
+    // Join meeting room
+    socket.on('join-room', ({ roomCode, userId, username }, cb) => {
+        const room = meetingRooms.get(roomCode);
+        if (!room) return cb({ success: false, error: 'Room not found' });
+
+        room.peers.set(socket.id, { userId, username, isHost: false });
+        socket.join(roomCode);
+        socket.roomCode = roomCode;
+
+        // Notify everyone in room
+        const peerList = [...room.peers.entries()].map(([sid, info]) => ({ socketId: sid, ...info }));
+        io.to(roomCode).emit('room-peers', peerList);
+
+        // Send chat history
+        socket.emit('chat-history', room.chat);
+
+        console.log(`👤 ${username} joined room ${roomCode}`);
+        cb({ success: true, peers: peerList });
+    });
+
+    // WebRTC signaling
+    socket.on('signal', ({ to, signal }) => {
+        io.to(to).emit('signal', { from: socket.id, signal });
+    });
+
+    // Chat message in meeting
+    socket.on('meeting-chat', ({ roomCode, message, username }) => {
+        const room = meetingRooms.get(roomCode);
+        if (!room) return;
+        const msg = { id: Date.now(), username, message, timestamp: new Date().toISOString() };
+        room.chat.push(msg);
+        io.to(roomCode).emit('meeting-chat', msg);
+    });
+
+    // Annotation
+    socket.on('annotation', ({ roomCode, data }) => {
+        const room = meetingRooms.get(roomCode);
+        if (!room) return;
+        room.annotations.push(data);
+        socket.to(roomCode).emit('annotation', data);
+    });
+
+    // Clear annotations
+    socket.on('clear-annotations', ({ roomCode }) => {
+        const room = meetingRooms.get(roomCode);
+        if (!room) return;
+        room.annotations = [];
+        io.to(roomCode).emit('clear-annotations');
+    });
+
+    // Remote control events
+    socket.on('remote-control', ({ roomCode, to, event }) => {
+        io.to(to).emit('remote-control', { from: socket.id, event });
+    });
+
+    // Request remote control
+    socket.on('request-control', ({ roomCode, to }) => {
+        const room = meetingRooms.get(roomCode);
+        const peer = room?.peers.get(socket.id);
+        io.to(to).emit('control-request', { from: socket.id, username: peer?.username });
+    });
+
+    // Grant remote control
+    socket.on('grant-control', ({ to }) => {
+        io.to(to).emit('control-granted', { from: socket.id });
+    });
+
+    // Deny remote control
+    socket.on('deny-control', ({ to }) => {
+        io.to(to).emit('control-denied', { from: socket.id });
+    });
+
+    // Screen share state change
+    socket.on('screen-share-started', ({ roomCode }) => {
+        socket.to(roomCode).emit('peer-screen-sharing', { socketId: socket.id, sharing: true });
+    });
+
+    socket.on('screen-share-stopped', ({ roomCode }) => {
+        socket.to(roomCode).emit('peer-screen-sharing', { socketId: socket.id, sharing: false });
+    });
+
+    // Disconnect
+    socket.on('disconnect', () => {
+        const code = socket.roomCode;
+        if (code && meetingRooms.has(code)) {
+            const room = meetingRooms.get(code);
+            const peer = room.peers.get(socket.id);
+            room.peers.delete(socket.id);
+
+            if (room.peers.size === 0) {
+                meetingRooms.delete(code);
+                console.log(`🗑️ Room ${code} deleted (empty)`);
+            } else {
+                // If host left, assign new host
+                if (room.host === socket.id) {
+                    const [newHostId, newHostInfo] = [...room.peers.entries()][0];
+                    room.host = newHostId;
+                    newHostInfo.isHost = true;
+                    io.to(newHostId).emit('promoted-to-host');
+                }
+
+                const peerList = [...room.peers.entries()].map(([sid, info]) => ({ socketId: sid, ...info }));
+                io.to(code).emit('room-peers', peerList);
+                io.to(code).emit('peer-left', { socketId: socket.id, username: peer?.username });
+            }
+        }
+        console.log(`❌ Socket disconnected: ${socket.id}`);
+    });
+});
+
+// Cleanup stale rooms every 30min
+setInterval(() => {
+    const now = Date.now();
+    for (const [code, room] of meetingRooms) {
+        if (now - room.createdAt > 6 * 60 * 60 * 1000) { // 6 hours
+            meetingRooms.delete(code);
+            console.log(`🧹 Stale room ${code} cleaned up`);
+        }
+    }
+}, 30 * 60 * 1000);
+
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, () => {
-    console.log(`🚀 voidzen AI Assistant server running on http://localhost:${PORT}`);
+server.listen(PORT, () => {
+    console.log(`🚀 voidzen server running on http://localhost:${PORT}`);
+    console.log(`📹 Meeting signaling server ready`);
     console.log(`✅ Groq client: ${groqClient ? 'initialized' : 'NOT initialized'}`);
-    console.log(`📝 Make sure to set GROQ_API_KEY in your .env file`);
 });

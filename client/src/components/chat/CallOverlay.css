@@ -1,0 +1,99 @@
+.call-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.call-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 40px;
+}
+
+.call-avatar {
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #667eea, #764ba2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 40px;
+  font-weight: 700;
+  color: #fff;
+  margin-bottom: 8px;
+  box-shadow: 0 0 0 8px rgba(102, 126, 234, 0.2), 0 0 0 16px rgba(102, 126, 234, 0.1);
+  animation: ring-pulse 2s ease-in-out infinite;
+}
+
+@keyframes ring-pulse {
+  0%, 100% { box-shadow: 0 0 0 8px rgba(102,126,234,0.2), 0 0 0 16px rgba(102,126,234,0.1); }
+  50% { box-shadow: 0 0 0 12px rgba(102,126,234,0.15), 0 0 0 24px rgba(102,126,234,0.05); }
+}
+
+.call-name {
+  font-size: 22px;
+  font-weight: 700;
+  color: #fff;
+}
+
+.call-timer {
+  font-size: 16px;
+  color: rgba(255,255,255,0.7);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 1px;
+}
+
+.call-ringing {
+  font-size: 14px;
+  color: rgba(255,255,255,0.6);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.call-controls {
+  display: flex;
+  gap: 20px;
+  margin-top: 24px;
+}
+
+.call-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 16px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255,255,255,0.15);
+  color: #fff;
+  cursor: pointer;
+  transition: all 0.2s;
+  width: 64px;
+  height: 64px;
+}
+
+.call-btn span {
+  font-size: 10px;
+  font-weight: 600;
+  position: absolute;
+  bottom: -20px;
+  white-space: nowrap;
+}
+
+.call-btn { position: relative; }
+
+.call-btn:hover { background: rgba(255,255,255,0.25); }
+.call-btn.muted { background: rgba(255,255,255,0.9); color: #333; }
+.call-btn.end-call { background: #ef4444; }
+.call-btn.end-call:hover { background: #dc2626; }

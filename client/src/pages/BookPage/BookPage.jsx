@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { api } from '../../services/api';
+import PageHeader from '../../components/ui/PageHeader';
 import './BookPage.css';
 
 export default function BookPage() {
@@ -28,6 +29,7 @@ export default function BookPage() {
   if (loading) {
     return (
       <div className="book-page">
+        <PageHeader title="My Book" subtitle="Your saved pages & memories" />
         <div className="book-loading">Loading your book...</div>
       </div>
     );
@@ -35,10 +37,7 @@ export default function BookPage() {
 
   return (
     <div className="book-page">
-      <div className="book-header">
-        <h2>My Book</h2>
-        <p>Your saved pages and memories</p>
-      </div>
+      <PageHeader title="My Book" subtitle="Your saved pages & memories" />
 
       {pages.length === 0 ? (
         <div className="book-empty">

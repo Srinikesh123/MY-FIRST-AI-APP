@@ -31,14 +31,35 @@ export async function searchUsers(supabase, query) {
   return data || [];
 }
 
+export async function checkExistingFriendship(supabase, userId, friendId) {
+  const { data } = await supabase
+    .from('friends')
+    .select('id, status')
+    .or(
+      `and(user_id.eq.${userId},friend_id.eq.${friendId}),and(user_id.eq.${friendId},friend_id.eq.${userId})`
+    )
+    .limit(1);
+  return data?.[0] || null;
+}
+
 export async function sendFriendRequest(supabase, userId, friendId) {
+  // Check if already friends or pending
+  const existing = await checkExistingFriendship(supabase, userId, friendId);
+  if (existing) {
+    if (existing.status === 'accepted') throw new Error('Already friends');
+    if (existing.status === 'pending') throw new Error('Request already pending');
+  }
+
   const { data, error } = await supabase
     .from('friends')
     .insert({ user_id: userId, friend_id: friendId, status: 'pending' })
     .select()
     .single();
 
-  if (error) throw error;
+  if (error) {
+    if (error.code === '23505') throw new Error('Friend request already exists');
+    throw error;
+  }
   return data;
 }
 

@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { api } from '../../services/api';
+import PageHeader from '../../components/ui/PageHeader';
 import './AdminPage.css';
 
 export default function AdminPage() {
@@ -45,8 +46,8 @@ export default function AdminPage() {
   if (!authenticated) {
     return (
       <div className="admin-page">
+        <PageHeader title="Admin Panel" />
         <div className="admin-auth">
-          <h2>Admin Panel</h2>
           <p>Enter the admin password to continue.</p>
           {error && <div className="admin-error">{error}</div>}
           <input
@@ -65,10 +66,7 @@ export default function AdminPage() {
 
   return (
     <div className="admin-page">
-      <div className="admin-header">
-        <h2>Admin Panel</h2>
-        <span className="admin-badge">{users.length} users</span>
-      </div>
+      <PageHeader title="Admin Panel" subtitle={`${users.length} users`} />
 
       {loading ? (
         <div className="admin-loading">Loading users...</div>

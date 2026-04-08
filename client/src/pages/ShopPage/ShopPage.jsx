@@ -1,6 +1,7 @@
 import { useAuth } from '../../contexts/AuthContext';
 import { useUser } from '../../contexts/UserContext';
 import * as userQ from '../../queries/userQueries';
+import PageHeader from '../../components/ui/PageHeader';
 import './ShopPage.css';
 
 const PLANS = [
@@ -42,11 +43,8 @@ export default function ShopPage() {
 
   return (
     <div className="shop-page">
-      <div className="shop-header">
-        <h2>Shop</h2>
-        <div className="coin-display">&#x1FA99; {coins} coins</div>
-      </div>
-      <p className="shop-subtitle">Current plan: <strong>{plan}</strong></p>
+      <PageHeader title="Shop" subtitle={`Current plan: ${plan}`} />
+      <div className="coin-display">&#x1FA99; {coins} coins</div>
 
       <div className="plans-grid">
         {PLANS.map(p => (

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import * as gameQ from '../../queries/gameQueries';
+import PageHeader from '../../components/ui/PageHeader';
 import './GamesPage.css';
 
 export default function GamesPage() {
@@ -18,7 +19,7 @@ export default function GamesPage() {
   if (loading) {
     return (
       <div className="games-page">
-        <div className="games-header"><h2>Games</h2></div>
+        <PageHeader title="Games" subtitle="Play games to earn coins!" />
         <div className="games-loading">Loading games...</div>
       </div>
     );
@@ -26,10 +27,7 @@ export default function GamesPage() {
 
   return (
     <div className="games-page">
-      <div className="games-header">
-        <h2>Games</h2>
-        <p>Play games to earn coins!</p>
-      </div>
+      <PageHeader title="Games" subtitle="Play games to earn coins!" />
       <div className="games-grid">
         {games.length === 0 ? (
           <div className="empty-state">No games available yet.</div>

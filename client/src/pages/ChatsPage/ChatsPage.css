@@ -7,11 +7,34 @@
 
 .chats-header {
   padding: 20px 20px 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
 .chats-header h2 {
   font-size: var(--font-size-xl);
   font-weight: 700;
+}
+
+.meeting-header-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  background: #3b82f6;
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-full);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.meeting-header-btn:hover {
+  background: #2563eb;
+  transform: translateY(-1px);
 }
 
 /* Tabs */
@@ -231,6 +254,32 @@
 .chat-room-header h3 {
   font-size: var(--font-size-md);
   font-weight: 600;
+  flex: 1;
+}
+
+.chat-room-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.call-action-btn {
+  width: 36px;
+  height: 36px;
+  border: none;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  transition: all var(--transition-fast);
+}
+
+.call-action-btn:hover {
+  background: var(--accent-blue);
+  color: white;
 }
 
 .chat-room-messages {
@@ -325,4 +374,130 @@
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+/* Create Group */
+.create-group-trigger {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 14px;
+  border: 2px dashed var(--border-color);
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--accent-blue);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  margin-bottom: 8px;
+}
+
+.create-group-trigger:hover {
+  border-color: var(--accent-blue);
+  background: rgba(102, 126, 234, 0.05);
+}
+
+.create-group-form {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.group-name-input {
+  width: 100%;
+  padding: 12px 18px;
+  border: 2px solid var(--border-color);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-md);
+  outline: none;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  margin-bottom: 12px;
+  box-sizing: border-box;
+}
+
+.group-name-input:focus {
+  border-color: var(--accent-blue);
+}
+
+.friend-item.selectable {
+  cursor: pointer;
+  border: 2px solid transparent;
+  border-radius: var(--radius-md);
+  transition: all var(--transition-fast);
+}
+
+.friend-item.selectable:hover {
+  border-color: var(--border-color);
+}
+
+.friend-item.selectable.selected {
+  border-color: var(--accent-blue);
+  background: rgba(102, 126, 234, 0.08);
+}
+
+.select-check {
+  width: 28px;
+  height: 28px;
+  border: 2px solid var(--border-color);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 700;
+  flex-shrink: 0;
+  transition: all var(--transition-fast);
+}
+
+.select-check.checked {
+  background: var(--accent-blue);
+  border-color: var(--accent-blue);
+  color: white;
+}
+
+.create-group-btn {
+  margin-top: 16px;
+  padding: 14px;
+  background: var(--primary-gradient);
+  color: white;
+  border: none;
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-md);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.create-group-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.create-group-btn:not(:disabled):hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+/* Status Badges */
+.status-badge {
+  padding: 5px 14px;
+  border-radius: var(--radius-full);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.friend-badge {
+  background: rgba(72, 187, 120, 0.15);
+  color: var(--success, #48bb78);
+}
+
+.pending-badge {
+  background: rgba(237, 137, 54, 0.15);
+  color: #ed8936;
 }
