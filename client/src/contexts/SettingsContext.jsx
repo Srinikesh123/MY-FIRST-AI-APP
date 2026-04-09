@@ -50,14 +50,10 @@ export function SettingsProvider({ children }) {
 
   async function loadSettings() {
     try {
-      const { data, error } = await supabase
-        .from('user_settings')
-        .select('settings')
-        .eq('user_id', user.id)
-        .single();
-
-      if (!error && data?.settings) {
-        setSettings({ ...DEFAULT_SETTINGS, ...data.settings });
+      const res = await fetch(`/api/settings?userId=${user.id}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.settings) setSettings({ ...DEFAULT_SETTINGS, ...data.settings });
       }
     } catch (err) {
       console.error('Failed to load settings:', err);
@@ -70,16 +66,15 @@ export function SettingsProvider({ children }) {
     setSettings(prev => {
       const updated = { ...prev, [key]: value };
       if (user) {
-        supabase
-          .from('user_settings')
-          .upsert({ user_id: user.id, settings: updated }, { onConflict: 'user_id' })
-          .then(({ error }) => {
-            if (error) console.error('Failed to save setting:', error);
-          });
+        fetch('/api/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId: user.id, settings: updated }),
+        }).catch(err => console.error('Failed to save setting:', err));
       }
       return updated;
     });
-  }, [user, supabase]);
+  }, [user]);
 
   function applySettings(s) {
     const body = document.body;

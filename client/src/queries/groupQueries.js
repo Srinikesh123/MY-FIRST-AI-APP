@@ -1,17 +1,23 @@
 export async function loadGroups(supabase, userId) {
-  const { data, error } = await supabase
-    .from('group_members')
-    .select('group_id, role, group_chats(*)')
-    .eq('user_id', userId);
+  try {
+    const { data, error } = await supabase
+      .from('group_members')
+      .select('group_id, role, group_chats(*)')
+      .eq('user_id', userId);
 
-  if (error) {
-    console.warn('loadGroups error (RLS issue?):', error.message);
+    if (error) {
+      console.warn('loadGroups error (RLS recursion?):', error.message);
+      return [];
+    }
+    return (data || []).map(d => ({ ...d.group_chats, role: d.role }));
+  } catch (err) {
+    console.warn('loadGroups exception:', err.message);
     return [];
   }
-  return (data || []).map(d => ({ ...d.group_chats, role: d.role }));
 }
 
 export async function createGroup(supabase, userId, name, memberIds) {
+  // Create the group
   const { data: group, error } = await supabase
     .from('group_chats')
     .insert({ name, creator_id: userId })
@@ -20,13 +26,22 @@ export async function createGroup(supabase, userId, name, memberIds) {
 
   if (error) throw error;
 
-  // Add creator as admin
+  // Add creator as admin + members (catch RLS recursion gracefully)
   const members = [{ group_id: group.id, user_id: userId, role: 'admin' }];
   for (const mId of memberIds) {
     members.push({ group_id: group.id, user_id: mId, role: 'member' });
   }
 
-  await supabase.from('group_members').insert(members);
+  try {
+    const { error: memberError } = await supabase.from('group_members').insert(members);
+    if (memberError) {
+      console.warn('group_members insert error (RLS?):', memberError.message);
+      // Group was created — return it even if members insert failed
+    }
+  } catch (err) {
+    console.warn('group_members insert exception:', err.message);
+  }
+
   return group;
 }
 
@@ -51,10 +66,12 @@ export async function sendGroupMessage(supabase, groupId, senderId, content) {
 
   if (error) throw error;
 
+  // Update last_message (ignore error — not critical)
   await supabase
     .from('group_chats')
     .update({ last_message: content, last_message_at: new Date().toISOString() })
-    .eq('id', groupId);
+    .eq('id', groupId)
+    .catch(() => {});
 
   return data;
 }

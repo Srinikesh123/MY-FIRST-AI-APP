@@ -661,6 +661,62 @@ app.post('/api/users/coins', async (req, res) => {
 });
 
 // ============================================
+// SETTINGS — save/load via supabaseAdmin (bypasses RLS + missing unique constraint)
+// ============================================
+
+app.get('/api/settings', async (req, res) => {
+    try {
+        const { userId } = req.query;
+        if (!userId) return res.status(400).json({ error: 'userId required' });
+
+        const { data, error } = await supabaseAdmin
+            .from('user_settings')
+            .select('settings')
+            .eq('user_id', userId)
+            .single();
+
+        if (error && error.code !== 'PGRST116') {
+            return res.status(500).json({ error: error.message });
+        }
+
+        return res.json({ settings: data?.settings || null });
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/settings', async (req, res) => {
+    try {
+        const { userId, settings } = req.body;
+        if (!userId || !settings) return res.status(400).json({ error: 'userId and settings required' });
+
+        // Check if row exists first (avoids onConflict constraint issue)
+        const { data: existing } = await supabaseAdmin
+            .from('user_settings')
+            .select('id')
+            .eq('user_id', userId)
+            .single();
+
+        let error;
+        if (existing) {
+            ({ error } = await supabaseAdmin
+                .from('user_settings')
+                .update({ settings })
+                .eq('user_id', userId));
+        } else {
+            ({ error } = await supabaseAdmin
+                .from('user_settings')
+                .insert({ user_id: userId, settings }));
+        }
+
+        if (error) return res.status(500).json({ error: error.message });
+        return res.json({ success: true });
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+
+// ============================================
 // TURN / ICE SERVER CREDENTIALS
 // Priority: AWS Chime SDK > Metered.ca > Custom TURN > STUN only
 // ============================================

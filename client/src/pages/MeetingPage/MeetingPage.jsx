@@ -72,6 +72,7 @@ export default function MeetingPage() {
   const dataChannelsRef  = useRef(new Map()); // socketId → RTCDataChannel
   const localStreamRef   = useRef(null);
   const screenStreamRef  = useRef(null);
+  const offerToPeerRef   = useRef(null); // ref so setupSocketListeners can call it without circular dep
   const remoteVideosRef  = useRef(new Map());
   const localVideoRef    = useRef(null);
   const screenVideoRef   = useRef(null);
@@ -289,8 +290,8 @@ export default function MeetingPage() {
       setPeers(others);
       setView('meeting');
       setConnecting(false);
-      // Offer to all existing peers
-      others.forEach(p => offerToPeer(p.socketId));
+      // Offer to all existing peers — use ref to avoid circular dependency crash
+      others.forEach(p => offerToPeerRef.current?.(p.socketId));
     });
     socket.on('denied', () => {
       setView('lobby');
@@ -303,7 +304,7 @@ export default function MeetingPage() {
     socket.on('disconnect', (reason) => {
       if (reason !== 'io client disconnect') setError('Disconnected. Reconnecting...');
     });
-  }, [buildPeerConnection, offerToPeer]);
+  }, [buildPeerConnection]);
 
   const offerToPeer = useCallback(async (peerId) => {
     const socket = socketRef.current;
@@ -321,6 +322,8 @@ export default function MeetingPage() {
       console.error('Offer failed:', err);
     }
   }, [buildPeerConnection]);
+  // Keep ref in sync so setupSocketListeners can call offerToPeer without circular dep
+  offerToPeerRef.current = offerToPeer;
 
   useEffect(() => {
     if (view !== 'meeting') return;
