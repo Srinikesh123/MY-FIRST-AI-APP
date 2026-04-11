@@ -191,11 +191,29 @@ export default function MeetingPage() {
 
     pc.ontrack = (e) => {
       const stream = e.streams[0];
+      if (!stream) return;
       remoteVideosRef.current.set(peerId, stream);
-      // If it's a screen share (video track, high res) show in main area
+
+      if (e.track.kind === 'audio') {
+        // Play remote audio immediately via a hidden audio element
+        let audioEl = document.getElementById(`remote-audio-${peerId}`);
+        if (!audioEl) {
+          audioEl = document.createElement('audio');
+          audioEl.id = `remote-audio-${peerId}`;
+          audioEl.autoplay = true;
+          audioEl.playsInline = true;
+          document.body.appendChild(audioEl);
+        }
+        audioEl.srcObject = stream;
+        audioEl.play().catch(() => {});
+      }
+
       if (e.track.kind === 'video') {
+        // Attach to remote screen ref if mounted
         if (remoteScreenRef.current) remoteScreenRef.current.srcObject = stream;
       }
+
+      // Trigger re-render so peer tiles update
       setPeers(prev => [...prev]);
     };
 
@@ -267,6 +285,8 @@ export default function MeetingPage() {
       peerConnsRef.current.delete(socketId);
       dataChannelsRef.current.delete(socketId);
       remoteVideosRef.current.delete(socketId);
+      // Clean up hidden audio element
+      document.getElementById(`remote-audio-${socketId}`)?.remove();
       setPeers(prev => prev.filter(p => p.socketId !== socketId));
     });
 
@@ -330,12 +350,27 @@ export default function MeetingPage() {
     peers.forEach(p => { if (!peerConnsRef.current.has(p.socketId)) offerToPeer(p.socketId); });
   }, [peers, view, offerToPeer]);
 
+  // ─── Acquire mic BEFORE entering meeting so buildPeerConnection has audio ──
+  const acquireMic = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+      localStreamRef.current = stream;
+      setIsMuted(false);
+      return stream;
+    } catch (_) {
+      // Mic denied — continue without audio
+      return null;
+    }
+  };
+
   // ─── Create / Join ─────────────────────────────────────────────────────────
   const handleCreate = async () => {
     if (connecting) return;
     setError(''); setConnecting(true);
     try {
-      await fetchIceServers();
+      await Promise.all([fetchIceServers(), acquireMic()]);
       const socket = await connectSocket();
       setupSocketListeners(socket);
       const res = await new Promise((resolve, reject) => {
@@ -359,7 +394,7 @@ export default function MeetingPage() {
     if (connecting) return;
     setError(''); setConnecting(true);
     try {
-      await fetchIceServers();
+      await Promise.all([fetchIceServers(), acquireMic()]);
       const socket = await connectSocket();
       setupSocketListeners(socket);
       const res = await new Promise((resolve, reject) => {
@@ -377,31 +412,8 @@ export default function MeetingPage() {
     // NOTE: setConnecting(false) is called in 'admitted'/'denied' listeners, not here
   };
 
-  // ─── Auto-start mic when entering meeting ─────────────────────────────────
-  useEffect(() => {
-    if (view !== 'meeting') return;
-    let active = true;
-    (async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 48000 },
-        });
-        if (!active) { stream.getTracks().forEach(t => t.stop()); return; }
-        localStreamRef.current = stream;
-        setIsMuted(false);
-        // Add audio track to any existing peer connections
-        for (const [peerId, pc] of peerConnsRef.current) {
-          stream.getAudioTracks().forEach(t => pc.addTrack(t, stream));
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          socketRef.current?.emit('signal', { to: peerId, signal: offer });
-        }
-      } catch (_) {
-        // Mic denied — fine, user can click manually
-      }
-    })();
-    return () => { active = false; };
-  }, [view]);
+  // Mic is now acquired in handleCreate/handleJoin BEFORE entering the meeting
+  // so buildPeerConnection always has audio tracks available.
 
   // ─── Host admit / deny guests ──────────────────────────────────────────────
   const admitGuest = (guestSocketId) => {
@@ -417,54 +429,41 @@ export default function MeetingPage() {
   // ─── Screen Share ──────────────────────────────────────────────────────────
   const startScreenShare = async () => {
     try {
-      // Maximum quality — 1080p 30fps, system audio optional
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: {
-          width: { ideal: 1920, max: 3840 },
-          height: { ideal: 1080, max: 2160 },
-          frameRate: { ideal: 30, max: 60 },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+          frameRate: { ideal: 30 },
           cursor: 'always',
-          displaySurface: 'monitor', // prefer full monitor
-          logicalSurface: true,
-          contentHint: 'detail', // optimize for text/UI sharpness
         },
-        audio: {
-          echoCancellation: false,
-          noiseSuppression: false,
-          sampleRate: 44100,
-        },
-        selfBrowser: false,
+        audio: true,
       });
 
+      const videoTrack = stream.getVideoTracks()[0];
+      if (videoTrack) videoTrack.contentHint = 'detail';
+
       screenStreamRef.current = stream;
-      if (screenVideoRef.current) {
-        screenVideoRef.current.srcObject = stream;
-        screenVideoRef.current.play().catch(() => {});
-      }
+      // Set state first so the <video> element renders, then attach in the callback ref
       setIsScreenSharing(true);
       socketRef.current?.emit('screen-share-started', { roomCode: roomCodeRef.current });
 
       // Push screen track to all peers + renegotiate
       for (const [peerId, pc] of peerConnsRef.current) {
-        const videoTrack = stream.getVideoTracks()[0];
-        // contentHint for sharpness (text/UI mode)
-        videoTrack.contentHint = 'detail';
-
-        const sender = pc.getSenders().find(s => s.track?.kind === 'video');
-        if (sender) {
-          await sender.replaceTrack(videoTrack);
-          await setMaxBitrate(pc, 8000);
+        const videoSender = pc.getSenders().find(s => s.track?.kind === 'video');
+        if (videoSender) {
+          await videoSender.replaceTrack(videoTrack);
         } else {
-          stream.getTracks().forEach(t => pc.addTrack(t, stream));
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          socketRef.current?.emit('signal', { to: peerId, signal: offer });
-          await setMaxBitrate(pc, 8000);
+          pc.addTrack(videoTrack, stream);
         }
+        // Renegotiate so remote side picks up the new track
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        socketRef.current?.emit('signal', { to: peerId, signal: offer });
+        await setMaxBitrate(pc, 8000);
       }
 
-      // Auto-stop when user clicks "Stop sharing" in browser UI
-      stream.getVideoTracks()[0].onended = () => stopScreenShare();
+      // Auto-stop when user clicks browser "Stop sharing" button
+      videoTrack.onended = () => stopScreenShare();
 
     } catch (err) {
       if (err.name !== 'NotAllowedError') setError('Screen share failed: ' + err.message);
@@ -588,7 +587,10 @@ export default function MeetingPage() {
     clearInterval(statsTimerRef.current);
     localStreamRef.current?.getTracks().forEach(t => t.stop());
     screenStreamRef.current?.getTracks().forEach(t => t.stop());
-    peerConnsRef.current.forEach(pc => pc.close());
+    peerConnsRef.current.forEach((pc, peerId) => {
+      pc.close();
+      document.getElementById(`remote-audio-${peerId}`)?.remove();
+    });
     peerConnsRef.current.clear();
     dataChannelsRef.current.clear();
     remoteVideosRef.current.clear();
@@ -754,7 +756,13 @@ export default function MeetingPage() {
           {/* My screen share */}
           {isScreenSharing && (
             <div className="screen-container" onMouseMove={sendCursorPosition}>
-              <video ref={screenVideoRef} autoPlay playsInline muted className="screen-video" />
+              <video ref={el => {
+                screenVideoRef.current = el;
+                if (el && screenStreamRef.current) {
+                  el.srcObject = screenStreamRef.current;
+                  el.play().catch(() => {});
+                }
+              }} autoPlay playsInline muted className="screen-video" />
               {remoteCursor && (
                 <div className="remote-cursor-dot" style={{ left: `${remoteCursor.x * 100}%`, top: `${remoteCursor.y * 100}%` }} />
               )}
@@ -769,7 +777,17 @@ export default function MeetingPage() {
           {!isScreenSharing && hasRemoteScreen && (
             <div className="screen-container">
               <video
-                ref={remoteScreenRef}
+                ref={el => {
+                  remoteScreenRef.current = el;
+                  if (el) {
+                    // Grab stream immediately on mount in case ontrack already fired
+                    const sharingPeer = peers.find(p => p.isScreenSharing);
+                    if (sharingPeer) {
+                      const stream = remoteVideosRef.current.get(sharingPeer.socketId);
+                      if (stream) el.srcObject = stream;
+                    }
+                  }
+                }}
                 autoPlay playsInline
                 className={`screen-video ${remoteControlActive ? 'remote-control-active' : ''}`}
                 onMouseMove={handleRemoteVideoMouseMove}

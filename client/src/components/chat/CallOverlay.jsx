@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useToast } from '../ui/Toast';
 import './CallOverlay.css';
 
 let ICE_SERVERS = [
@@ -15,14 +16,19 @@ async function loadIceServers() {
 }
 
 export default function CallOverlay({ supabase, userId, chatId, chatName, onEnd }) {
-  const [status, setStatus] = useState('connecting'); // connecting | ringing | active | ended
+  const [status, setStatus] = useState('connecting');
   const [isMuted, setIsMuted] = useState(false);
   const [duration, setDuration] = useState(0);
+  const { error: showError } = useToast();
 
   const pcRef = useRef(null);
   const localStreamRef = useRef(null);
+  const remoteAudioRef = useRef(null);
   const channelRef = useRef(null);
   const timerRef = useRef(null);
+  const mountedRef = useRef(true);
+  const onEndRef = useRef(onEnd);
+  onEndRef.current = onEnd;
 
   // Timer when active
   useEffect(() => {
@@ -37,98 +43,146 @@ export default function CallOverlay({ supabase, userId, chatId, chatName, onEnd 
   const cleanup = useCallback(() => {
     clearInterval(timerRef.current);
     localStreamRef.current?.getTracks().forEach(t => t.stop());
+    localStreamRef.current = null;
+    if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
     pcRef.current?.close();
-    if (channelRef.current) supabase.removeChannel(channelRef.current);
+    pcRef.current = null;
+    if (channelRef.current) {
+      supabase.removeChannel(channelRef.current);
+      channelRef.current = null;
+    }
   }, [supabase]);
 
-  const handleEnd = useCallback((notify = true) => {
+  const endCall = useCallback((notify = true) => {
+    if (!mountedRef.current) return;
+    mountedRef.current = false;
+
     if (notify && channelRef.current) {
+      // Send end signal, then wait for it to actually transmit before cleanup
       channelRef.current.send({
         type: 'broadcast', event: 'signal',
         payload: { from: userId, type: 'end-call' },
       });
+      setTimeout(() => {
+        cleanup();
+        onEndRef.current();
+      }, 300);
+    } else {
+      cleanup();
+      onEndRef.current();
     }
-    cleanup();
-    onEnd();
-  }, [cleanup, onEnd, userId]);
+  }, [cleanup, userId]);
 
   useEffect(() => {
-    let mounted = true;
+    mountedRef.current = true;
 
     const setup = async () => {
       try {
-        await loadIceServers(); // fetch TURN before creating peer connection
-        // Audio only
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-        if (!mounted) { stream.getTracks().forEach(t => t.stop()); return; }
+        await loadIceServers();
+
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+          video: false,
+        });
+        if (!mountedRef.current) { stream.getTracks().forEach(t => t.stop()); return; }
         localStreamRef.current = stream;
 
         const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
         pcRef.current = pc;
         stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
-        pc.ontrack = () => { if (mounted) setStatus('active'); };
+        // When remote audio arrives — play it
+        pc.ontrack = (e) => {
+          if (!mountedRef.current) return;
+          const remoteStream = e.streams[0];
+          if (remoteStream && remoteAudioRef.current) {
+            remoteAudioRef.current.srcObject = remoteStream;
+            remoteAudioRef.current.play().catch(() => {});
+          }
+          setStatus('active');
+        };
 
+        pc.oniceconnectionstatechange = () => {
+          const state = pc.iceConnectionState;
+          if (state === 'connected') setStatus('active');
+          if (state === 'disconnected' || state === 'failed') endCall(false);
+        };
+
+        // Supabase realtime channel for signaling
         const channel = supabase.channel(`call-${chatId}`, {
           config: { broadcast: { self: false } },
         });
         channelRef.current = channel;
 
+        // Handle incoming signals
         channel.on('broadcast', { event: 'signal' }, async ({ payload }) => {
-          if (payload.from === userId || !mounted) return;
+          if (!payload || payload.from === userId || !mountedRef.current) return;
+          const currentPc = pcRef.current;
+          if (!currentPc) return;
+
           try {
             if (payload.type === 'offer') {
-              await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-              const answer = await pc.createAnswer();
-              await pc.setLocalDescription(answer);
-              channel.send({ type: 'broadcast', event: 'signal', payload: { from: userId, type: 'answer', sdp: answer } });
+              await currentPc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+              const answer = await currentPc.createAnswer();
+              await currentPc.setLocalDescription(answer);
+              channel.send({
+                type: 'broadcast', event: 'signal',
+                payload: { from: userId, type: 'answer', sdp: answer },
+              });
             } else if (payload.type === 'answer') {
-              await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-            } else if (payload.type === 'ice-candidate') {
-              await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
+              await currentPc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+            } else if (payload.type === 'ice-candidate' && payload.candidate) {
+              await currentPc.addIceCandidate(new RTCIceCandidate(payload.candidate));
             } else if (payload.type === 'end-call') {
-              handleEnd(false);
+              endCall(false);
             }
           } catch (err) {
             console.error('Signal error:', err);
           }
         });
 
-        await channel.subscribe();
-
         pc.onicecandidate = (e) => {
-          if (e.candidate) {
-            channel.send({ type: 'broadcast', event: 'signal', payload: { from: userId, type: 'ice-candidate', candidate: e.candidate } });
+          if (e.candidate && channelRef.current) {
+            channelRef.current.send({
+              type: 'broadcast', event: 'signal',
+              payload: { from: userId, type: 'ice-candidate', candidate: e.candidate },
+            });
           }
         };
 
-        pc.oniceconnectionstatechange = () => {
-          if (pc.iceConnectionState === 'connected' && mounted) setStatus('active');
-          if ((pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') && mounted) handleEnd(false);
-        };
+        await channel.subscribe();
 
+        // Send offer
         setStatus('ringing');
-        const offer = await pc.createOffer();
+        const offer = await pc.createOffer({ offerToReceiveAudio: true });
         await pc.setLocalDescription(offer);
-        channel.send({ type: 'broadcast', event: 'signal', payload: { from: userId, type: 'offer', sdp: offer } });
+        channel.send({
+          type: 'broadcast', event: 'signal',
+          payload: { from: userId, type: 'offer', sdp: offer },
+        });
 
-        // Timeout if no answer in 30s
+        // Timeout — 30 seconds
         setTimeout(() => {
-          if (mounted && (status === 'ringing' || status === 'connecting')) handleEnd(false);
+          if (mountedRef.current && pcRef.current?.iceConnectionState !== 'connected') {
+            endCall(false);
+          }
         }, 30000);
 
       } catch (err) {
         console.error('Call setup error:', err);
-        if (mounted) {
-          alert('Could not access microphone. Please allow permissions.');
-          onEnd();
+        if (mountedRef.current) {
+          showError('Could not access microphone. Please allow permissions.');
+          onEndRef.current();
         }
       }
     };
 
     setup();
-    return () => { mounted = false; cleanup(); };
-  }, []);
+    return () => {
+      mountedRef.current = false;
+      cleanup();
+    };
+  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
 
   const toggleMute = () => {
     const track = localStreamRef.current?.getAudioTracks()[0];
@@ -137,17 +191,14 @@ export default function CallOverlay({ supabase, userId, chatId, chatName, onEnd 
 
   return (
     <div className="call-overlay">
+      <audio ref={remoteAudioRef} autoPlay playsInline />
       <div className="call-container">
-        {/* Avatar */}
         <div className="call-avatar">{chatName?.[0]?.toUpperCase() || '?'}</div>
-
-        {/* Status */}
         <div className="call-name">{chatName}</div>
         {status === 'active' && <div className="call-timer">{fmt(duration)}</div>}
         {status === 'ringing' && <div className="call-ringing">Calling...</div>}
         {status === 'connecting' && <div className="call-ringing">Connecting...</div>}
 
-        {/* Controls — audio only */}
         <div className="call-controls">
           <button className={`call-btn ${isMuted ? 'muted' : ''}`} onClick={toggleMute} title={isMuted ? 'Unmute' : 'Mute'}>
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -159,7 +210,7 @@ export default function CallOverlay({ supabase, userId, chatId, chatName, onEnd 
             <span>{isMuted ? 'Unmute' : 'Mute'}</span>
           </button>
 
-          <button className="call-btn end-call" onClick={() => handleEnd(true)} title="End Call">
+          <button className="call-btn end-call" onClick={() => endCall(true)} title="End Call">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M10.68 13.31a16 16 0 003.41 2.6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 004 .64 2 2 0 012 2v3a2 2 0 01-2.18 2A19.79 19.79 0 013.18 2.18 2 2 0 015.18.18h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.91 8.09a16 16 0 001.77 5.22z"/>
             </svg>

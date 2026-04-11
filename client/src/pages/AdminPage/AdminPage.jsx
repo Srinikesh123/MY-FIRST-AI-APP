@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
+import { useToast } from '../../components/ui/Toast';
 import { api } from '../../services/api';
 import PageHeader from '../../components/ui/PageHeader';
 import './AdminPage.css';
@@ -11,6 +12,7 @@ export default function AdminPage() {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const { error: showError } = useToast();
 
   const handleAuth = () => {
     if (password === 'srinikesh') {
@@ -39,7 +41,7 @@ export default function AdminPage() {
       await api.post('/admin/update-user', { adminUserId: user.id, userId: targetUserId, [field]: value });
       await loadUsers();
     } catch (err) {
-      alert('Failed to update: ' + err.message);
+      showError('Failed to update: ' + err.message);
     }
   };
 

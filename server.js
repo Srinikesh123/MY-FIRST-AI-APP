@@ -578,24 +578,35 @@ app.post('/api/users/create', async (req, res) => {
 
         const displayName = username || email.split('@')[0];
 
-        const upsertData = {
-            id: userId,
-            email: email,
-            username: displayName,
-            plan: 'free',
-            coins: 0,
-            invites_count: 0,
-            is_admin: false,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
-        };
-        if (avatar_url) upsertData.avatar_url = avatar_url;
-
-        // Upsert: create if not exists, update email/username if exists
-        // Use supabaseAdmin (service key) to bypass RLS — server has no user session
-        const { data, error } = await supabaseAdmin
+        // Check if user already exists — only set defaults on first creation
+        const { data: existing } = await supabaseAdmin
             .from('users')
-            .upsert(upsertData, { onConflict: 'id' });
+            .select('id')
+            .eq('id', userId)
+            .single();
+
+        let error;
+        if (existing) {
+            // User exists — only update email/username/avatar, preserve coins/plan/etc.
+            const updateData = { email, username: displayName, updated_at: new Date().toISOString() };
+            if (avatar_url) updateData.avatar_url = avatar_url;
+            ({ error } = await supabaseAdmin.from('users').update(updateData).eq('id', userId));
+        } else {
+            // New user — set all defaults
+            const insertData = {
+                id: userId,
+                email: email,
+                username: displayName,
+                plan: 'free',
+                coins: 0,
+                invites_count: 0,
+                is_admin: false,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+            };
+            if (avatar_url) insertData.avatar_url = avatar_url;
+            ({ error } = await supabaseAdmin.from('users').insert(insertData));
+        }
 
         if (error) {
             console.error('User create error:', error);
@@ -661,6 +672,27 @@ app.post('/api/users/coins', async (req, res) => {
 });
 
 // ============================================
+// BULK USER LOOKUP — bypasses RLS, returns id/username/email/avatar
+// ============================================
+
+app.post('/api/users/bulk', async (req, res) => {
+    try {
+        const { userIds } = req.body;
+        if (!userIds?.length) return res.json({ users: [] });
+
+        const { data, error } = await supabaseAdmin
+            .from('users')
+            .select('id, username, email, avatar_url')
+            .in('id', userIds);
+
+        if (error) return res.status(500).json({ error: error.message });
+        return res.json({ users: data || [] });
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+
+// ============================================
 // SETTINGS — save/load via supabaseAdmin (bypasses RLS + missing unique constraint)
 // ============================================
 
@@ -711,6 +743,103 @@ app.post('/api/settings', async (req, res) => {
 
         if (error) return res.status(500).json({ error: error.message });
         return res.json({ success: true });
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+
+// ============================================
+// GROUPS — use supabaseAdmin to bypass RLS recursion on group_members
+// ============================================
+
+app.get('/api/groups', async (req, res) => {
+    try {
+        const { userId } = req.query;
+        if (!userId) return res.status(400).json({ error: 'userId required' });
+
+        const { data, error } = await supabaseAdmin
+            .from('group_members')
+            .select('group_id, role, group_chats(*)')
+            .eq('user_id', userId);
+
+        if (error) return res.status(500).json({ error: error.message });
+        const groups = (data || []).map(d => ({ ...d.group_chats, role: d.role }));
+        return res.json({ groups });
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/groups', async (req, res) => {
+    try {
+        const { userId, name, memberIds } = req.body;
+        if (!userId || !name) return res.status(400).json({ error: 'userId and name required' });
+
+        const { data: group, error: groupError } = await supabaseAdmin
+            .from('group_chats')
+            .insert({ name, creator_id: userId })
+            .select()
+            .single();
+
+        if (groupError) return res.status(500).json({ error: groupError.message });
+
+        const members = [{ group_id: group.id, user_id: userId, role: 'admin' }];
+        for (const mId of (memberIds || [])) {
+            members.push({ group_id: group.id, user_id: mId, role: 'member' });
+        }
+
+        const { error: memberError } = await supabaseAdmin.from('group_members').insert(members);
+        if (memberError) console.warn('group_members insert error:', memberError.message);
+
+        return res.json({ group });
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+
+// ============================================
+// GROUP MESSAGES — bypass RLS recursion on group_members
+// ============================================
+
+app.get('/api/groups/messages', async (req, res) => {
+    try {
+        const { groupId, limit } = req.query;
+        if (!groupId) return res.status(400).json({ error: 'groupId required' });
+
+        const { data, error } = await supabaseAdmin
+            .from('group_messages')
+            .select('*')
+            .eq('group_id', groupId)
+            .order('created_at', { ascending: true })
+            .limit(parseInt(limit) || 100);
+
+        if (error) return res.status(500).json({ error: error.message });
+        return res.json({ messages: data || [] });
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/groups/messages', async (req, res) => {
+    try {
+        const { groupId, senderId, content } = req.body;
+        if (!groupId || !senderId || !content) return res.status(400).json({ error: 'groupId, senderId, content required' });
+
+        const { data, error } = await supabaseAdmin
+            .from('group_messages')
+            .insert({ group_id: groupId, sender_id: senderId, content })
+            .select()
+            .single();
+
+        if (error) return res.status(500).json({ error: error.message });
+
+        // Update last_message on the group chat
+        await supabaseAdmin
+            .from('group_chats')
+            .update({ last_message: content, last_message_at: new Date().toISOString() })
+            .eq('id', groupId);
+
+        return res.json({ message: data });
     } catch (err) {
         return res.status(500).json({ error: err.message });
     }

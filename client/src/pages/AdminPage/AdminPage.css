@@ -43,7 +43,7 @@
 }
 
 .admin-password-input:focus {
-  border-color: var(--accent-blue);
+  border-color: var(--accent-active);
 }
 
 .admin-auth-btn {

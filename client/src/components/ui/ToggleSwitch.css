@@ -38,7 +38,7 @@
 }
 
 .toggle-switch input:checked + .toggle-slider {
-  background: var(--accent-blue);
+  background: var(--accent-active);
 }
 
 .toggle-switch input:checked + .toggle-slider::after {

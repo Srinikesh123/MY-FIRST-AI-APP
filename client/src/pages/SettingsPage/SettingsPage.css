@@ -56,7 +56,7 @@
 }
 
 .setting-select:focus {
-  border-color: var(--accent-blue);
+  border-color: var(--accent-active);
 }
 
 .settings-actions-section {
@@ -110,6 +110,6 @@
 }
 
 .btn-back:hover {
-  border-color: var(--accent-blue);
-  color: var(--accent-blue);
+  border-color: var(--accent-active);
+  color: var(--accent-active);
 }

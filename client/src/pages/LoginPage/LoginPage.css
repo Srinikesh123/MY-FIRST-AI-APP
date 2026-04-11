@@ -18,7 +18,7 @@
 .login-card h1 {
   text-align: center;
   font-size: var(--font-size-2xl);
-  color: var(--accent-blue);
+  color: var(--accent-active);
   margin-bottom: 4px;
 }
 
@@ -51,8 +51,8 @@
 }
 
 .login-tab.active {
-  color: var(--accent-blue);
-  border-bottom-color: var(--accent-blue);
+  color: var(--accent-active);
+  border-bottom-color: var(--accent-active);
   font-weight: 600;
 }
 
@@ -90,7 +90,7 @@
 }
 
 .form-group input:focus {
-  border-color: var(--accent-blue);
+  border-color: var(--accent-active);
 }
 
 .btn-login {

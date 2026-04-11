@@ -56,7 +56,7 @@
 
 .input-action-btn:hover {
   background: var(--bg-tertiary);
-  color: var(--accent-blue);
+  color: var(--accent-active);
 }
 
 .chat-input {
@@ -76,7 +76,7 @@
 }
 
 .chat-input:focus {
-  border-color: var(--accent-blue);
+  border-color: var(--accent-active);
 }
 
 .chat-input::placeholder {

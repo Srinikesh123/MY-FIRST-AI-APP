@@ -45,7 +45,7 @@
 }
 
 .game-card:hover {
-  border-color: var(--accent-blue);
+  border-color: var(--accent-active);
   transform: translateY(-3px);
   box-shadow: var(--shadow-md);
 }

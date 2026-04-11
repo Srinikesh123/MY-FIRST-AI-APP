@@ -1,5 +1,6 @@
 import { useAuth } from '../../contexts/AuthContext';
 import { useUser } from '../../contexts/UserContext';
+import { useToast } from '../../components/ui/Toast';
 import * as userQ from '../../queries/userQueries';
 import PageHeader from '../../components/ui/PageHeader';
 import './ShopPage.css';
@@ -24,18 +25,20 @@ const PLANS = [
 export default function ShopPage() {
   const { user, supabase } = useAuth();
   const { coins, plan, refreshUser, loading } = useUser();
+  const { success, warn, error: showError, confirm: showConfirm } = useToast();
 
   const handleBuy = async (p) => {
-    if (plan === p.id) return alert('You already have this plan!');
-    if (coins < p.price) return alert('Not enough coins!');
-    if (!confirm(`Upgrade to ${p.name} for ${p.price} coins?`)) return;
+    if (plan === p.id) return warn('You already have this plan!');
+    if (coins < p.price) return warn('Not enough coins!');
+    const ok = await showConfirm(`Upgrade to ${p.name} for ${p.price} coins?`, 'Upgrade Plan');
+    if (!ok) return;
 
     try {
       await userQ.updateUserPlan(supabase, user.id, p.id, p.price);
       await refreshUser();
-      alert(`Upgraded to ${p.name}!`);
+      success(`Upgraded to ${p.name}!`);
     } catch (err) {
-      alert('Failed: ' + err.message);
+      showError('Failed: ' + err.message);
     }
   };
 

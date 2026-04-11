@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from './AuthContext';
 
 const SettingsContext = createContext(null);
@@ -38,6 +38,10 @@ export function SettingsProvider({ children }) {
   const { user, supabase } = useAuth();
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [loaded, setLoaded] = useState(false);
+  const settingsRef = useRef(DEFAULT_SETTINGS);
+
+  // Keep ref in sync so updateSetting always has the latest values
+  useEffect(() => { settingsRef.current = settings; }, [settings]);
 
   useEffect(() => {
     if (!user) return;
@@ -62,29 +66,56 @@ export function SettingsProvider({ children }) {
     }
   }
 
-  const updateSetting = useCallback(async (key, value) => {
-    setSettings(prev => {
-      const updated = { ...prev, [key]: value };
-      if (user) {
-        fetch('/api/settings', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId: user.id, settings: updated }),
-        }).catch(err => console.error('Failed to save setting:', err));
-      }
-      return updated;
-    });
+  const updateSetting = useCallback((key, value) => {
+    const updated = { ...settingsRef.current, [key]: value };
+    setSettings(updated);
+    if (user) {
+      fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: user.id, settings: updated }),
+      }).catch(err => console.error('Failed to save setting:', err));
+    }
   }, [user]);
 
   function applySettings(s) {
     const body = document.body;
+
+    // Theme
     body.classList.remove('theme-light', 'theme-dark', 'theme-normal');
     if (s.theme === 'dark') body.classList.add('theme-dark');
     else if (s.theme === 'light') body.classList.add('theme-light');
 
+    // Font size
     body.classList.remove('font-small', 'font-medium', 'font-large');
     body.classList.add(`font-${s.fontSize}`);
 
+    // Font style
+    body.classList.remove('font-system', 'font-rounded', 'font-mono');
+    body.classList.add(`font-${s.fontStyle || 'system'}`);
+
+    // Accent color — set CSS custom property
+    const accentMap = {
+      blue: '#667eea',
+      green: '#22c55e',
+      purple: '#764ba2',
+      orange: '#f59e0b',
+    };
+    document.documentElement.style.setProperty('--accent-active', accentMap[s.accentColor] || accentMap.blue);
+
+    // Bubble style
+    body.classList.remove('bubble-rounded', 'bubble-sharp', 'bubble-flat');
+    body.classList.add(`bubble-${s.bubbleStyle || 'rounded'}`);
+
+    // Message alignment
+    body.classList.remove('msg-centered', 'msg-left');
+    body.classList.add(`msg-${s.messageAlignment || 'centered'}`);
+
+    // Compact mode
+    if (s.compactMode) body.classList.add('compact-mode');
+    else body.classList.remove('compact-mode');
+
+    // Animations
     if (!s.animations) body.classList.add('no-animations');
     else body.classList.remove('no-animations');
   }

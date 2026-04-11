@@ -80,8 +80,8 @@
 }
 
 .book-nav-btn:hover:not(:disabled) {
-  border-color: var(--accent-blue);
-  color: var(--accent-blue);
+  border-color: var(--accent-active);
+  color: var(--accent-active);
 }
 
 .book-nav-btn:disabled {

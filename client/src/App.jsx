@@ -3,6 +3,7 @@ import { AuthProvider } from './contexts/AuthContext';
 import { SettingsProvider } from './contexts/SettingsContext';
 import { ChatProvider } from './contexts/ChatContext';
 import { UserProvider } from './contexts/UserContext';
+import { ToastProvider } from './components/ui/Toast';
 import ProtectedRoute from './components/layout/ProtectedRoute';
 import AppLayout from './components/layout/AppLayout';
 import LoginPage from './pages/LoginPage/LoginPage';
@@ -19,6 +20,7 @@ export default function App() {
   return (
     <AuthProvider>
       <SettingsProvider>
+        <ToastProvider>
         <UserProvider>
           <ChatProvider>
             <Routes>
@@ -38,6 +40,7 @@ export default function App() {
             </Routes>
           </ChatProvider>
         </UserProvider>
+        </ToastProvider>
       </SettingsProvider>
     </AuthProvider>
   );

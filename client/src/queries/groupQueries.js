@@ -1,77 +1,49 @@
 export async function loadGroups(supabase, userId) {
   try {
-    const { data, error } = await supabase
-      .from('group_members')
-      .select('group_id, role, group_chats(*)')
-      .eq('user_id', userId);
-
-    if (error) {
-      console.warn('loadGroups error (RLS recursion?):', error.message);
-      return [];
-    }
-    return (data || []).map(d => ({ ...d.group_chats, role: d.role }));
+    const res = await fetch(`/api/groups?userId=${userId}`);
+    if (!res.ok) throw new Error(await res.text());
+    const { groups } = await res.json();
+    return groups || [];
   } catch (err) {
-    console.warn('loadGroups exception:', err.message);
+    console.warn('loadGroups error:', err.message);
     return [];
   }
 }
 
 export async function createGroup(supabase, userId, name, memberIds) {
-  // Create the group
-  const { data: group, error } = await supabase
-    .from('group_chats')
-    .insert({ name, creator_id: userId })
-    .select()
-    .single();
-
-  if (error) throw error;
-
-  // Add creator as admin + members (catch RLS recursion gracefully)
-  const members = [{ group_id: group.id, user_id: userId, role: 'admin' }];
-  for (const mId of memberIds) {
-    members.push({ group_id: group.id, user_id: mId, role: 'member' });
+  const res = await fetch('/api/groups', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId, name, memberIds }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || 'Failed to create group');
   }
-
-  try {
-    const { error: memberError } = await supabase.from('group_members').insert(members);
-    if (memberError) {
-      console.warn('group_members insert error (RLS?):', memberError.message);
-      // Group was created — return it even if members insert failed
-    }
-  } catch (err) {
-    console.warn('group_members insert exception:', err.message);
-  }
-
+  const { group } = await res.json();
   return group;
 }
 
 export async function loadGroupMessages(supabase, groupId, limit = 100) {
-  const { data, error } = await supabase
-    .from('group_messages')
-    .select('*')
-    .eq('group_id', groupId)
-    .order('created_at', { ascending: true })
-    .limit(limit);
-
-  if (error) throw error;
-  return data || [];
+  const res = await fetch(`/api/groups/messages?groupId=${groupId}&limit=${limit}`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || 'Failed to load messages');
+  }
+  const { messages } = await res.json();
+  return messages || [];
 }
 
 export async function sendGroupMessage(supabase, groupId, senderId, content) {
-  const { data, error } = await supabase
-    .from('group_messages')
-    .insert({ group_id: groupId, sender_id: senderId, content })
-    .select()
-    .single();
-
-  if (error) throw error;
-
-  // Update last_message (ignore error — not critical)
-  await supabase
-    .from('group_chats')
-    .update({ last_message: content, last_message_at: new Date().toISOString() })
-    .eq('id', groupId)
-    .catch(() => {});
-
-  return data;
+  const res = await fetch('/api/groups/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ groupId, senderId, content }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || 'Failed to send message');
+  }
+  const { message } = await res.json();
+  return message;
 }

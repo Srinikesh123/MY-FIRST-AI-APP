@@ -1,14 +1,15 @@
 import { useChat } from '../../contexts/ChatContext';
+import { useToast } from '../ui/Toast';
 import './ChatSidebar.css';
 
 export default function ChatSidebar({ isOpen, onClose }) {
   const { chats, currentChatId, selectChat, removeChat } = useChat();
+  const { confirm: showConfirm } = useToast();
 
-  const handleDelete = (e, chatId) => {
+  const handleDelete = async (e, chatId) => {
     e.stopPropagation();
-    if (confirm('Delete this chat?')) {
-      removeChat(chatId);
-    }
+    const ok = await showConfirm('Delete this chat?', 'Delete Chat');
+    if (ok) removeChat(chatId);
   };
 
   return (

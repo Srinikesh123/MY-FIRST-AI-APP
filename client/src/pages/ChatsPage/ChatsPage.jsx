@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
+import { useToast } from '../../components/ui/Toast';
 import * as friendQ from '../../queries/friendQueries';
 import * as dmQ from '../../queries/dmQueries';
 import * as groupQ from '../../queries/groupQueries';
@@ -11,6 +12,7 @@ export default function ChatsPage() {
   const { user, supabase } = useAuth();
   const navigate = useNavigate();
   const userId = user?.id;
+  const { warn, error: showError } = useToast();
 
   const [activeTab, setActiveTab] = useState('dms');
   const [friends, setFriends] = useState([]);
@@ -27,6 +29,9 @@ export default function ChatsPage() {
   const [newGroupName, setNewGroupName] = useState('');
   const [selectedMembers, setSelectedMembers] = useState([]);
   const [activeCall, setActiveCall] = useState(null); // { type: 'audio'|'video' }
+  const [imagePreview, setImagePreview] = useState(null);
+  const [imageData, setImageData] = useState(null);
+  const fileInputRef = useRef(null);
 
   // Load data
   const loadAll = useCallback(async () => {
@@ -43,20 +48,27 @@ export default function ChatsPage() {
       setDmChats(dms);
       setGroups(g);
 
-      // Resolve user names for DM chats
+      // Resolve user names for DM chats — use server API to bypass RLS
       const ids = new Set();
       f.forEach(fr => { ids.add(fr.user_id); ids.add(fr.friend_id); });
+      p.forEach(pr => { ids.add(pr.user_id); ids.add(pr.friend_id); });
       dms.forEach(dm => { ids.add(dm.user1_id); ids.add(dm.user2_id); });
       ids.delete(userId);
 
       if (ids.size > 0) {
-        const { data: users } = await supabase
-          .from('users')
-          .select('id, username, email, avatar_url')
-          .in('id', [...ids]);
-        const map = {};
-        (users || []).forEach(u => { map[u.id] = u; });
-        setUserNames(map);
+        try {
+          const res = await fetch('/api/users/bulk', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userIds: [...ids] }),
+          });
+          const { users } = await res.json();
+          const map = {};
+          (users || []).forEach(u => { map[u.id] = u; });
+          setUserNames(map);
+        } catch (e) {
+          console.error('Failed to load user names:', e);
+        }
       }
     } catch (err) {
       console.error('Failed to load chats data:', err);
@@ -65,14 +77,36 @@ export default function ChatsPage() {
 
   useEffect(() => { loadAll(); }, [loadAll]);
 
-  // Realtime subscription for new DMs
+  // Realtime subscription for new DMs — only add messages from OTHER users
+  // (our own messages are added immediately in handleSendMessage)
   useEffect(() => {
     if (!userId) return;
     const channel = supabase
       .channel('dm-updates')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'direct_messages' }, (payload) => {
-        if (activeChat?.type === 'dm' && payload.new.chat_id === activeChat.id) {
-          setChatMessages(prev => [...prev, payload.new]);
+        if (activeChat?.type === 'dm' && payload.new.chat_id === activeChat.id && payload.new.sender_id !== userId) {
+          setChatMessages(prev => {
+            if (prev.some(m => m.id === payload.new.id)) return prev;
+            return [...prev, payload.new];
+          });
+        }
+      })
+      .subscribe();
+
+    return () => supabase.removeChannel(channel);
+  }, [supabase, userId, activeChat]);
+
+  // Realtime subscription for new group messages — only from OTHER users
+  useEffect(() => {
+    if (!userId) return;
+    const channel = supabase
+      .channel('group-msg-updates')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'group_messages' }, (payload) => {
+        if (activeChat?.type === 'group' && payload.new.group_id === activeChat.id && payload.new.sender_id !== userId) {
+          setChatMessages(prev => {
+            if (prev.some(m => m.id === payload.new.id)) return prev;
+            return [...prev, payload.new];
+          });
         }
       })
       .subscribe();
@@ -102,16 +136,32 @@ export default function ChatsPage() {
     }
   };
 
+  const handleImageSelect = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      setImagePreview(ev.target.result);
+      setImageData(ev.target.result);
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
   const handleSendMessage = async () => {
-    if (!messageInput.trim() || !activeChat) return;
-    const text = messageInput.trim();
+    if (!messageInput.trim() && !imageData) return;
+    if (!activeChat) return;
+    const text = imageData ? (messageInput.trim() || '[Image]') : messageInput.trim();
+    const content = imageData ? `[img]${imageData}[/img]${text !== '[Image]' ? '\n' + text : ''}` : text;
     setMessageInput('');
+    setImagePreview(null);
+    setImageData(null);
     try {
       if (activeChat.type === 'dm') {
-        const msg = await dmQ.sendDmMessage(supabase, activeChat.id, userId, text);
+        const msg = await dmQ.sendDmMessage(supabase, activeChat.id, userId, content);
         setChatMessages(prev => [...prev, msg]);
       } else {
-        const msg = await groupQ.sendGroupMessage(supabase, activeChat.id, userId, text);
+        const msg = await groupQ.sendGroupMessage(supabase, activeChat.id, userId, content);
         setChatMessages(prev => [...prev, msg]);
       }
     } catch (err) {
@@ -155,7 +205,7 @@ export default function ChatsPage() {
       setSearchResults(prev => prev.filter(u => u.id !== friendId));
       await loadAll();
     } catch (err) {
-      alert('Could not send request: ' + err.message);
+      showError('Could not send request: ' + err.message);
     }
   };
 
@@ -186,8 +236,8 @@ export default function ChatsPage() {
   };
 
   const handleCreateGroup = async () => {
-    if (!newGroupName.trim()) return alert('Enter a group name');
-    if (selectedMembers.length === 0) return alert('Select at least one member');
+    if (!newGroupName.trim()) return warn('Enter a group name');
+    if (selectedMembers.length === 0) return warn('Select at least one member');
     try {
       const group = await groupQ.createGroup(supabase, userId, newGroupName.trim(), selectedMembers);
       setShowCreateGroup(false);
@@ -196,7 +246,7 @@ export default function ChatsPage() {
       await loadAll();
       openChat('group', group.id, group.name);
     } catch (err) {
-      alert('Failed to create group: ' + err.message);
+      showError('Failed to create group: ' + err.message);
     }
   };
 
@@ -280,19 +330,35 @@ export default function ChatsPage() {
           {chatMessages.length === 0 ? (
             <div className="chat-room-empty">No messages yet. Say hi!</div>
           ) : (
-            chatMessages.map((msg) => (
-              <div key={msg.id} className={`dm-message ${msg.sender_id === userId ? 'sent' : 'received'}`}>
-                <div className="dm-bubble">
-                  <p>{msg.content}</p>
-                  <span className="dm-time">
-                    {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </span>
+            chatMessages.map((msg) => {
+              const imgMatch = msg.content?.match(/\[img\](.*?)\[\/img\]/s);
+              const imgSrc = imgMatch ? imgMatch[1] : null;
+              const textContent = imgMatch ? msg.content.replace(/\[img\].*?\[\/img\]/s, '').trim() : msg.content;
+              return (
+                <div key={msg.id} className={`dm-message ${msg.sender_id === userId ? 'sent' : 'received'}`}>
+                  <div className="dm-bubble">
+                    {imgSrc && <img src={imgSrc} alt="Shared" className="dm-image" />}
+                    {textContent && <p>{textContent}</p>}
+                    <span className="dm-time">
+                      {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </div>
                 </div>
-              </div>
-            ))
+              );
+            })
           )}
         </div>
+        {imagePreview && (
+          <div className="chat-image-preview">
+            <img src={imagePreview} alt="Preview" />
+            <button onClick={() => { setImagePreview(null); setImageData(null); }}>&times;</button>
+          </div>
+        )}
         <div className="chat-room-input">
+          <button className="attach-btn" onClick={() => fileInputRef.current?.click()} title="Attach image">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+          </button>
+          <input type="file" ref={fileInputRef} accept="image/*" style={{ display: 'none' }} onChange={handleImageSelect} />
           <input
             type="text"
             value={messageInput}
@@ -300,7 +366,7 @@ export default function ChatsPage() {
             onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
             placeholder="Type a message..."
           />
-          <button className="send-dm-btn" onClick={handleSendMessage}>
+          <button className="send-dm-btn" onClick={handleSendMessage} disabled={!messageInput.trim() && !imageData}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
           </button>
         </div>

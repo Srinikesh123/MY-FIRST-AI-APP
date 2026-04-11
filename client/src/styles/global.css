@@ -37,7 +37,7 @@ body {
 
 /* Links */
 a {
-  color: var(--accent-blue);
+  color: var(--accent-active);
   text-decoration: none;
 }
 

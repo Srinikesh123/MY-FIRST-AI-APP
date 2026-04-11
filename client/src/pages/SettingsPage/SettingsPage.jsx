@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import { useSettings } from '../../contexts/SettingsContext';
 import { useAuth } from '../../contexts/AuthContext';
+import { useToast } from '../../components/ui/Toast';
 import ToggleSwitch from '../../components/ui/ToggleSwitch';
 import RadioGroup from '../../components/ui/RadioGroup';
 import './SettingsPage.css';
@@ -9,20 +10,23 @@ export default function SettingsPage() {
   const { settings, updateSetting } = useSettings();
   const { user, signOut, supabase } = useAuth();
   const navigate = useNavigate();
+  const { success, error: showError, confirm: showConfirm } = useToast();
 
   const handleDeleteAllChats = async () => {
-    if (!confirm('Delete ALL chats and messages? This cannot be undone.')) return;
+    const ok = await showConfirm('Delete ALL chats and messages? This cannot be undone.', 'Delete Chats');
+    if (!ok) return;
     try {
       await supabase.from('messages').delete().eq('user_id', user.id);
       await supabase.from('chats').delete().eq('user_id', user.id);
-      alert('All chats deleted.');
+      success('All chats deleted');
     } catch (err) {
-      alert('Failed to delete chats: ' + err.message);
+      showError('Failed to delete chats: ' + err.message);
     }
   };
 
   const handleDeleteAccount = async () => {
-    if (!confirm('PERMANENTLY delete your account and all data? This cannot be undone!')) return;
+    const ok = await showConfirm('PERMANENTLY delete your account and all data? This cannot be undone!', 'Delete Account');
+    if (!ok) return;
     try {
       await fetch(`/api/users/delete`, {
         method: 'DELETE',
@@ -32,7 +36,7 @@ export default function SettingsPage() {
       await signOut();
       navigate('/login');
     } catch (err) {
-      alert('Failed to delete account: ' + err.message);
+      showError('Failed to delete account: ' + err.message);
     }
   };
 

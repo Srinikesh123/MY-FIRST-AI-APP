@@ -12,6 +12,9 @@
   --accent-cyan-start: #4facfe;
   --accent-cyan-end: #00f2fe;
 
+  /* Active accent — set dynamically by SettingsContext */
+  --accent-active: var(--accent-blue);
+
   /* Status colors */
   --danger: #ef4444;
   --success: #22c55e;
@@ -85,7 +88,57 @@ body.theme-dark {
   --border-color: var(--gray-700);
 }
 
+/* Light theme — clean white, no gradient */
+body.theme-light {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f9fafb;
+  --bg-tertiary: #f3f4f6;
+  --text-primary: #111827;
+  --text-secondary: #4b5563;
+  --text-muted: #9ca3af;
+  --border-color: #e5e7eb;
+  background: #f5f7fa !important;
+}
+
 /* Font size overrides */
 body.font-small { font-size: 14px; }
 body.font-medium { font-size: 16px; }
 body.font-large { font-size: 18px; }
+
+/* Font style overrides */
+body.font-system,
+body.font-system * { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif; }
+body.font-rounded,
+body.font-rounded * { font-family: 'Nunito', -apple-system, sans-serif; }
+body.font-mono,
+body.font-mono * { font-family: 'Fira Code', 'Cascadia Code', 'Consolas', monospace; }
+
+/* Bubble style overrides — !important to beat component-level border-radius */
+body.bubble-rounded .dm-bubble,
+body.bubble-rounded .message-bubble,
+body.bubble-rounded .user-bubble,
+body.bubble-rounded .ai-bubble { border-radius: 18px !important; }
+
+body.bubble-sharp .dm-bubble,
+body.bubble-sharp .message-bubble,
+body.bubble-sharp .user-bubble,
+body.bubble-sharp .ai-bubble { border-radius: 4px !important; }
+
+body.bubble-flat .dm-bubble,
+body.bubble-flat .message-bubble,
+body.bubble-flat .user-bubble,
+body.bubble-flat .ai-bubble { border-radius: 0 !important; }
+
+/* Message alignment */
+body.msg-left .message-list,
+body.msg-left .chat-room-messages { max-width: 100%; align-items: flex-start; }
+
+/* Compact mode */
+body.compact-mode .dm-bubble,
+body.compact-mode .message-bubble { padding: 6px 10px !important; }
+body.compact-mode .dm-message,
+body.compact-mode .message-row { margin-bottom: 2px !important; }
+body.compact-mode .chat-room-messages { gap: 2px; }
+
+/* No animations */
+body.no-animations * { animation: none !important; transition: none !important; }
