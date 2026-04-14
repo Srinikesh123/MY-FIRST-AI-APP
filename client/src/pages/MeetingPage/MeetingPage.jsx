@@ -11,20 +11,30 @@ let ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
 ];
+let ICE_SERVERS_FETCHED_AT = 0; // timestamp of last successful fetch
 
 async function fetchIceServers() {
   try {
     const res = await fetch('/api/turn-credentials');
+    if (!res.ok) throw new Error(`Server returned ${res.status}`);
     const { iceServers } = await res.json();
     if (iceServers?.length) {
       ICE_SERVERS = iceServers;
+      ICE_SERVERS_FETCHED_AT = Date.now();
       const turnCount = iceServers.filter(s => s.urls?.toString().includes('turn')).length;
-      console.log(`✅ ICE servers: ${iceServers.length} total, ${turnCount} TURN`);
+      console.log(`✅ ICE servers: ${iceServers.length} total, ${turnCount} TURN relays`);
+      if (turnCount === 0) {
+        console.warn('⚠️ No TURN relays — cross-network calls will likely fail');
+      }
     }
   } catch (err) {
-    console.warn('TURN fetch failed, using STUN only:', err.message);
+    console.error('❌ TURN fetch failed — cross-network calls will NOT work:', err.message);
   }
 }
+
+// TURN credentials expire (~10 min for Metered.ca). Refresh every 4 minutes
+// so long sessions (2+ hours) never use stale credentials.
+const ICE_REFRESH_INTERVAL = 4 * 60 * 1000; // 4 minutes
 
 // ─── Set encoder bitrate for high quality screen sharing ────────────────────
 async function setMaxBitrate(pc, kbps = 8000) {
@@ -65,6 +75,7 @@ export default function MeetingPage() {
   const [sessionTime, setSessionTime] = useState(0);
   const [isHost, setIsHost] = useState(false);
   const [knockQueue, setKnockQueue] = useState([]); // guests waiting to be admitted
+  const [remoteScreenStream, setRemoteScreenStream] = useState(null); // incoming screen share stream
 
   // ─── Refs ─────────────────────────────────────────────────────────────────
   const socketRef        = useRef(null);
@@ -94,6 +105,66 @@ export default function MeetingPage() {
     }
     return () => clearInterval(sessionTimerRef.current);
   }, [view]);
+
+  // ─── Refresh TURN credentials periodically for long sessions ──────────────
+  useEffect(() => {
+    if (view !== 'meeting') return;
+    const timer = setInterval(async () => {
+      console.log('🔄 Refreshing TURN credentials for long session...');
+      await fetchIceServers();
+      // Update ICE config on all active peer connections so new candidates use fresh TURN
+      for (const [peerId, pc] of peerConnsRef.current) {
+        try {
+          pc.setConfiguration({ iceServers: ICE_SERVERS, iceTransportPolicy: 'all', bundlePolicy: 'max-bundle', rtcpMuxPolicy: 'require' });
+        } catch (e) { console.warn(`Could not update ICE config for ${peerId}:`, e.message); }
+      }
+    }, ICE_REFRESH_INTERVAL);
+    return () => clearInterval(timer);
+  }, [view]);
+
+  // ─── Network change detection — auto-reconnect on WiFi/mobile switch ──────
+  useEffect(() => {
+    if (view !== 'meeting') return;
+    const handleOnline = () => {
+      console.log('🌐 Network came back online — restarting ICE on all peers');
+      setError('');
+      // Refresh TURN credentials first, then restart ICE
+      fetchIceServers().then(() => {
+        for (const [, pc] of peerConnsRef.current) {
+          try {
+            pc.setConfiguration({ iceServers: ICE_SERVERS, iceTransportPolicy: 'all', bundlePolicy: 'max-bundle', rtcpMuxPolicy: 'require' });
+            pc.restartIce();
+          } catch (_) {}
+        }
+      });
+    };
+    const handleOffline = () => {
+      setError('Network lost — will reconnect automatically when back online');
+    };
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [view]);
+
+  // ─── Attach remote screen stream when video element mounts ────────────────
+  // Runs when the stream arrives OR when peers change (video element mounts after
+  // peer-screen-sharing event). Covers every timing order.
+  const hasRemoteScreenForEffect = peers.some(p => p.isScreenSharing);
+  useEffect(() => {
+    if (!remoteScreenStream) return;
+    // Small delay to let React commit the DOM (callback ref sets remoteScreenRef)
+    const timer = setTimeout(() => {
+      if (remoteScreenRef.current) {
+        remoteScreenRef.current.srcObject = remoteScreenStream;
+        remoteScreenRef.current.play().catch(() => {});
+        console.log('📺 Attached remote screen stream via useEffect');
+      }
+    }, 50);
+    return () => clearTimeout(timer);
+  }, [remoteScreenStream, hasRemoteScreenForEffect]);
 
   const fmtTime = (s) => {
     const h = Math.floor(s / 3600);
@@ -182,20 +253,34 @@ export default function MeetingPage() {
     };
 
     pc.oniceconnectionstatechange = () => {
-      console.log(`ICE [${peerId}]: ${pc.iceConnectionState}`);
-      if (pc.iceConnectionState === 'failed') {
-        // Try ICE restart
+      const state = pc.iceConnectionState;
+      console.log(`ICE [${peerId}]: ${state}`);
+      if (state === 'connected' || state === 'completed') {
+        // Log which candidate pair won (relay = TURN, srflx/host = direct)
+        pc.getStats().then(stats => {
+          stats.forEach(report => {
+            if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+              const local = stats.get(report.localCandidateId);
+              const remote = stats.get(report.remoteCandidateId);
+              console.log(`✅ Connected via: local=${local?.candidateType} remote=${remote?.candidateType} (relay = TURN server, srflx/host = direct)`);
+            }
+          });
+        }).catch(() => {});
+      }
+      if (state === 'failed') {
+        console.error('❌ ICE connection failed — likely no TURN relay available for cross-network');
         pc.restartIce();
       }
     };
 
     pc.ontrack = (e) => {
-      const stream = e.streams[0];
-      if (!stream) return;
+      const track = e.track;
+      // e.streams[0] can be undefined when a transceiver is reused — always
+      // fall back to a fresh MediaStream built from the track itself.
+      const stream = e.streams[0] || new MediaStream([track]);
       remoteVideosRef.current.set(peerId, stream);
 
-      if (e.track.kind === 'audio') {
-        // Play remote audio immediately via a hidden audio element
+      if (track.kind === 'audio') {
         let audioEl = document.getElementById(`remote-audio-${peerId}`);
         if (!audioEl) {
           audioEl = document.createElement('audio');
@@ -208,12 +293,26 @@ export default function MeetingPage() {
         audioEl.play().catch(() => {});
       }
 
-      if (e.track.kind === 'video') {
-        // Attach to remote screen ref if mounted
-        if (remoteScreenRef.current) remoteScreenRef.current.srcObject = stream;
+      if (track.kind === 'video') {
+        // The video track may arrive muted (transceiver reuse / early negotiation).
+        // Attach when it actually becomes active.
+        const attachScreenStream = () => {
+          console.log(`📺 Video track active from ${peerId}, muted=${track.muted}`);
+          const s = new MediaStream([track]);
+          setRemoteScreenStream(s);
+          if (remoteScreenRef.current) {
+            remoteScreenRef.current.srcObject = s;
+            remoteScreenRef.current.play().catch(() => {});
+          }
+        };
+
+        if (!track.muted && track.readyState === 'live') {
+          attachScreenStream();
+        }
+        // Also listen for unmute — fires when track starts delivering frames
+        track.onunmute = attachScreenStream;
       }
 
-      // Trigger re-render so peer tiles update
       setPeers(prev => [...prev]);
     };
 
@@ -239,10 +338,13 @@ export default function MeetingPage() {
     }
     const socket = io(window.location.origin, {
       transports: ['websocket', 'polling'],
-      timeout: 10000,
+      timeout: 15000,
       reconnection: true,
-      reconnectionAttempts: 10,
+      reconnectionAttempts: Infinity, // never give up — 2+ hour sessions
       reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      pingTimeout: 30000,      // tolerate 30s silence before assuming disconnect
+      pingInterval: 15000,     // heartbeat every 15s to keep connection alive
     });
     socketRef.current = socket;
 
@@ -292,8 +394,10 @@ export default function MeetingPage() {
 
     socket.on('meeting-chat', (msg) => setChatMessages(prev => [...prev, msg]));
     socket.on('chat-history', (h) => setChatMessages(h));
-    socket.on('peer-screen-sharing', ({ socketId, sharing }) =>
-      setPeers(prev => prev.map(p => p.socketId === socketId ? { ...p, isScreenSharing: sharing } : p)));
+    socket.on('peer-screen-sharing', ({ socketId, sharing }) => {
+      setPeers(prev => prev.map(p => p.socketId === socketId ? { ...p, isScreenSharing: sharing } : p));
+      if (!sharing) setRemoteScreenStream(null);
+    });
     socket.on('control-request', ({ from, username: u }) => setControlRequest({ from, username: u }));
     socket.on('control-granted', () => { setRemoteControlActive(true); setError('Remote control granted!'); });
     socket.on('control-denied', () => setError('Remote control denied'));
@@ -322,9 +426,39 @@ export default function MeetingPage() {
     socket.on('promoted-to-host', () => setIsHost(true));
 
     socket.on('disconnect', (reason) => {
-      if (reason !== 'io client disconnect') setError('Disconnected. Reconnecting...');
+      if (reason !== 'io client disconnect') {
+        console.warn('Socket disconnected:', reason);
+        setError('Disconnected. Reconnecting...');
+      }
     });
-  }, [buildPeerConnection]);
+
+    // Auto re-join room after socket reconnects (network blip, server restart)
+    socket.on('reconnect', () => {
+      console.log('🔄 Socket reconnected — re-joining room');
+      setError('');
+      const code = roomCodeRef.current;
+      if (code) {
+        socket.emit('rejoin-room', { roomCode: code, userId: user?.id, username }, (res) => {
+          if (res?.success) {
+            console.log('✅ Re-joined room after reconnect');
+            // Rebuild peer connections with fresh ICE
+            fetchIceServers().then(() => {
+              const others = (res.peers || []).filter(p => p.socketId !== socket.id);
+              setPeers(others);
+              // Close stale connections and re-offer
+              peerConnsRef.current.forEach(pc => pc.close());
+              peerConnsRef.current.clear();
+              dataChannelsRef.current.clear();
+              others.forEach(p => offerToPeerRef.current?.(p.socketId));
+            });
+          } else {
+            console.error('Re-join failed:', res?.error);
+            setError('Reconnected but could not re-join room. Try leaving and re-joining.');
+          }
+        });
+      }
+    });
+  }, [buildPeerConnection, user?.id, username]);
 
   const offerToPeer = useCallback(async (peerId) => {
     const socket = socketRef.current;
@@ -494,13 +628,20 @@ export default function MeetingPage() {
     try {
       if (!localStreamRef.current?.getAudioTracks().length) {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 48000 } });
+        const audioTrack = stream.getAudioTracks()[0];
         if (!localStreamRef.current) localStreamRef.current = stream;
-        else stream.getAudioTracks().forEach(t => localStreamRef.current.addTrack(t));
+        else localStreamRef.current.addTrack(audioTrack);
         for (const [peerId, pc] of peerConnsRef.current) {
-          stream.getAudioTracks().forEach(t => pc.addTrack(t, stream));
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          socketRef.current?.emit('signal', { to: peerId, signal: offer });
+          // Use replaceTrack if an audio sender exists, else addTrack
+          const audioSender = pc.getSenders().find(s => s.track?.kind === 'audio');
+          if (audioSender) {
+            await audioSender.replaceTrack(audioTrack);
+          } else {
+            pc.addTrack(audioTrack, localStreamRef.current);
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            socketRef.current?.emit('signal', { to: peerId, signal: offer });
+          }
         }
         setIsMuted(false);
       } else {
@@ -515,19 +656,34 @@ export default function MeetingPage() {
     try {
       if (!isVideoOn) {
         const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720, frameRate: 30 } });
+        const videoTrack = stream.getVideoTracks()[0];
         if (!localStreamRef.current) localStreamRef.current = stream;
-        if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+        else localStreamRef.current.addTrack(videoTrack);
+        if (localVideoRef.current) localVideoRef.current.srcObject = localStreamRef.current;
         for (const [peerId, pc] of peerConnsRef.current) {
           if (!isScreenSharing) {
-            stream.getTracks().forEach(t => pc.addTrack(t, stream));
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            socketRef.current?.emit('signal', { to: peerId, signal: offer });
+            // Use replaceTrack if a video sender exists, else addTrack
+            const videoSender = pc.getSenders().find(s => s.track?.kind === 'video');
+            if (videoSender) {
+              await videoSender.replaceTrack(videoTrack);
+            } else {
+              pc.addTrack(videoTrack, localStreamRef.current);
+              const offer = await pc.createOffer();
+              await pc.setLocalDescription(offer);
+              socketRef.current?.emit('signal', { to: peerId, signal: offer });
+            }
           }
         }
         setIsVideoOn(true);
       } else {
         localStreamRef.current?.getVideoTracks().forEach(t => t.stop());
+        // Notify peers to remove video — replace with null
+        for (const [, pc] of peerConnsRef.current) {
+          const videoSender = pc.getSenders().find(s => s.track?.kind === 'video');
+          if (videoSender && !isScreenSharing) {
+            await videoSender.replaceTrack(null);
+          }
+        }
         setIsVideoOn(false);
       }
     } catch { setError('Camera access denied'); }
@@ -597,7 +753,7 @@ export default function MeetingPage() {
     socketRef.current?.disconnect();
     socketRef.current = null;
     setView('lobby'); setRoomCode(''); setPeers([]);
-    setChatMessages([]); setIsScreenSharing(false);
+    setChatMessages([]); setIsScreenSharing(false); setRemoteScreenStream(null);
     setIsMuted(true); setIsVideoOn(false);
     setShowChat(false); setShowAnnotations(false);
     setRemoteControlActive(false); setRemoteCursor(null);
@@ -780,15 +936,18 @@ export default function MeetingPage() {
                 ref={el => {
                   remoteScreenRef.current = el;
                   if (el) {
-                    // Grab stream immediately on mount in case ontrack already fired
-                    const sharingPeer = peers.find(p => p.isScreenSharing);
-                    if (sharingPeer) {
-                      const stream = remoteVideosRef.current.get(sharingPeer.socketId);
-                      if (stream) el.srcObject = stream;
+                    // Attach the screen stream — try React state first, then ref map
+                    const stream = remoteScreenStream
+                      || (() => { const p = peers.find(p => p.isScreenSharing); return p && remoteVideosRef.current.get(p.socketId); })();
+                    if (stream && el.srcObject !== stream) {
+                      console.log('📺 Attaching screen stream via callback ref');
+                      el.srcObject = stream;
                     }
+                    // Always kick play — needed for autoplay policy on some browsers
+                    if (el.srcObject) el.play().catch(() => {});
                   }
                 }}
-                autoPlay playsInline
+                autoPlay playsInline muted
                 className={`screen-video ${remoteControlActive ? 'remote-control-active' : ''}`}
                 onMouseMove={handleRemoteVideoMouseMove}
                 onClick={handleRemoteVideoClick}

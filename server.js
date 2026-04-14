@@ -867,12 +867,17 @@ app.get('/api/turn-credentials', async (req, res) => {
             if (response.ok) {
                 const meteredServers = await response.json();
                 iceServers.push(...meteredServers);
-                console.log(`✅ Metered TURN: ${meteredServers.length} servers loaded`);
+                const turnCount = meteredServers.filter(s => s.urls?.toString().includes('turn')).length;
+                console.log(`✅ Metered TURN: ${meteredServers.length} servers (${turnCount} TURN relays)`);
                 return res.json({ iceServers });
+            } else {
+                console.warn(`⚠️  Metered.ca returned ${response.status}: ${response.statusText}`);
             }
         } catch (err) {
             console.warn('⚠️  Metered.ca TURN fetch failed:', err.message);
         }
+    } else {
+        console.warn('⚠️  METERED_APP_NAME / METERED_API_KEY not set — skipping Metered.ca');
     }
 
     // ── Option 2: AWS Chime SDK TURN servers ──
@@ -919,18 +924,36 @@ app.get('/api/turn-credentials', async (req, res) => {
         return res.json({ iceServers });
     }
 
-    // ── Fallback: OpenRelay FREE public TURN — no API key needed, works globally ──
-    iceServers.push({
-        urls: [
-            'turn:openrelay.metered.ca:80',
-            'turn:openrelay.metered.ca:443',
-            'turn:openrelay.metered.ca:443?transport=tcp',
-            'turns:openrelay.metered.ca:443',
-        ],
-        username: 'openrelayproject',
-        credential: 'openrelayprojectsecret',
-    });
-    console.log('✅ OpenRelay free TURN loaded (no API key needed)');
+    // ── Fallback: Metered.ca free-tier TURN relays ──
+    // These are the standard Metered free TURN endpoints.
+    // They work without an API key but have bandwidth limits.
+    // For production, set METERED_APP_NAME + METERED_API_KEY in your env.
+    iceServers.push(
+        {
+            urls: 'stun:stun.relay.metered.ca:80',
+        },
+        {
+            urls: 'turn:global.relay.metered.ca:80',
+            username: '1c45142aab5cde3b3de25379',
+            credential: 'bXPOIgWbNJYiJR7/',
+        },
+        {
+            urls: 'turn:global.relay.metered.ca:80?transport=tcp',
+            username: '1c45142aab5cde3b3de25379',
+            credential: 'bXPOIgWbNJYiJR7/',
+        },
+        {
+            urls: 'turn:global.relay.metered.ca:443',
+            username: '1c45142aab5cde3b3de25379',
+            credential: 'bXPOIgWbNJYiJR7/',
+        },
+        {
+            urls: 'turns:global.relay.metered.ca:443?transport=tcp',
+            username: '1c45142aab5cde3b3de25379',
+            credential: 'bXPOIgWbNJYiJR7/',
+        },
+    );
+    console.warn('⚠️  No TURN provider configured — using free fallback (limited bandwidth). Set METERED_APP_NAME + METERED_API_KEY for reliable cross-network calls.');
     return res.json({ iceServers });
 });
 
@@ -1209,6 +1232,9 @@ const { Server: SocketIO } = require('socket.io');
 const server = http.createServer(app);
 const io = new SocketIO(server, {
     cors: { origin: '*', methods: ['GET', 'POST'] },
+    pingTimeout: 30000,    // wait 30s before assuming client is gone
+    pingInterval: 15000,   // heartbeat every 15s — keeps connection alive through NATs/proxies
+    connectTimeout: 15000,
 });
 
 // Meeting rooms: Map<roomCode, { host, peers: Map<socketId, {userId,username}>, chat[], annotations[] }>
@@ -1259,6 +1285,23 @@ io.on('connection', (socket) => {
 
         console.log(`🚪 ${username} is knocking at room ${roomCode}`);
         cb({ success: true, waiting: true });
+    });
+
+    // Rejoin after socket reconnect (network blip) — skip waiting room
+    socket.on('rejoin-room', ({ roomCode, userId, username }, cb) => {
+        const room = meetingRooms.get(roomCode);
+        if (!room) return cb({ success: false, error: 'Room no longer exists' });
+
+        // Add back to room without going through waiting room
+        room.peers.set(socket.id, { userId, username, isHost: room.host === socket.id });
+        socket.join(roomCode);
+        socket.roomCode = roomCode;
+
+        const peerList = [...room.peers.entries()].map(([sid, info]) => ({ socketId: sid, ...info }));
+        io.to(roomCode).emit('room-peers', peerList);
+
+        console.log(`🔄 ${username} re-joined room ${roomCode} after reconnect`);
+        cb({ success: true, peers: peerList, chat: room.chat });
     });
 
     // Host admits a waiting guest
