@@ -846,115 +846,113 @@ app.post('/api/groups/messages', async (req, res) => {
 });
 
 // ============================================
-// TURN / ICE SERVER CREDENTIALS
-// Priority: AWS Chime SDK > Metered.ca > Custom TURN > STUN only
+// TURN / ICE SERVER CREDENTIALS (Metered.ca)
 // ============================================
 
+// Cache TURN credentials — they last ~10 min, refresh every 4 min
+let cachedTurnServers = null;
+let turnCacheTime = 0;
+const TURN_CACHE_TTL = 4 * 60 * 1000; // 4 minutes
+
+async function fetchMeteredCredentials() {
+    const appName = process.env.METERED_APP_NAME;
+    const apiKey  = process.env.METERED_API_KEY;
+    if (!appName || !apiKey) {
+        console.error('❌ METERED_APP_NAME or METERED_API_KEY not set! Cross-network calls WILL NOT WORK.');
+        return null;
+    }
+
+    const url = `https://${appName}.metered.live/api/v1/turn/credentials?apiKey=${apiKey}`;
+    console.log(`🔄 Fetching TURN credentials from Metered.ca (${appName})...`);
+
+    // Try up to 3 times with increasing timeout
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 8000 * attempt);
+            const response = await fetch(url, { signal: controller.signal });
+            clearTimeout(timeout);
+
+            if (!response.ok) {
+                console.warn(`⚠️  Metered.ca attempt ${attempt}: HTTP ${response.status} ${response.statusText}`);
+                continue;
+            }
+
+            const servers = await response.json();
+            if (Array.isArray(servers) && servers.length > 0) {
+                const turnCount = servers.filter(s => s.urls?.toString().includes('turn')).length;
+                console.log(`✅ Metered TURN: ${servers.length} servers (${turnCount} TURN relays) — attempt ${attempt}`);
+                return servers;
+            }
+        } catch (err) {
+            console.warn(`⚠️  Metered.ca attempt ${attempt} failed: ${err.message}`);
+        }
+    }
+    console.error('❌ All 3 Metered.ca fetch attempts failed!');
+    return null;
+}
+
+// Fetch on startup so first client doesn't wait
+(async () => {
+    const servers = await fetchMeteredCredentials();
+    if (servers) { cachedTurnServers = servers; turnCacheTime = Date.now(); }
+})();
+
 app.get('/api/turn-credentials', async (req, res) => {
-    // Always include Google STUN as baseline
     const iceServers = [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
-        { urls: 'stun:stun3.l.google.com:19302' },
     ];
 
-    // ── Option 1: Metered.ca (free TURN, just needs API key) ──
-    if (process.env.METERED_APP_NAME && process.env.METERED_API_KEY) {
-        try {
-            const url = `https://${process.env.METERED_APP_NAME}.metered.live/api/v1/turn/credentials?apiKey=${process.env.METERED_API_KEY}`;
-            const response = await fetch(url);
-            if (response.ok) {
-                const meteredServers = await response.json();
-                iceServers.push(...meteredServers);
-                const turnCount = meteredServers.filter(s => s.urls?.toString().includes('turn')).length;
-                console.log(`✅ Metered TURN: ${meteredServers.length} servers (${turnCount} TURN relays)`);
-                return res.json({ iceServers });
-            } else {
-                console.warn(`⚠️  Metered.ca returned ${response.status}: ${response.statusText}`);
-            }
-        } catch (err) {
-            console.warn('⚠️  Metered.ca TURN fetch failed:', err.message);
-        }
-    } else {
-        console.warn('⚠️  METERED_APP_NAME / METERED_API_KEY not set — skipping Metered.ca');
+    // Use cache if fresh, otherwise refetch
+    if (cachedTurnServers && (Date.now() - turnCacheTime < TURN_CACHE_TTL)) {
+        iceServers.push(...cachedTurnServers);
+        return res.json({ iceServers, hasTurn: true });
     }
 
-    // ── Option 2: AWS Chime SDK TURN servers ──
-    if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY && process.env.AWS_REGION) {
-        try {
-            const { ChimeSDKMeetingsClient, CreateMeetingCommand } = require('@aws-sdk/client-chime-sdk-meetings');
-            const chime = new ChimeSDKMeetingsClient({
-                region: process.env.AWS_REGION || 'us-east-1',
-                credentials: {
-                    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-                    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-                    sessionToken: process.env.AWS_SESSION_TOKEN,
-                },
-            });
-            // Chime TURN credentials come from its WAN/TURN infrastructure
-            // We get these from a temporary meeting creation
-            const { Meeting } = await chime.send(new CreateMeetingCommand({
-                ClientRequestToken: `turn-creds-${Date.now()}`,
-                MediaRegion: process.env.AWS_REGION || 'us-east-1',
-                ExternalMeetingId: `temp-${Date.now()}`,
-            }));
-            if (Meeting?.MediaPlacement?.TurnControlUrl) {
-                iceServers.push({
-                    urls: Meeting.MediaPlacement.TurnControlUrl,
-                    username: Meeting.MediaPlacement.EventIngestionUrl || '',
-                    credential: Meeting.MeetingId,
-                });
-                console.log('✅ AWS Chime TURN servers loaded');
-                return res.json({ iceServers });
-            }
-        } catch (err) {
-            console.warn('⚠️  AWS Chime TURN fetch failed:', err.message);
-        }
+    const servers = await fetchMeteredCredentials();
+    if (servers) {
+        cachedTurnServers = servers;
+        turnCacheTime = Date.now();
+        iceServers.push(...servers);
+        return res.json({ iceServers, hasTurn: true });
     }
 
-    // ── Option 3: Custom TURN server env vars ──
+    // ── Custom TURN server env vars (fallback) ──
     if (process.env.TURN_URL) {
         iceServers.push({
             urls: process.env.TURN_URL.split(','),
             username: process.env.TURN_USER || '',
             credential: process.env.TURN_PASS || '',
         });
-        console.log('✅ Custom TURN server loaded');
-        return res.json({ iceServers });
+        return res.json({ iceServers, hasTurn: true });
     }
 
-    // ── Fallback: Metered.ca free-tier TURN relays ──
-    // These are the standard Metered free TURN endpoints.
-    // They work without an API key but have bandwidth limits.
-    // For production, set METERED_APP_NAME + METERED_API_KEY in your env.
-    iceServers.push(
-        {
-            urls: 'stun:stun.relay.metered.ca:80',
-        },
-        {
-            urls: 'turn:global.relay.metered.ca:80',
-            username: '1c45142aab5cde3b3de25379',
-            credential: 'bXPOIgWbNJYiJR7/',
-        },
-        {
-            urls: 'turn:global.relay.metered.ca:80?transport=tcp',
-            username: '1c45142aab5cde3b3de25379',
-            credential: 'bXPOIgWbNJYiJR7/',
-        },
-        {
-            urls: 'turn:global.relay.metered.ca:443',
-            username: '1c45142aab5cde3b3de25379',
-            credential: 'bXPOIgWbNJYiJR7/',
-        },
-        {
-            urls: 'turns:global.relay.metered.ca:443?transport=tcp',
-            username: '1c45142aab5cde3b3de25379',
-            credential: 'bXPOIgWbNJYiJR7/',
-        },
-    );
-    console.warn('⚠️  No TURN provider configured — using free fallback (limited bandwidth). Set METERED_APP_NAME + METERED_API_KEY for reliable cross-network calls.');
-    return res.json({ iceServers });
+    // No TURN available — caller will know via hasTurn: false
+    console.error('❌ NO TURN SERVERS AVAILABLE — cross-network calls will fail!');
+    return res.json({ iceServers, hasTurn: false });
+});
+
+// Diagnostic endpoint — test TURN from the browser
+app.get('/api/turn-test', async (req, res) => {
+    const result = { metered: false, envSet: false, credentials: null, error: null };
+    result.envSet = !!(process.env.METERED_APP_NAME && process.env.METERED_API_KEY);
+    if (!result.envSet) {
+        result.error = 'METERED_APP_NAME or METERED_API_KEY not set in environment';
+        return res.json(result);
+    }
+    try {
+        const servers = await fetchMeteredCredentials();
+        if (servers) {
+            result.metered = true;
+            result.credentials = servers.length + ' servers';
+        } else {
+            result.error = 'Fetch returned no servers';
+        }
+    } catch (e) {
+        result.error = e.message;
+    }
+    return res.json(result);
 });
 
 // ============================================

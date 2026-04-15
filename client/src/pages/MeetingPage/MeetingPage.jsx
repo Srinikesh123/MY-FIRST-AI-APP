@@ -11,24 +11,23 @@ let ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
 ];
-let ICE_SERVERS_FETCHED_AT = 0; // timestamp of last successful fetch
+let HAS_TURN = false; // whether we have working TURN relay servers
 
 async function fetchIceServers() {
   try {
     const res = await fetch('/api/turn-credentials');
     if (!res.ok) throw new Error(`Server returned ${res.status}`);
-    const { iceServers } = await res.json();
-    if (iceServers?.length) {
-      ICE_SERVERS = iceServers;
-      ICE_SERVERS_FETCHED_AT = Date.now();
-      const turnCount = iceServers.filter(s => s.urls?.toString().includes('turn')).length;
-      console.log(`✅ ICE servers: ${iceServers.length} total, ${turnCount} TURN relays`);
-      if (turnCount === 0) {
-        console.warn('⚠️ No TURN relays — cross-network calls will likely fail');
-      }
+    const data = await res.json();
+    if (data.iceServers?.length) {
+      ICE_SERVERS = data.iceServers;
+      HAS_TURN = data.hasTurn === true;
+      const turnCount = data.iceServers.filter(s => s.urls?.toString().includes('turn')).length;
+      console.log(`✅ ICE servers: ${data.iceServers.length} total, ${turnCount} TURN relays, hasTurn=${HAS_TURN}`);
     }
+    return HAS_TURN;
   } catch (err) {
-    console.error('❌ TURN fetch failed — cross-network calls will NOT work:', err.message);
+    console.error('❌ TURN fetch failed:', err.message);
+    return false;
   }
 }
 
@@ -268,8 +267,14 @@ export default function MeetingPage() {
         }).catch(() => {});
       }
       if (state === 'failed') {
-        console.error('❌ ICE connection failed — likely no TURN relay available for cross-network');
-        pc.restartIce();
+        console.error('❌ ICE failed — refreshing TURN creds and restarting');
+        // Get fresh TURN credentials and restart ICE
+        fetchIceServers().then(() => {
+          try {
+            pc.setConfiguration({ iceServers: ICE_SERVERS, iceTransportPolicy: 'all', bundlePolicy: 'max-bundle', rtcpMuxPolicy: 'require' });
+          } catch (_) {}
+          pc.restartIce();
+        });
       }
     };
 
@@ -368,14 +373,28 @@ export default function MeetingPage() {
       }
       try {
         if (signal.type === 'offer') {
+          // ── Handle offer collision (glare) ──
+          // Both sides sent offers at the same time. Use "polite peer" pattern:
+          // the peer with the LOWER socket ID is "polite" and yields.
+          if (pc.signalingState !== 'stable') {
+            const polite = socket.id < from;
+            if (!polite) {
+              console.log(`⚡ Ignoring colliding offer from ${from} (we take priority)`);
+              return;
+            }
+            console.log(`⚡ Rolling back our offer — accepting ${from}'s offer`);
+            await pc.setLocalDescription({ type: 'rollback' });
+          }
           await pc.setRemoteDescription(new RTCSessionDescription(signal));
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
           socket.emit('signal', { to: from, signal: answer });
         } else if (signal.type === 'answer') {
-          await pc.setRemoteDescription(new RTCSessionDescription(signal));
+          if (pc.signalingState === 'have-local-offer') {
+            await pc.setRemoteDescription(new RTCSessionDescription(signal));
+          }
         } else if (signal.candidate) {
-          await pc.addIceCandidate(new RTCIceCandidate(signal));
+          try { await pc.addIceCandidate(new RTCIceCandidate(signal)); } catch (_) {}
         }
       } catch (err) {
         console.error('Signal error:', err);
@@ -469,7 +488,7 @@ export default function MeetingPage() {
       peerConnsRef.current.set(peerId, pc);
     }
     try {
-      const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
+      const offer = await pc.createOffer({ offerToReceiveAudio: true });
       await pc.setLocalDescription(offer);
       socket.emit('signal', { to: peerId, signal: offer });
     } catch (err) {
@@ -504,7 +523,8 @@ export default function MeetingPage() {
     if (connecting) return;
     setError(''); setConnecting(true);
     try {
-      await Promise.all([fetchIceServers(), acquireMic()]);
+      const [hasTurn] = await Promise.all([fetchIceServers(), acquireMic()]);
+      if (!hasTurn) console.warn('⚠️ No TURN servers — cross-network may fail');
       const socket = await connectSocket();
       setupSocketListeners(socket);
       const res = await new Promise((resolve, reject) => {
